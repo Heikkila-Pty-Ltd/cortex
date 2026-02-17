@@ -59,6 +59,43 @@ func runTmux(args ...string) (string, error) {
 	return "", nil // placeholder; tests use the real functions directly
 }
 
+// waitForSessionExit polls for session exit status with exponential backoff.
+// This provides deterministic exit-state polling to eliminate timing races in tests.
+func waitForSessionExit(t *testing.T, sessionName string, maxWait time.Duration) (status string, exitCode int) {
+	t.Helper()
+	start := time.Now()
+	backoff := 50 * time.Millisecond
+	maxBackoff := 500 * time.Millisecond
+
+	for time.Since(start) < maxWait {
+		status, exitCode := SessionStatus(sessionName)
+		
+		switch status {
+		case "exited":
+			return status, exitCode
+		case "gone":
+			t.Fatalf("session %q disappeared unexpectedly", sessionName)
+		case "running":
+			// Keep polling
+		default:
+			t.Fatalf("session %q has unknown status: %s", sessionName, status)
+		}
+
+		time.Sleep(backoff)
+		if backoff < maxBackoff {
+			backoff = backoff * 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
+
+	// Timeout - get final status for error reporting
+	status, exitCode = SessionStatus(sessionName)
+	t.Fatalf("timeout waiting for session %q to exit after %v, final status: %s", sessionName, maxWait, status)
+	return // unreachable
+}
+
 func TestTmuxDispatcher_DispatchAndCapture(t *testing.T) {
 	tmuxAvailable(t)
 
@@ -71,8 +108,8 @@ func TestTmuxDispatcher_DispatchAndCapture(t *testing.T) {
 	}
 	defer KillSession(name)
 
-	// Wait for command to finish (it's very fast).
-	time.Sleep(1 * time.Second)
+	// Use deterministic polling to wait for command completion
+	status, exitCode := waitForSessionExit(t, name, 3*time.Second)
 
 	// Session should still exist (remain-on-exit).
 	if !IsSessionAlive(name) {
@@ -80,7 +117,6 @@ func TestTmuxDispatcher_DispatchAndCapture(t *testing.T) {
 	}
 
 	// Command should have exited.
-	status, exitCode := SessionStatus(name)
 	if status != "exited" {
 		t.Errorf("expected status=exited, got %q", status)
 	}
@@ -110,9 +146,9 @@ func TestTmuxDispatcher_ExitCodeCapture(t *testing.T) {
 	}
 	defer KillSession(name)
 
-	time.Sleep(1500 * time.Millisecond)
-
-	status, exitCode := SessionStatus(name)
+	// Use deterministic polling instead of fixed sleep to eliminate timing races
+	status, exitCode := waitForSessionExit(t, name, 5*time.Second)
+	
 	if status != "exited" {
 		t.Errorf("expected status=exited, got %q", status)
 	}
@@ -133,7 +169,8 @@ func TestTmuxDispatcher_WorkDir(t *testing.T) {
 	}
 	defer KillSession(name)
 
-	time.Sleep(1 * time.Second)
+	// Use deterministic polling to wait for command completion
+	waitForSessionExit(t, name, 3*time.Second)
 
 	output, err := CaptureOutput(name)
 	if err != nil {
@@ -159,7 +196,8 @@ func TestTmuxDispatcher_EnvVars(t *testing.T) {
 	}
 	defer KillSession(name)
 
-	time.Sleep(1 * time.Second)
+	// Use deterministic polling to wait for command completion
+	waitForSessionExit(t, name, 3*time.Second)
 
 	output, err := CaptureOutput(name)
 	if err != nil {

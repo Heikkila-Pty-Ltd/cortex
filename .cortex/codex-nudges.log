@@ -42,3 +42,12 @@
 [2026-02-18T05:05:49+10:00] codex-worker closed cortex-oa5 (failure signature cleared)
 [2026-02-18T05:27:57+10:00] codex-worker escalation completed for cortex-otx
 [2026-02-18T05:33:31+10:00] codex-worker escalation completed for cortex-7fp
+[2026-02-18T05:35:35+10:00] Detected repeated '-m/--message' failures (3/15m); restarting Cortex
+[2026-02-18T05:35:40+10:00] Repeated failure signature 3x/15m: error: required option '-m, --message <text>' not specified
+[2026-02-18T05:44:02+10:00] codex-worker escalation completed for cortex-7fp
+[2026-02-18T05:50:41+10:00] Filed bead cortex-20s: Auto: repeated failure (3x/15m): gateway connect failed: Error: gateway closed (1000):
+[2026-02-18T05:50:41+10:00] Repeated failure signature 3x/15m: gateway connect failed: Error: gateway closed (1000):
+[2026-02-18T05:54:11+10:00] codex-worker closed cortex-20s (failure signature cleared)
+[2026-02-18T06:05:42+10:00] Repeated failure signature 4x/15m: <none>
+[2026-02-18T06:18:31+10:00] codex-worker escalation completed for cortex-d69
+[2026-02-18T06:35:43+10:00] Repeated failure signature 2x/15m: <none>

@@ -1,9 +1,10 @@
-timestamp: 2026-02-18T05:20:35+10:00
-running_count: 1
-completed_15m: 8
-failed_15m: 0
+timestamp: 2026-02-18T06:35:43+10:00
+running_count: 2
+completed_15m: 5
+failed_15m: 3
 cancelled_15m: 0
-usage_5h: 150/150
-usage_weekly: 220/2000
+usage_5h: 138/150
+usage_weekly: 229/2000
 top_failures_15m:
-<none>
+<none> x2
+gateway connect failed: Error: gateway closed (1000): x1
