@@ -76,7 +76,7 @@ func main() {
 
 	// Create components
 	rl := dispatch.NewRateLimiter(st, cfg.RateLimits)
-	
+
 	// Choose dispatcher based on tmux availability
 	var d dispatch.DispatcherInterface
 	if dispatch.IsTmuxAvailable() {
@@ -86,7 +86,7 @@ func main() {
 		logger.Info("tmux not available, using PID-based Dispatcher")
 		d = dispatch.NewDispatcher()
 	}
-	
+
 	sched := scheduler.New(cfg, st, rl, d, logger.With("component", "scheduler"), *dryRun)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -103,11 +103,11 @@ func main() {
 	go sched.Start(ctx)
 
 	// Start health monitor
-	hm := health.NewMonitor(cfg.Health, st, logger.With("component", "health"))
+	hm := health.NewMonitor(cfg.Health, cfg.General, st, d, logger.With("component", "health"))
 	go hm.Start(ctx)
 
 	// Start API server with scheduler reference
-	apiSrv := api.NewServer(cfg, st, rl, sched, logger.With("component", "api"))
+	apiSrv := api.NewServer(cfg, st, rl, sched, d, logger.With("component", "api"))
 	go func() {
 		if err := apiSrv.Start(ctx); err != nil {
 			logger.Error("api server error", "error", err)
