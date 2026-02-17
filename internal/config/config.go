@@ -64,6 +64,12 @@ type Project struct {
 	BaseBranch   string `toml:"base_branch"`    // branch to create features from (default "main")
 	BranchPrefix string `toml:"branch_prefix"`  // prefix for feature branches (default "feat/")
 	UseBranches  bool   `toml:"use_branches"`   // enable branch workflow (default false)
+	
+	// Sprint planning configuration (optional for backward compatibility)
+	SprintPlanningDay   string `toml:"sprint_planning_day"`   // day of week for sprint planning (e.g., "Monday")
+	SprintPlanningTime  string `toml:"sprint_planning_time"`  // time of day for sprint planning (e.g., "09:00")
+	SprintCapacity      int    `toml:"sprint_capacity"`       // maximum points/tasks per sprint
+	BacklogThreshold    int    `toml:"backlog_threshold"`     // minimum backlog size to maintain
 }
 
 type RateLimits struct {
@@ -301,6 +307,10 @@ func applyDefaults(cfg *Config) {
 		if project.BranchPrefix == "" {
 			project.BranchPrefix = "feat/"
 		}
+		
+		// Sprint planning defaults (optional - no defaults applied to maintain backward compatibility)
+		// Users must explicitly configure sprint planning to enable it
+		
 		cfg.Projects[name] = project
 	}
 
@@ -355,10 +365,14 @@ func validate(cfg *Config) error {
 	}
 
 	hasEnabled := false
-	for _, p := range cfg.Projects {
+	for projectName, p := range cfg.Projects {
 		if p.Enabled {
 			hasEnabled = true
-			break
+		}
+		
+		// Validate sprint planning configuration when provided
+		if err := validateSprintPlanningConfig(projectName, p); err != nil {
+			return fmt.Errorf("project %q sprint planning config: %w", projectName, err)
 		}
 	}
 	if !hasEnabled {
@@ -475,6 +489,79 @@ func (rl *RateLimits) GetProjectBudget(project string) int {
 		return 0
 	}
 	return rl.Budget[project]
+}
+
+// validateSprintPlanningConfig validates sprint planning configuration for a project.
+func validateSprintPlanningConfig(projectName string, project Project) error {
+	// Sprint planning day validation
+	if project.SprintPlanningDay != "" {
+		validDays := map[string]bool{
+			"Monday":    true,
+			"Tuesday":   true,
+			"Wednesday": true,
+			"Thursday":  true,
+			"Friday":    true,
+			"Saturday":  true,
+			"Sunday":    true,
+		}
+		if !validDays[project.SprintPlanningDay] {
+			return fmt.Errorf("invalid sprint_planning_day %q, must be one of: Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday", project.SprintPlanningDay)
+		}
+	}
+	
+	// Sprint planning time validation (24-hour format HH:MM)
+	if project.SprintPlanningTime != "" {
+		// Basic time format validation - must be HH:MM
+		if len(project.SprintPlanningTime) != 5 || project.SprintPlanningTime[2] != ':' {
+			return fmt.Errorf("invalid sprint_planning_time %q, must be in HH:MM format (24-hour)", project.SprintPlanningTime)
+		}
+		
+		// Parse hours and minutes
+		hour := project.SprintPlanningTime[:2]
+		minute := project.SprintPlanningTime[3:]
+		
+		// Simple validation without importing time package parsing
+		for _, c := range hour {
+			if c < '0' || c > '9' {
+				return fmt.Errorf("invalid sprint_planning_time %q, hour must be numeric", project.SprintPlanningTime)
+			}
+		}
+		for _, c := range minute {
+			if c < '0' || c > '9' {
+				return fmt.Errorf("invalid sprint_planning_time %q, minute must be numeric", project.SprintPlanningTime)
+			}
+		}
+		
+		// Check valid ranges
+		if hour > "23" || minute > "59" {
+			return fmt.Errorf("invalid sprint_planning_time %q, hour must be 00-23 and minute must be 00-59", project.SprintPlanningTime)
+		}
+	}
+	
+	// Sprint capacity validation
+	if project.SprintCapacity < 0 {
+		return fmt.Errorf("sprint_capacity cannot be negative: %d", project.SprintCapacity)
+	}
+	if project.SprintCapacity > 1000 {
+		return fmt.Errorf("sprint_capacity seems unreasonably large: %d (max 1000)", project.SprintCapacity)
+	}
+	
+	// Backlog threshold validation
+	if project.BacklogThreshold < 0 {
+		return fmt.Errorf("backlog_threshold cannot be negative: %d", project.BacklogThreshold)
+	}
+	if project.BacklogThreshold > 500 {
+		return fmt.Errorf("backlog_threshold seems unreasonably large: %d (max 500)", project.BacklogThreshold)
+	}
+	
+	// Cross-field validation
+	if project.SprintCapacity > 0 && project.BacklogThreshold > 0 {
+		if project.BacklogThreshold < project.SprintCapacity {
+			return fmt.Errorf("backlog_threshold (%d) should be at least as large as sprint_capacity (%d)", project.BacklogThreshold, project.SprintCapacity)
+		}
+	}
+	
+	return nil
 }
 
 // ValidateDispatchConfig validates the dispatch configuration at startup.

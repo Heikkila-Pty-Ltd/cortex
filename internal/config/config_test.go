@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -719,6 +720,340 @@ func TestValidateDispatchConfigNilCLI(t *testing.T) {
 	err := ValidateDispatchConfig(cfg)
 	if err != nil {
 		t.Errorf("expected nil CLI config to be valid, got: %v", err)
+	}
+}
+
+// Sprint Planning Configuration Tests
+
+func TestLoadSprintPlanningConfigValid(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.sprint-project]
+enabled = true
+beads_dir = "/tmp/sprint-test/.beads"
+workspace = "/tmp/sprint-test"
+priority = 1
+sprint_planning_day = "Monday"
+sprint_planning_time = "09:00"
+sprint_capacity = 30
+backlog_threshold = 45
+`
+	path := writeTestConfig(t, cfg)
+	config, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected valid sprint planning config to load: %v", err)
+	}
+
+	project := config.Projects["sprint-project"]
+	if project.SprintPlanningDay != "Monday" {
+		t.Errorf("expected sprint_planning_day 'Monday', got %q", project.SprintPlanningDay)
+	}
+	if project.SprintPlanningTime != "09:00" {
+		t.Errorf("expected sprint_planning_time '09:00', got %q", project.SprintPlanningTime)
+	}
+	if project.SprintCapacity != 30 {
+		t.Errorf("expected sprint_capacity 30, got %d", project.SprintCapacity)
+	}
+	if project.BacklogThreshold != 45 {
+		t.Errorf("expected backlog_threshold 45, got %d", project.BacklogThreshold)
+	}
+}
+
+func TestLoadSprintPlanningConfigBackwardCompatibility(t *testing.T) {
+	// Test that projects without sprint planning config work normally
+	path := writeTestConfig(t, validConfig)
+	config, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected config without sprint planning to load: %v", err)
+	}
+
+	project := config.Projects["test"]
+	if project.SprintPlanningDay != "" {
+		t.Errorf("expected empty sprint_planning_day, got %q", project.SprintPlanningDay)
+	}
+	if project.SprintPlanningTime != "" {
+		t.Errorf("expected empty sprint_planning_time, got %q", project.SprintPlanningTime)
+	}
+	if project.SprintCapacity != 0 {
+		t.Errorf("expected sprint_capacity 0, got %d", project.SprintCapacity)
+	}
+	if project.BacklogThreshold != 0 {
+		t.Errorf("expected backlog_threshold 0, got %d", project.BacklogThreshold)
+	}
+}
+
+func TestLoadSprintPlanningConfigInvalidDay(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.sprint-project]
+enabled = true
+beads_dir = "/tmp/sprint-test/.beads"
+workspace = "/tmp/sprint-test"
+sprint_planning_day = "InvalidDay"
+`
+	path := writeTestConfig(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for invalid sprint planning day")
+	}
+	
+	if !strings.Contains(err.Error(), "invalid sprint_planning_day") {
+		t.Errorf("expected invalid day validation error, got: %v", err)
+	}
+}
+
+func TestLoadSprintPlanningConfigInvalidTime(t *testing.T) {
+	tests := []struct {
+		name string
+		time string
+	}{
+		{"invalid format", "9:00"},
+		{"invalid format short", "9:0"},
+		{"non-numeric hour", "ab:00"},
+		{"non-numeric minute", "09:ab"},
+		{"invalid hour", "25:00"},
+		{"invalid minute", "09:60"},
+		{"missing colon", "0900"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig + fmt.Sprintf(`
+
+[projects.sprint-project]
+enabled = true
+beads_dir = "/tmp/sprint-test/.beads"
+workspace = "/tmp/sprint-test"
+sprint_planning_time = "%s"
+`, tt.time)
+			path := writeTestConfig(t, cfg)
+			_, err := Load(path)
+			if err == nil {
+				t.Fatalf("expected error for invalid time format: %s", tt.time)
+			}
+			
+			if !strings.Contains(err.Error(), "invalid sprint_planning_time") {
+				t.Errorf("expected time validation error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadSprintPlanningConfigValidTimes(t *testing.T) {
+	validTimes := []string{"00:00", "09:30", "23:59", "12:00", "18:45"}
+	
+	for _, validTime := range validTimes {
+		t.Run("valid_time_"+validTime, func(t *testing.T) {
+			cfg := validConfig + fmt.Sprintf(`
+
+[projects.sprint-project]
+enabled = true
+beads_dir = "/tmp/sprint-test/.beads"
+workspace = "/tmp/sprint-test"
+sprint_planning_time = "%s"
+`, validTime)
+			path := writeTestConfig(t, cfg)
+			config, err := Load(path)
+			if err != nil {
+				t.Fatalf("expected valid time %s to load: %v", validTime, err)
+			}
+			
+			if config.Projects["sprint-project"].SprintPlanningTime != validTime {
+				t.Errorf("expected time %s, got %s", validTime, config.Projects["sprint-project"].SprintPlanningTime)
+			}
+		})
+	}
+}
+
+func TestLoadSprintPlanningConfigNegativeCapacity(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.sprint-project]
+enabled = true
+beads_dir = "/tmp/sprint-test/.beads"
+workspace = "/tmp/sprint-test"
+sprint_capacity = -1
+`
+	path := writeTestConfig(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for negative sprint capacity")
+	}
+	
+	if !strings.Contains(err.Error(), "sprint_capacity cannot be negative") {
+		t.Errorf("expected negative capacity validation error, got: %v", err)
+	}
+}
+
+func TestLoadSprintPlanningConfigExcessiveCapacity(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.sprint-project]
+enabled = true
+beads_dir = "/tmp/sprint-test/.beads"
+workspace = "/tmp/sprint-test"
+sprint_capacity = 1001
+`
+	path := writeTestConfig(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for excessive sprint capacity")
+	}
+	
+	if !strings.Contains(err.Error(), "sprint_capacity seems unreasonably large") {
+		t.Errorf("expected excessive capacity validation error, got: %v", err)
+	}
+}
+
+func TestLoadSprintPlanningConfigNegativeThreshold(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.sprint-project]
+enabled = true
+beads_dir = "/tmp/sprint-test/.beads"
+workspace = "/tmp/sprint-test"
+backlog_threshold = -1
+`
+	path := writeTestConfig(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for negative backlog threshold")
+	}
+	
+	if !strings.Contains(err.Error(), "backlog_threshold cannot be negative") {
+		t.Errorf("expected negative threshold validation error, got: %v", err)
+	}
+}
+
+func TestLoadSprintPlanningConfigExcessiveThreshold(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.sprint-project]
+enabled = true
+beads_dir = "/tmp/sprint-test/.beads"
+workspace = "/tmp/sprint-test"
+backlog_threshold = 501
+`
+	path := writeTestConfig(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for excessive backlog threshold")
+	}
+	
+	if !strings.Contains(err.Error(), "backlog_threshold seems unreasonably large") {
+		t.Errorf("expected excessive threshold validation error, got: %v", err)
+	}
+}
+
+func TestLoadSprintPlanningConfigThresholdLessThanCapacity(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.sprint-project]
+enabled = true
+beads_dir = "/tmp/sprint-test/.beads"
+workspace = "/tmp/sprint-test"
+sprint_capacity = 50
+backlog_threshold = 30
+`
+	path := writeTestConfig(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for threshold less than capacity")
+	}
+	
+	if !strings.Contains(err.Error(), "backlog_threshold") || !strings.Contains(err.Error(), "should be at least as large as sprint_capacity") {
+		t.Errorf("expected threshold/capacity validation error, got: %v", err)
+	}
+}
+
+func TestLoadSprintPlanningConfigValidDays(t *testing.T) {
+	validDays := []string{"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"}
+	
+	for _, validDay := range validDays {
+		t.Run("valid_day_"+validDay, func(t *testing.T) {
+			cfg := validConfig + fmt.Sprintf(`
+
+[projects.sprint-project]
+enabled = true
+beads_dir = "/tmp/sprint-test/.beads"
+workspace = "/tmp/sprint-test"
+sprint_planning_day = "%s"
+`, validDay)
+			path := writeTestConfig(t, cfg)
+			config, err := Load(path)
+			if err != nil {
+				t.Fatalf("expected valid day %s to load: %v", validDay, err)
+			}
+			
+			if config.Projects["sprint-project"].SprintPlanningDay != validDay {
+				t.Errorf("expected day %s, got %s", validDay, config.Projects["sprint-project"].SprintPlanningDay)
+			}
+		})
+	}
+}
+
+func TestLoadSprintPlanningConfigPartialConfiguration(t *testing.T) {
+	// Test that partial sprint configuration is valid (users can configure just some fields)
+	tests := []struct {
+		name   string
+		config string
+	}{
+		{
+			name: "only_day",
+			config: `
+sprint_planning_day = "Monday"
+`,
+		},
+		{
+			name: "only_time",
+			config: `
+sprint_planning_time = "09:00"
+`,
+		},
+		{
+			name: "only_capacity",
+			config: `
+sprint_capacity = 30
+`,
+		},
+		{
+			name: "only_threshold",
+			config: `
+backlog_threshold = 45
+`,
+		},
+		{
+			name: "day_and_time",
+			config: `
+sprint_planning_day = "Wednesday"
+sprint_planning_time = "14:30"
+`,
+		},
+		{
+			name: "capacity_and_threshold",
+			config: `
+sprint_capacity = 25
+backlog_threshold = 40
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig + fmt.Sprintf(`
+
+[projects.sprint-project]
+enabled = true
+beads_dir = "/tmp/sprint-test/.beads"
+workspace = "/tmp/sprint-test"
+%s
+`, tt.config)
+			path := writeTestConfig(t, cfg)
+			_, err := Load(path)
+			if err != nil {
+				t.Fatalf("expected partial sprint config to be valid: %v", err)
+			}
+		})
 	}
 }
 
