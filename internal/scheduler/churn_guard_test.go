@@ -181,6 +181,60 @@ func TestShouldAutoCloseEpicBreakdownTask(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "stage-qa auto-breakdown task is auto-closed when epic already has executable children",
+			issue: beads.Bead{
+				ID:     "cortex-34e",
+				Type:   "task",
+				Status: "open",
+				Title:  "Auto: break down epic cortex-a6p into executable bug/task beads",
+				Labels: []string{"stage:qa"},
+				Dependencies: []beads.BeadDependency{
+					{IssueID: "cortex-34e", DependsOnID: "cortex-a6p", Type: "discovered-from"},
+				},
+			},
+			byID: map[string]beads.Bead{
+				"cortex-a6p":   {ID: "cortex-a6p", Type: "epic", Status: "open"},
+				"cortex-a6p.1": {ID: "cortex-a6p.1", Type: "task", Status: "open", ParentID: "cortex-a6p"},
+			},
+			wantID: "cortex-a6p",
+			want:   true,
+		},
+		{
+			name: "non-qa auto-breakdown task is not auto-closed when epic remains open",
+			issue: beads.Bead{
+				ID:     "cortex-34e",
+				Type:   "task",
+				Status: "open",
+				Title:  "Auto: break down epic cortex-a6p into executable bug/task beads",
+				Labels: []string{"stage:review"},
+				Dependencies: []beads.BeadDependency{
+					{IssueID: "cortex-34e", DependsOnID: "cortex-a6p", Type: "discovered-from"},
+				},
+			},
+			byID: map[string]beads.Bead{
+				"cortex-a6p":   {ID: "cortex-a6p", Type: "epic", Status: "open"},
+				"cortex-a6p.1": {ID: "cortex-a6p.1", Type: "task", Status: "open", ParentID: "cortex-a6p"},
+			},
+			want: false,
+		},
+		{
+			name: "stage-qa auto-breakdown task is not auto-closed without executable children while epic open",
+			issue: beads.Bead{
+				ID:     "cortex-34e",
+				Type:   "task",
+				Status: "open",
+				Title:  "Auto: break down epic cortex-a6p into executable bug/task beads",
+				Labels: []string{"stage:qa"},
+				Dependencies: []beads.BeadDependency{
+					{IssueID: "cortex-34e", DependsOnID: "cortex-a6p", Type: "discovered-from"},
+				},
+			},
+			byID: map[string]beads.Bead{
+				"cortex-a6p": {ID: "cortex-a6p", Type: "epic", Status: "open"},
+			},
+			want: false,
+		},
+		{
 			name: "task is not auto-closed without discovered-from dependency",
 			issue: beads.Bead{
 				ID:     "cortex-34e",

@@ -910,7 +910,7 @@ func (s *Scheduler) reconcileCompletedEpicBreakdowns(ctx context.Context, beadsD
 			"bead", issueID,
 			"epic", epicID)
 		_ = s.store.RecordHealthEventWithDispatch("epic_breakdown_auto_closed",
-			fmt.Sprintf("project %s bead %s auto-closed because epic %s is already closed", projectName, issueID, epicID),
+			fmt.Sprintf("project %s bead %s auto-closed because epic %s is already closed or already has executable child work", projectName, issueID, epicID),
 			0, issueID)
 	}
 }
@@ -940,7 +940,15 @@ func shouldAutoCloseEpicBreakdownTask(issue beads.Bead, byID map[string]beads.Be
 	if normalizeIssueType(epic.Type) != "epic" {
 		return "", false
 	}
-	if !strings.EqualFold(strings.TrimSpace(epic.Status), "closed") {
+	if strings.EqualFold(strings.TrimSpace(epic.Status), "closed") {
+		return depEpicID, true
+	}
+
+	if !hasIssueLabel(issue, "stage:qa") {
+		return "", false
+	}
+
+	if !epicHasExecutableChildWork(depEpicID, byID) {
 		return "", false
 	}
 
@@ -971,6 +979,36 @@ func discoveredFromTargetID(issue beads.Bead) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func hasIssueLabel(issue beads.Bead, label string) bool {
+	for _, candidate := range issue.Labels {
+		if strings.EqualFold(strings.TrimSpace(candidate), label) {
+			return true
+		}
+	}
+	return false
+}
+
+func epicHasExecutableChildWork(epicID string, byID map[string]beads.Bead) bool {
+	for _, issue := range byID {
+		if strings.TrimSpace(issue.ParentID) != epicID {
+			continue
+		}
+		if isExecutableIssueType(issue.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+func isExecutableIssueType(issueType string) bool {
+	switch normalizeIssueType(issueType) {
+	case "bug", "task", "feature":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, projectName string, beadsDir string) bool {
