@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -157,13 +158,130 @@ func TestOpenclawShellScript_RetriesMessageAfterFallbackRequiredOption(t *testin
 	script := openclawShellScript()
 	checks := []string{
 		`fallback_err=$(mktemp)`,
-		`printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"`,
+		`cat "$msg_file" | openclaw agent`,
 		`grep -Fqi "required option '-m, --message" "$fallback_err"`,
-		`openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"`,
+		`--message "$(cat "$msg_file")"`,
 	}
 	for _, check := range checks {
 		if !strings.Contains(script, check) {
 			t.Fatalf("shell script missing %q", check)
+		}
+	}
+}
+
+// Test complex prompt handling without shell parsing errors
+func TestOpenclawCommandArgsComplexPrompts(t *testing.T) {
+	// These are prompts that previously caused shell parsing failures
+	problematicPrompts := []string{
+		`Create a function that returns "hello world"`,
+		`Fix this bug: if (condition) { ... }`,
+		`Parse this JSON: {"key": "value"}`,
+		`Execute: ls -la | grep "*.txt"`,
+		`Shell: echo $HOME && cd /tmp`,
+		`SQL: SELECT * FROM table WHERE name='test';`,
+		`Complex: '; rm -rf /; echo 'injected'`,
+		`Quotes: "test" and 'another test'`,
+		"Backticks: `command substitution`",
+		`Pipes and redirects: cmd | other > file`,
+	}
+
+	for i, prompt := range problematicPrompts {
+		t.Run(fmt.Sprintf("complex_prompt_%d", i), func(t *testing.T) {
+			// Create a temp file for the prompt
+			promptPath, err := writeToTempFile(prompt, "test-prompt-*.txt")
+			if err != nil {
+				t.Fatalf("failed to create temp prompt file: %v", err)
+			}
+			defer os.Remove(promptPath)
+
+			// Test command args generation
+			args, tempFiles, err := openclawCommandArgs(promptPath, "test-agent", "low", "test-provider")
+			if err != nil {
+				t.Fatalf("openclawCommandArgs failed: %v", err)
+			}
+
+			// Clean up temp files
+			defer func() {
+				for _, tf := range tempFiles {
+					os.Remove(tf)
+				}
+			}()
+
+			// Verify the args are properly structured
+			if len(args) != 7 {
+				t.Fatalf("expected 7 args, got %d", len(args))
+			}
+
+			// Verify temp files contain the correct content
+			promptContent, err := os.ReadFile(promptPath)
+			if err != nil {
+				t.Fatalf("failed to read prompt file: %v", err)
+			}
+			if string(promptContent) != prompt {
+				t.Fatalf("prompt file content mismatch: got %q, want %q", string(promptContent), prompt)
+			}
+
+			// Verify agent temp file
+			agentContent, err := os.ReadFile(args[4])
+			if err != nil {
+				t.Fatalf("failed to read agent temp file: %v", err)
+			}
+			if string(agentContent) != "test-agent" {
+				t.Fatalf("agent file content mismatch: got %q, want %q", string(agentContent), "test-agent")
+			}
+		})
+	}
+}
+
+// Test that shell script properly validates input files
+func TestOpenclawShellScript_FileValidation(t *testing.T) {
+	script := openclawShellScript()
+	
+	// Should contain file validation logic
+	requiredChecks := []string{
+		`if [ ! -f "$msg_file" ]`,
+		`[ ! -f "$agent_file" ]`,
+		`[ ! -f "$thinking_file" ]`,
+		`[ ! -f "$provider_file" ]`,
+		`echo "Error: Missing required parameter files" >&2`,
+		`exit 1`,
+	}
+	
+	for _, check := range requiredChecks {
+		if !strings.Contains(script, check) {
+			t.Errorf("shell script should contain validation: %q", check)
+		}
+	}
+}
+
+// Test command construction uses safe parameter passing
+func TestOpenclawShellScript_SafeParameterPassing(t *testing.T) {
+	script := openclawShellScript()
+	
+	// Should use command substitution with cat to read files safely
+	safePatterns := []string{
+		`--agent "$(cat "$agent_file")"`,
+		`--message "$(cat "$msg_file")"`,
+		`--thinking "$(cat "$thinking_file")"`,
+	}
+	
+	for _, pattern := range safePatterns {
+		if !strings.Contains(script, pattern) {
+			t.Errorf("shell script should use safe parameter passing: %q", pattern)
+		}
+	}
+	
+	// Should NOT use unsafe variable interpolation in command context
+	unsafePatterns := []string{
+		`--agent $agent`,
+		`--message $msg`,
+		`--agent "$agent"`, // This would be variable interpolation, not file reading
+		`--message "$msg"`, // This would be variable interpolation, not file reading
+	}
+	
+	for _, pattern := range unsafePatterns {
+		if strings.Contains(script, pattern) {
+			t.Errorf("shell script should not use unsafe parameter passing: %q", pattern)
 		}
 	}
 }

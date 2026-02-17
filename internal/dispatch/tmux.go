@@ -1,7 +1,6 @@
 package dispatch
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"fmt"
@@ -198,6 +197,41 @@ func buildTmuxAgentCommand(scriptPath, msgPath, agentPath, thinkingPath, provide
 	return BuildShellCommand("sh", scriptPath, msgPath, agentPath, thinkingPath, providerPath)
 }
 
+// buildSafeShellScript creates a shell script that safely sets environment variables
+// and executes the given command without any shell parsing issues
+func buildSafeShellScript(agentCmd string, env map[string]string) (string, error) {
+	var script strings.Builder
+	
+	script.WriteString("#!/bin/bash\n")
+	script.WriteString("# Auto-generated safe shell script for tmux dispatch\n")
+	script.WriteString("set -e\n\n")
+	
+	// Set environment variables safely using printf to handle all special characters
+	for key, value := range env {
+		// Validate environment variable name (security)
+		if !isValidEnvVarName(key) {
+			return "", fmt.Errorf("invalid environment variable name: %s", key)
+		}
+		
+		// Use printf %s to safely output the value without interpretation
+		script.WriteString(fmt.Sprintf("export %s=\"$(printf %%s %s)\"\n", 
+			key, ShellEscape(value)))
+	}
+	
+	if len(env) > 0 {
+		script.WriteString("\n")
+	}
+	
+	// Execute the command with exec to replace the shell process
+	// This ensures that the agent process gets the correct PID and signals
+	script.WriteString("exec ")
+	script.WriteString(agentCmd)
+	script.WriteString("\n")
+	
+	return script.String(), nil
+}
+
+
 // Dispatch implements DispatcherInterface for tmux-based dispatching.
 func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt string, provider string, thinkingLevel string, workDir string) (int, error) {
 	thinking := normalizeThinkingLevel(thinkingLevel)
@@ -281,9 +315,19 @@ func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt stri
 	// Create numeric handle
 	handle := d.generateHandle(sessionName)
 
+	// Track session metadata for robust cleanup
+	d.mu.Lock()
+	d.metadata[sessionName] = agent
+	d.mu.Unlock()
+
 	// Start the session with retry logic for lock conflicts
 	err = d.dispatchWithRetry(ctx, sessionName, agentCmd, workDir, nil, agent)
 	if err != nil {
+		// Remove from metadata tracking on failure
+		d.mu.Lock()
+		delete(d.metadata, sessionName)
+		d.mu.Unlock()
+		
 		cleanupSessionResources(agent, sessionName)
 		for _, tf := range tempFiles {
 			os.Remove(tf)
@@ -331,6 +375,22 @@ func (d *TmuxDispatcher) dispatchWithRetry(ctx context.Context, sessionName, age
 	return err
 }
 
+// startupCleanup performs comprehensive cleanup when session startup fails
+func (d *TmuxDispatcher) startupCleanup(sessionName, scriptPath string) {
+	// Kill the session if it was created
+	KillSession(sessionName)
+	
+	// Remove the temporary script file
+	if scriptPath != "" {
+		os.Remove(scriptPath)
+	}
+	
+	// Remove session from internal tracking
+	d.mu.Lock()
+	delete(d.metadata, sessionName)
+	d.mu.Unlock()
+}
+
 // DispatchToSession starts an agent command inside a new tmux session.
 // This is the original method signature for direct tmux operations.
 func (d *TmuxDispatcher) DispatchToSession(
@@ -340,55 +400,80 @@ func (d *TmuxDispatcher) DispatchToSession(
 	workDir string,
 	env map[string]string,
 ) error {
-	// Build the shell command with env var prefixes.
-	// Using "exec" replaces the shell with the target process so
-	// pane_dead_status correctly reflects the agent's exit code.
-	var cmdBuf bytes.Buffer
-	for k, v := range env {
-		// Escape single quotes in values: replace ' with '\''
-		escaped := strings.ReplaceAll(v, "'", "'\\''")
-		fmt.Fprintf(&cmdBuf, "%s='%s' ", k, escaped)
+	// Build a safe shell script that sets environment variables and executes the command
+	// This completely avoids shell parsing issues by using a temporary script file
+	scriptContent, err := buildSafeShellScript(agentCmd, env)
+	if err != nil {
+		return fmt.Errorf("build safe shell script: %w", err)
 	}
-	fmt.Fprintf(&cmdBuf, "exec %s", agentCmd)
 
-	shellCmd := cmdBuf.String()
+	// Write the script to a temporary file
+	scriptFile, err := os.CreateTemp("", "cortex-tmux-*.sh")
+	if err != nil {
+		return fmt.Errorf("create temp script file: %w", err)
+	}
+	scriptPath := scriptFile.Name()
+	
+	if _, err := scriptFile.WriteString(scriptContent); err != nil {
+		scriptFile.Close()
+		os.Remove(scriptPath)
+		return fmt.Errorf("write temp script file: %w", err)
+	}
+	
+	if err := scriptFile.Close(); err != nil {
+		os.Remove(scriptPath)
+		return fmt.Errorf("close temp script file: %w", err)
+	}
 
-	// Create the session with a shell first (no command), configure it,
-	// then send the actual command. This eliminates the race where a fast
-	// command exits before remain-on-exit can be set.
+	// Make script executable
+	if err := os.Chmod(scriptPath, 0755); err != nil {
+		os.Remove(scriptPath)
+		return fmt.Errorf("chmod script file: %w", err)
+	}
+
+	// Create the session with the script as the command directly
+	// This eliminates the need for send-keys and shell string parsing
 	args := []string{
 		"new-session",
 		"-d",
 		"-s", sessionName,
 		"-c", workDir,
+		"sh", scriptPath, // Execute the script directly
 	}
 
 	cmd := exec.CommandContext(ctx, "tmux", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux dispatch %q: %w (%s)", sessionName, err, strings.TrimSpace(string(out)))
+		os.Remove(scriptPath)
+		return fmt.Errorf("tmux new-session failed for %q: %w (%s)", sessionName, err, strings.TrimSpace(string(out)))
 	}
 
-	// Set remain-on-exit before the command runs — no race possible.
-	if err := exec.Command("tmux", "set", "-t", sessionName, "remain-on-exit", "on").Run(); err != nil {
-		// Cleanup: kill the session we just created
-		KillSession(sessionName)
-		return fmt.Errorf("tmux dispatch: failed to set remain-on-exit for session %q: %w", sessionName, err)
+	// Set remain-on-exit after the session is created
+	cmd = exec.Command("tmux", "set", "-t", sessionName, "remain-on-exit", "on")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		d.startupCleanup(sessionName, scriptPath)
+		return fmt.Errorf("tmux set remain-on-exit failed for session %q: %w (%s)", sessionName, err, strings.TrimSpace(string(out)))
 	}
 
 	// Set history limit for output capture
-	if err := exec.Command("tmux", "set-option", "-t", sessionName, "history-limit", strconv.Itoa(d.historyLimit)).Run(); err != nil {
-		// Cleanup: kill the session we created
-		KillSession(sessionName)
-		return fmt.Errorf("tmux dispatch: failed to set history-limit for session %q: %w", sessionName, err)
+	cmd = exec.Command("tmux", "set-option", "-t", sessionName, "history-limit", strconv.Itoa(d.historyLimit))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		d.startupCleanup(sessionName, scriptPath)
+		return fmt.Errorf("tmux set-option history-limit failed for session %q: %w (%s)", sessionName, err, strings.TrimSpace(string(out)))
 	}
 
-	// Now send the actual command. The session has a shell waiting for input,
-	// so we send the command text followed by Enter.
-	if err := exec.Command("tmux", "send-keys", "-t", sessionName, shellCmd, "Enter").Run(); err != nil {
-		// Cleanup: kill the session we created
-		KillSession(sessionName)
-		return fmt.Errorf("tmux dispatch: failed to send command to session %q: %w", sessionName, err)
-	}
+	// Schedule cleanup of the script file after the session ends
+	go func() {
+		// Wait for the session to complete, then clean up the script
+		deadline := time.Now().Add(4 * time.Hour)
+		for time.Now().Before(deadline) {
+			status, _ := SessionStatus(sessionName)
+			if status != "running" {
+				break
+			}
+			time.Sleep(2 * time.Second)
+		}
+		os.Remove(scriptPath)
+	}()
 
 	return nil
 }
@@ -411,6 +496,7 @@ func (d *TmuxDispatcher) IsAlive(handle int) bool {
 func (d *TmuxDispatcher) Kill(handle int) error {
 	d.mu.RLock()
 	sessionName, ok := d.sessions[handle]
+	agent, hasMetadata := d.metadata[sessionName]
 	d.mu.RUnlock()
 
 	if !ok {
@@ -420,15 +506,31 @@ func (d *TmuxDispatcher) Kill(handle int) error {
 	err := KillSession(sessionName)
 
 	// Clean up session resources after killing
-	// Extract agent name from session name for cleanup
-	if strings.HasPrefix(sessionName, SessionPrefix) {
-		parts := strings.Split(sessionName, "-")
-		if len(parts) >= 3 {
-			// Session format: ctx-cortex-{agent}-{timestamp}-{pid}-{random}
-			agent := parts[2]
-			go cleanupSessionResources(agent, sessionName)
+	if hasMetadata {
+		// Use explicit metadata for cleanup
+		go cleanupSessionResources(agent, sessionName)
+	} else {
+		// Fallback: attempt to parse agent name from session name
+		// Log warning about missing metadata
+		if strings.HasPrefix(sessionName, SessionPrefix) {
+			parts := strings.Split(sessionName, "-")
+			if len(parts) >= 3 {
+				// Session format: ctx-cortex-{agent}-{timestamp}-{pid}-{random}
+				agent := parts[2]
+				fmt.Printf("Warning: session %q missing metadata, using fallback cleanup for agent %q\n", sessionName, agent)
+				go cleanupSessionResources(agent, sessionName)
+			} else {
+				fmt.Printf("Warning: session %q missing metadata and cannot parse agent from name, skipping resource cleanup\n", sessionName)
+			}
+		} else {
+			fmt.Printf("Warning: session %q does not match cortex naming pattern, skipping resource cleanup\n", sessionName)
 		}
 	}
+
+	// Remove from tracking after cleanup is initiated
+	d.mu.Lock()
+	delete(d.metadata, sessionName)
+	d.mu.Unlock()
 
 	return err
 }
@@ -503,6 +605,59 @@ func (d *TmuxDispatcher) generateHandle(sessionName string) int {
 	d.mu.Unlock()
 
 	return handle
+}
+
+// -----------------------------------------------------------------------
+// Session metadata tracking methods for robust cleanup
+// -----------------------------------------------------------------------
+
+// TrackSession records session metadata for robust cleanup operations.
+func (d *TmuxDispatcher) TrackSession(sessionName, agentID string) {
+	d.mu.Lock()
+	d.metadata[sessionName] = agentID
+	d.mu.Unlock()
+}
+
+// GetSessionAgent retrieves the agent ID for a given session name.
+func (d *TmuxDispatcher) GetSessionAgent(sessionName string) (agentID string, found bool) {
+	d.mu.RLock()
+	agentID, found = d.metadata[sessionName]
+	d.mu.RUnlock()
+	return agentID, found
+}
+
+// CleanupSession performs cleanup operations using explicit session metadata.
+func (d *TmuxDispatcher) CleanupSession(sessionName string) error {
+	agentID, found := d.GetSessionAgent(sessionName)
+	if !found {
+		fmt.Printf("Warning: session %q missing metadata, using fallback cleanup\n", sessionName)
+		// Attempt fallback parsing for cleanup
+		if strings.HasPrefix(sessionName, SessionPrefix) {
+			parts := strings.Split(sessionName, "-")
+			if len(parts) >= 3 {
+				agentID = parts[2]
+			} else {
+				return fmt.Errorf("cannot determine agent for session %q", sessionName)
+			}
+		} else {
+			return fmt.Errorf("session %q does not match cortex naming pattern", sessionName)
+		}
+	}
+
+	// Perform cleanup operations
+	go cleanupSessionResources(agentID, sessionName)
+	
+	// Remove from metadata tracking
+	d.RemoveSession(sessionName)
+	
+	return nil
+}
+
+// RemoveSession removes a session from metadata tracking.
+func (d *TmuxDispatcher) RemoveSession(sessionName string) {
+	d.mu.Lock()
+	delete(d.metadata, sessionName)
+	d.mu.Unlock()
 }
 
 // IsTmuxAvailable checks if tmux is installed and available.
@@ -675,13 +830,18 @@ func CleanDeadSessions() int {
 		if status == "exited" {
 			KillSession(name)
 
-			// Clean up session resources
+			// Clean up session resources using fallback parsing since this is a global function
+			// without access to dispatcher metadata
 			if strings.HasPrefix(name, SessionPrefix) {
 				parts := strings.Split(name, "-")
 				if len(parts) >= 3 {
 					agent := parts[2]
 					cleanupSessionResources(agent, name)
+				} else {
+					fmt.Printf("Warning: unable to parse agent from dead session %q, skipping resource cleanup\n", name)
 				}
+			} else {
+				fmt.Printf("Warning: dead session %q does not match cortex pattern, skipping resource cleanup\n", name)
 			}
 
 			cleaned++

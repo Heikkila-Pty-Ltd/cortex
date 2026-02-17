@@ -215,3 +215,200 @@ func TestListCortexSessions(t *testing.T) {
 		t.Errorf("expected to find session %q in list %v", name, sessions)
 	}
 }
+
+// TestTmuxDispatcher_SessionMetadataTracking tests explicit session metadata tracking
+func TestTmuxDispatcher_SessionMetadataTracking(t *testing.T) {
+	d := NewTmuxDispatcher()
+	
+	sessionName := "ctx-test-agent-123"
+	agentID := "test-agent"
+	
+	// Test tracking and retrieval
+	d.TrackSession(sessionName, agentID)
+	
+	retrievedAgent, found := d.GetSessionAgent(sessionName)
+	if !found {
+		t.Error("expected to find tracked session")
+	}
+	if retrievedAgent != agentID {
+		t.Errorf("expected agent %q, got %q", agentID, retrievedAgent)
+	}
+	
+	// Test removal
+	d.RemoveSession(sessionName)
+	_, found = d.GetSessionAgent(sessionName)
+	if found {
+		t.Error("expected session to be removed from tracking")
+	}
+}
+
+// TestTmuxDispatcher_HyphenatedAgentMetadata tests metadata with hyphenated agent names
+func TestTmuxDispatcher_HyphenatedAgentMetadata(t *testing.T) {
+	d := NewTmuxDispatcher()
+	
+	testCases := []struct {
+		sessionName string
+		agentID     string
+	}{
+		{"ctx-cortex-coder-123", "cortex-coder"},
+		{"ctx-hg-website-reviewer-456", "hg-website-reviewer"},  
+		{"ctx-multi-part-agent-name-789", "multi-part-agent-name"},
+	}
+	
+	for _, tc := range testCases {
+		t.Run(tc.agentID, func(t *testing.T) {
+			d.TrackSession(tc.sessionName, tc.agentID)
+			
+			retrievedAgent, found := d.GetSessionAgent(tc.sessionName)
+			if !found {
+				t.Error("expected to find tracked session")
+			}
+			if retrievedAgent != tc.agentID {
+				t.Errorf("expected agent %q, got %q", tc.agentID, retrievedAgent)
+			}
+			
+			d.RemoveSession(tc.sessionName)
+		})
+	}
+}
+
+// TestTmuxDispatcher_CleanupSessionMethod tests the CleanupSession method
+func TestTmuxDispatcher_CleanupSessionMethod(t *testing.T) {
+	d := NewTmuxDispatcher()
+	
+	// Test with metadata present
+	sessionName := "ctx-test-cleanup-123"
+	agentID := "test-agent"
+	
+	d.TrackSession(sessionName, agentID)
+	
+	err := d.CleanupSession(sessionName)
+	if err != nil {
+		t.Errorf("CleanupSession should not error with metadata: %v", err)
+	}
+	
+	// Verify metadata was removed
+	_, found := d.GetSessionAgent(sessionName)
+	if found {
+		t.Error("expected metadata to be removed after cleanup")
+	}
+}
+
+// TestTmuxDispatcher_CleanupSessionFallback tests fallback behavior for missing metadata
+func TestTmuxDispatcher_CleanupSessionFallback(t *testing.T) {
+	d := NewTmuxDispatcher()
+	
+	// Test with cortex session name but no metadata
+	sessionName := "ctx-cortex-test-agent-123-456-abc"
+	
+	err := d.CleanupSession(sessionName)
+	if err != nil {
+		t.Errorf("CleanupSession should not error with fallback parsing: %v", err)
+	}
+	
+	// Test with invalid session name
+	invalidSessionName := "invalid-session-name"
+	
+	err = d.CleanupSession(invalidSessionName)
+	if err == nil {
+		t.Error("CleanupSession should error with invalid session name")
+	}
+	
+	// Test with cortex prefix but insufficient parts
+	shortSessionName := "ctx-test"
+	
+	err = d.CleanupSession(shortSessionName)
+	if err == nil {
+		t.Error("CleanupSession should error when cannot parse agent from short name")
+	}
+}
+
+// TestTmuxDispatcher_HyphenatedAgentCleanup tests cleanup with hyphenated agent names
+func TestTmuxDispatcher_HyphenatedAgentCleanup(t *testing.T) {
+	tmuxAvailable(t)
+	
+	d := NewTmuxDispatcher()
+	sessionName := SessionName("test", "hyphen-agent")
+	agentID := "cortex-coder"
+	
+	// Track the session with hyphenated agent name
+	d.TrackSession(sessionName, agentID)
+	
+	// Start a session
+	err := d.DispatchToSession(context.Background(), sessionName, "sleep 0.1", "/tmp", nil)
+	if err != nil {
+		t.Fatalf("Dispatch failed: %v", err)
+	}
+	
+	// Get handle and verify metadata is accessible
+	handle := d.generateHandle(sessionName)
+	retrievedAgent, found := d.GetSessionAgent(sessionName)
+	if !found || retrievedAgent != agentID {
+		t.Errorf("expected tracked agent %q, got %q (found: %t)", agentID, retrievedAgent, found)
+	}
+	
+	// Wait for session to complete
+	time.Sleep(500 * time.Millisecond)
+	
+	// Kill using the handle (this should use metadata, not string parsing)
+	err = d.Kill(handle)
+	if err != nil {
+		t.Errorf("Kill failed: %v", err)
+	}
+	
+	// Verify session is gone
+	if IsSessionAlive(sessionName) {
+		t.Error("session should be killed")
+	}
+}
+
+// TestTmuxDispatcher_StartupFailureCleanup tests cleanup when startup commands fail
+func TestTmuxDispatcher_StartupFailureCleanup(t *testing.T) {
+	tmuxAvailable(t)
+	
+	d := NewTmuxDispatcher()
+	// Use an invalid session name that will cause tmux to fail
+	// Tmux session names cannot contain certain characters
+	invalidSessionName := "ctx-invalid:session.name"
+	
+	err := d.DispatchToSession(context.Background(), invalidSessionName, "echo test", "/tmp", nil)
+	if err == nil {
+		defer KillSession(invalidSessionName) // cleanup just in case
+		t.Error("expected DispatchToSession to fail with invalid session name")
+	}
+	
+	// Verify the session doesn't exist (cleanup worked)
+	if IsSessionAlive(invalidSessionName) {
+		KillSession(invalidSessionName) // force cleanup
+		t.Error("failed session should have been cleaned up")
+	}
+}
+
+// TestTmuxDispatcher_MissingMetadataWarning tests fallback behavior when metadata is missing
+func TestTmuxDispatcher_MissingMetadataWarning(t *testing.T) {
+	tmuxAvailable(t)
+	
+	d := NewTmuxDispatcher()
+	sessionName := SessionName("test", "missing-meta")
+	
+	// Start a session but don't track metadata (simulating missing metadata scenario)
+	err := d.DispatchToSession(context.Background(), sessionName, "sleep 0.1", "/tmp", nil)
+	if err != nil {
+		t.Fatalf("Dispatch failed: %v", err)
+	}
+	
+	// Manually remove metadata to simulate the missing metadata case
+	d.RemoveSession(sessionName)
+	
+	// Get handle and try to kill (should trigger fallback)
+	handle := d.generateHandle(sessionName)
+	
+	// Wait for session to complete
+	time.Sleep(500 * time.Millisecond)
+	
+	// This should use fallback cleanup and issue a warning
+	err = d.Kill(handle)
+	if err != nil {
+		t.Errorf("Kill with missing metadata should not fail: %v", err)
+	}
+}
