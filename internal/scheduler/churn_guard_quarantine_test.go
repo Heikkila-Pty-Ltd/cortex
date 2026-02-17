@@ -63,6 +63,32 @@ func TestIsChurnBlocked_RecordsEscalationWhenNotQuarantined(t *testing.T) {
 	}
 }
 
+func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+	installFakeBDForChurnGuardTest(t)
+
+	const beadID = "cortex-quarantine-cancelled"
+	recordDispatchHistory(t, st, beadID, "failed", 2)
+	recordDispatchHistory(t, st, beadID, "cancelled", 1)
+
+	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "quarantine cancelled test"}, "cortex", beadsDir)
+	if !blocked {
+		t.Fatal("expected bead to be blocked when cancelled dispatch completes failure-like streak")
+	}
+
+	events, err := st.GetRecentHealthEvents(10)
+	if err != nil {
+		t.Fatalf("get health events: %v", err)
+	}
+
+	if hasHealthEventType(events, "bead_churn_blocked") {
+		t.Fatal("did not expect churn escalation event when failure quarantine is active")
+	}
+	if !hasHealthEventType(events, "bead_quarantined") {
+		t.Fatal("expected quarantine event to be recorded")
+	}
+}
+
 func newChurnGuardSchedulerHarness(t *testing.T) (*Scheduler, *store.Store, string) {
 	t.Helper()
 

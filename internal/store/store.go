@@ -630,7 +630,7 @@ func (s *Store) HasRecentConsecutiveFailures(beadID string, threshold int, windo
 		if err := rows.Scan(&status); err != nil {
 			return false, fmt.Errorf("scan recent consecutive failures: %w", err)
 		}
-		if status != "failed" {
+		if !isFailureStatusForQuarantine(status) {
 			return false, nil
 		}
 		count++
@@ -639,6 +639,15 @@ func (s *Store) HasRecentConsecutiveFailures(beadID string, threshold int, windo
 		return false, fmt.Errorf("iterate recent consecutive failures: %w", err)
 	}
 	return count >= threshold, nil
+}
+
+func isFailureStatusForQuarantine(status string) bool {
+	switch status {
+	case "failed", "cancelled", "interrupted", "pending_retry", "retried":
+		return true
+	default:
+		return false
+	}
 }
 
 // GetDispatchByID returns a dispatch by its ID.

@@ -473,6 +473,66 @@ func TestGetPendingRetryDispatches(t *testing.T) {
 	}
 }
 
+func TestHasRecentConsecutiveFailures_IncludesFailureLikeStatuses(t *testing.T) {
+	s := tempStore(t)
+	beadID := "bead-failure-like"
+
+	statuses := []string{"failed", "failed", "cancelled"}
+	for i, status := range statuses {
+		id, err := s.RecordDispatch(beadID, "proj", "agent-1", "cerebras", "fast", 100+i, "", "prompt", "", "", "")
+		if err != nil {
+			t.Fatalf("record dispatch %d: %v", i, err)
+		}
+
+		exitCode := 0
+		if status == "failed" {
+			exitCode = 137
+		}
+
+		if err := s.UpdateDispatchStatus(id, status, exitCode, 1.0); err != nil {
+			t.Fatalf("update dispatch status %d: %v", i, err)
+		}
+	}
+
+	got, err := s.HasRecentConsecutiveFailures(beadID, 3, time.Hour)
+	if err != nil {
+		t.Fatalf("HasRecentConsecutiveFailures returned error: %v", err)
+	}
+	if !got {
+		t.Fatal("expected cancelled+failed+failed streak to count as quarantine failures")
+	}
+}
+
+func TestHasRecentConsecutiveFailures_CompletedBreaksStreak(t *testing.T) {
+	s := tempStore(t)
+	beadID := "bead-streak-break"
+
+	statuses := []string{"failed", "completed", "failed"}
+	for i, status := range statuses {
+		id, err := s.RecordDispatch(beadID, "proj", "agent-1", "cerebras", "fast", 200+i, "", "prompt", "", "", "")
+		if err != nil {
+			t.Fatalf("record dispatch %d: %v", i, err)
+		}
+
+		exitCode := 0
+		if status == "failed" {
+			exitCode = 137
+		}
+
+		if err := s.UpdateDispatchStatus(id, status, exitCode, 1.0); err != nil {
+			t.Fatalf("update dispatch status %d: %v", i, err)
+		}
+	}
+
+	got, err := s.HasRecentConsecutiveFailures(beadID, 3, time.Hour)
+	if err != nil {
+		t.Fatalf("HasRecentConsecutiveFailures returned error: %v", err)
+	}
+	if got {
+		t.Fatal("expected completed status to break failure streak")
+	}
+}
+
 func TestRecordDispatchCost(t *testing.T) {
 	s := tempStore(t)
 
