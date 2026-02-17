@@ -457,6 +457,57 @@ func TestRecordDispatchCost(t *testing.T) {
 	}
 }
 
+func TestGetDispatchCost(t *testing.T) {
+	s := tempStore(t)
+
+	// Create a dispatch
+	dispatchID, err := s.RecordDispatch("test-bead", "test-proj", "agent1", "claude-sonnet", "premium", 200, "", "test prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Initially should have zero cost
+	inputTokens, outputTokens, costUSD, err := s.GetDispatchCost(dispatchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inputTokens != 0 || outputTokens != 0 || costUSD != 0 {
+		t.Errorf("expected zero cost initially, got input=%d, output=%d, cost=%.3f", inputTokens, outputTokens, costUSD)
+	}
+
+	// Record some cost
+	expectedInput := 2000
+	expectedOutput := 1500  
+	expectedCost := 1.25
+	
+	err = s.RecordDispatchCost(dispatchID, expectedInput, expectedOutput, expectedCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Retrieve and verify using GetDispatchCost
+	inputTokens, outputTokens, costUSD, err = s.GetDispatchCost(dispatchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if inputTokens != expectedInput {
+		t.Errorf("input tokens: expected %d, got %d", expectedInput, inputTokens)
+	}
+	if outputTokens != expectedOutput {
+		t.Errorf("output tokens: expected %d, got %d", expectedOutput, outputTokens)
+	}
+	if costUSD != expectedCost {
+		t.Errorf("cost USD: expected %.2f, got %.2f", expectedCost, costUSD)
+	}
+
+	// Test non-existent dispatch
+	_, _, _, err = s.GetDispatchCost(999999)
+	if err == nil {
+		t.Error("expected error for non-existent dispatch")
+	}
+}
+
 func TestGetTotalCost(t *testing.T) {
 	s := tempStore(t)
 

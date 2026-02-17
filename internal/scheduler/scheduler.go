@@ -222,21 +222,6 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			continue
 		}
 
-		// Skip if recently dispatched (cooldown period)
-		if s.cfg.General.DispatchCooldown.Duration > 0 {
-			recentlyDispatched, err := s.store.WasBeadDispatchedRecently(item.bead.ID, s.cfg.General.DispatchCooldown.Duration)
-			if err != nil {
-				s.logger.Error("failed to check recent dispatch history", "bead", item.bead.ID, "error", err)
-				continue
-			}
-			if recentlyDispatched {
-				s.logger.Debug("bead recently dispatched, cooling down", 
-					"bead", item.bead.ID, 
-					"cooldown", s.cfg.General.DispatchCooldown.Duration)
-				continue
-			}
-		}
-
 		// Infer role - skip epics and done
 		role := InferRole(item.bead)
 		if role == "skip" {
@@ -245,6 +230,10 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 
 		// Check agent-busy guard: one dispatch per agent per project per tick
 		agent := ResolveAgent(item.name, role)
+		if s.isDispatchCoolingDown(item.bead.ID, agent) {
+			continue
+		}
+
 		busy, err := s.store.IsAgentBusy(item.name, agent)
 		if err != nil {
 			s.logger.Error("failed to check agent busy", "agent", agent, "error", err)
@@ -434,6 +423,26 @@ func (s *Scheduler) defaultModel() string {
 		return p.Model
 	}
 	return "claude-sonnet-4-20250514"
+}
+
+func (s *Scheduler) isDispatchCoolingDown(beadID, agent string) bool {
+	if s.cfg.General.DispatchCooldown.Duration <= 0 {
+		return false
+	}
+
+	recentlyDispatched, err := s.store.WasBeadAgentDispatchedRecently(beadID, agent, s.cfg.General.DispatchCooldown.Duration)
+	if err != nil {
+		s.logger.Error("failed to check recent dispatch history", "bead", beadID, "agent", agent, "error", err)
+		return false
+	}
+	if recentlyDispatched {
+		s.logger.Debug("bead-agent recently dispatched, cooling down",
+			"bead", beadID,
+			"agent", agent,
+			"cooldown", s.cfg.General.DispatchCooldown.Duration)
+		return true
+	}
+	return false
 }
 
 // checkRunningDispatches polls running dispatches and marks completed/failed.
