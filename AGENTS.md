@@ -100,4 +100,31 @@ git push                # Push to remote
 - Use descriptive titles and set appropriate priority/type
 - Always `bd sync` before ending session
 
+### Epic Breakdown Completion Checklist
+
+**When completing epic breakdown tasks (like "Auto: break down epic X"):**
+
+1. ✅ **Break down the epic** - Create concrete sub-tasks with acceptance criteria
+2. ✅ **Close the epic** - Use `bd close <epic-id> --reason="Epic completed - broken down into N tasks"`
+3. ✅ **Close the breakdown task** - Use `bd close <task-id> --reason="Epic breakdown completed successfully"`
+4. ✅ **Verify both are closed** - Run `bd show <epic-id>` and `bd show <task-id>` to confirm
+
+**CRITICAL**: Both the epic AND the breakdown task must be closed, or the system will churn trying to re-work completed tasks.
+
+**Example workflow:**
+```bash
+# 1. Create subtasks for the epic
+bd create --title="Implement feature X" --parent=epic-123
+
+# 2. Close the epic when all subtasks created
+bd close epic-123 --reason="Epic completed - broken down into 5 executable tasks"
+
+# 3. Close the breakdown task that requested this work
+bd close breakdown-task-456 --reason="Epic breakdown completed successfully"
+
+# 4. Verify both are closed
+bd show epic-123      # Should show CLOSED
+bd show breakdown-task-456  # Should show CLOSED
+```
+
 <!-- end-bv-agent-instructions -->
