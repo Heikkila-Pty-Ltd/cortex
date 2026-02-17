@@ -11,21 +11,35 @@ import (
 )
 
 // openclawShellScript is shared between PID and tmux dispatchers so model/provider
-// handling stays consistent.
+// handling stays consistent. This script reads all parameters from files to avoid
+// shell parsing issues with special characters in user input.
 func openclawShellScript() string {
-	return `msg=$(cat "$1")
-agent="$2"
-thinking="$3"
-provider="$4"
+	return `#!/bin/bash
+# Read all parameters from temp files to avoid shell parsing issues
+msg_file="$1"
+agent_file="$2"
+thinking_file="$3"
+provider_file="$4"
+
+# Safely read parameters from files
+msg=$(cat "$msg_file")
+agent=$(cat "$agent_file")
+thinking=$(cat "$thinking_file")
+provider=$(cat "$provider_file")
+
 session_id="ctx-$$-$(date +%s)"
 err_file=$(mktemp)
+
+# Execute openclaw with all parameters safely passed
 openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$err_file"
 status=$?
+
 if [ $status -eq 0 ]; then
   rm -f "$err_file"
   exit 0
 fi
 
+# Check if fallback is needed based on error patterns
 should_fallback=0
 if grep -Fqi 'falling back to embedded' "$err_file"; then
   should_fallback=1
@@ -65,8 +79,48 @@ rm -f "$err_file"
 exit $status`
 }
 
-func openclawCommandArgs(tmpPath, agent, thinking, provider string) []string {
-	return []string{"-c", openclawShellScript(), "_", tmpPath, agent, thinking, provider}
+// writeToTempFile creates a temporary file and writes content to it
+func writeToTempFile(content string, prefix string) (string, error) {
+	tmpFile, err := os.CreateTemp("", prefix)
+	if err != nil {
+		return "", err
+	}
+	defer tmpFile.Close()
+	
+	if _, err := tmpFile.WriteString(content); err != nil {
+		os.Remove(tmpFile.Name())
+		return "", err
+	}
+	
+	return tmpFile.Name(), nil
+}
+
+// openclawCommandArgs creates command arguments that safely pass all parameters
+// via temporary files to avoid shell parsing issues
+func openclawCommandArgs(msgPath, agent, thinking, provider string) ([]string, []string, error) {
+	// Create temp files for each parameter to avoid shell escaping issues
+	agentPath, err := writeToTempFile(agent, "cortex-agent-*.txt")
+	if err != nil {
+		return nil, nil, fmt.Errorf("create agent temp file: %w", err)
+	}
+	
+	thinkingPath, err := writeToTempFile(thinking, "cortex-thinking-*.txt")
+	if err != nil {
+		os.Remove(agentPath)
+		return nil, nil, fmt.Errorf("create thinking temp file: %w", err)
+	}
+	
+	providerPath, err := writeToTempFile(provider, "cortex-provider-*.txt")
+	if err != nil {
+		os.Remove(agentPath)
+		os.Remove(thinkingPath)
+		return nil, nil, fmt.Errorf("create provider temp file: %w", err)
+	}
+	
+	args := []string{"-c", openclawShellScript(), "_", msgPath, agentPath, thinkingPath, providerPath}
+	tempFiles := []string{agentPath, thinkingPath, providerPath}
+	
+	return args, tempFiles, nil
 }
 
 func normalizeThinkingLevel(thinkingOrTier string) string {
@@ -109,7 +163,8 @@ type processInfo struct {
 	state       string // "running", "exited", "unknown"
 	exitCode    int
 	outputPath  string
-	tmpPath     string // temp file path to clean up
+	tmpPath     string   // temp prompt file path to clean up
+	tempFiles   []string // additional temp files to clean up (agent, thinking, provider)
 }
 
 // NewDispatcher returns a ready-to-use Dispatcher.
@@ -138,34 +193,33 @@ func (d *Dispatcher) Dispatch(ctx context.Context, agent string, prompt string, 
 	thinking := normalizeThinkingLevel(thinkingLevel)
 
 	// Write prompt to temp file to avoid shell escaping issues.
-	tmpFile, err := os.CreateTemp("", "cortex-prompt-*.txt")
+	promptPath, err := writeToTempFile(prompt, "cortex-prompt-*.txt")
 	if err != nil {
 		return 0, fmt.Errorf("dispatch: create temp prompt file: %w", err)
 	}
-	tmpPath := tmpFile.Name()
-
-	if _, err := tmpFile.WriteString(prompt); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpPath)
-		return 0, fmt.Errorf("dispatch: write prompt to temp file: %w", err)
-	}
-	tmpFile.Close()
 
 	// Create output capture file
 	outputFile, err := os.CreateTemp("", "cortex-output-*.log")
 	if err != nil {
-		os.Remove(tmpPath)
+		os.Remove(promptPath)
 		return 0, fmt.Errorf("dispatch: create output file: %w", err)
 	}
 	outputPath := outputFile.Name()
 	// Don't close the file yet - we need it for cmd stdout/stderr
 
-	// Use a shell helper to read the prompt from the temp file and pass it
-	// as --message, since stdin piping can fail when the openclaw gateway
-	// falls back to embedded mode.
+	// Build command args using temp files for all parameters to avoid shell parsing issues
+	args, tempFiles, err := openclawCommandArgs(promptPath, agent, thinking, provider)
+	if err != nil {
+		outputFile.Close()
+		os.Remove(promptPath)
+		os.Remove(outputPath)
+		return 0, fmt.Errorf("dispatch: build command args: %w", err)
+	}
+
+	// Use a shell helper to read all parameters from temp files
 	// Use context.Background() so the child process survives if cortex
 	// exits in --once mode (the parent context gets cancelled on exit).
-	cmd := exec.Command("sh", openclawCommandArgs(tmpPath, agent, thinking, provider)...)
+	cmd := exec.Command("sh", args...)
 	cmd.Dir = workDir
 
 	// Capture both stdout and stderr to the output file
@@ -174,8 +228,11 @@ func (d *Dispatcher) Dispatch(ctx context.Context, agent string, prompt string, 
 
 	if err := cmd.Start(); err != nil {
 		outputFile.Close()
-		os.Remove(tmpPath)
+		os.Remove(promptPath)
 		os.Remove(outputPath)
+		for _, tf := range tempFiles {
+			os.Remove(tf)
+		}
 		return 0, fmt.Errorf("dispatch: start openclaw agent: %w", err)
 	}
 
@@ -192,7 +249,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, agent string, prompt string, 
 		state:      "running",
 		exitCode:   -1,
 		outputPath: outputPath,
-		tmpPath:    tmpPath,
+		tmpPath:    promptPath,
+		tempFiles:  tempFiles,
 	}
 	d.mu.Unlock()
 
@@ -243,6 +301,12 @@ func (d *Dispatcher) monitorProcess(pid int) {
 		os.Remove(info.tmpPath)
 		info.tmpPath = ""
 	}
+	
+	// Clean up additional temp files
+	for _, tf := range info.tempFiles {
+		os.Remove(tf)
+	}
+	info.tempFiles = nil
 }
 
 // IsProcessAlive checks whether a process with the given PID is still running.
@@ -335,6 +399,10 @@ func (d *Dispatcher) CleanupProcess(handle int) {
 		// Clean up temp file if it still exists
 		if info.tmpPath != "" {
 			os.Remove(info.tmpPath)
+		}
+		// Clean up additional temp files
+		for _, tf := range info.tempFiles {
+			os.Remove(tf)
 		}
 		delete(d.processes, handle)
 	}

@@ -102,7 +102,18 @@ func TestOpenclawShellScript_UsesExplicitSessionID(t *testing.T) {
 }
 
 func TestOpenclawCommandArgs_PassesSessionID(t *testing.T) {
-	args := openclawCommandArgs("/tmp/prompt.txt", "cortex-coder", "low", "gpt-5")
+	args, tempFiles, err := openclawCommandArgs("/tmp/prompt.txt", "cortex-coder", "low", "gpt-5")
+	if err != nil {
+		t.Fatalf("openclawCommandArgs failed: %v", err)
+	}
+	
+	// Clean up temp files
+	defer func() {
+		for _, tf := range tempFiles {
+			os.Remove(tf)
+		}
+	}()
+	
 	if len(args) != 7 {
 		t.Fatalf("expected 7 args, got %d", len(args))
 	}
@@ -115,14 +126,30 @@ func TestOpenclawCommandArgs_PassesSessionID(t *testing.T) {
 	if args[3] != "/tmp/prompt.txt" {
 		t.Fatalf("expected prompt arg at position 3, got %q", args[3])
 	}
-	if args[4] != "cortex-coder" {
-		t.Fatalf("expected agent arg at position 4, got %q", args[4])
+	
+	// Verify temp file paths exist and contain expected content
+	agentContent, err := os.ReadFile(args[4])
+	if err != nil {
+		t.Fatalf("failed to read agent temp file: %v", err)
 	}
-	if args[5] != "low" {
-		t.Fatalf("expected thinking arg at position 5, got %q", args[5])
+	if string(agentContent) != "cortex-coder" {
+		t.Fatalf("expected agent file to contain 'cortex-coder', got %q", string(agentContent))
 	}
-	if args[6] != "gpt-5" {
-		t.Fatalf("expected provider arg at position 6, got %q", args[6])
+	
+	thinkingContent, err := os.ReadFile(args[5])
+	if err != nil {
+		t.Fatalf("failed to read thinking temp file: %v", err)
+	}
+	if string(thinkingContent) != "low" {
+		t.Fatalf("expected thinking file to contain 'low', got %q", string(thinkingContent))
+	}
+	
+	providerContent, err := os.ReadFile(args[6])
+	if err != nil {
+		t.Fatalf("failed to read provider temp file: %v", err)
+	}
+	if string(providerContent) != "gpt-5" {
+		t.Fatalf("expected provider file to contain 'gpt-5', got %q", string(providerContent))
 	}
 }
 

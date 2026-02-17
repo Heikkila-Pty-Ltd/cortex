@@ -37,3 +37,8 @@
 [2026-02-18T04:35:28+10:00] Repeated failure signature 2x/15m: error: required option '-m, --message <text>' not specified
 [2026-02-18T04:50:28+10:00] Detected repeated '-m/--message' failures (3/15m); restarting Cortex
 [2026-02-18T04:50:33+10:00] Repeated failure signature 3x/15m: error: required option '-m, --message <text>' not specified
+[2026-02-18T05:05:34+10:00] Filed bead cortex-oa5: Auto: repeated failure (3x/15m): <none>
+[2026-02-18T05:05:34+10:00] Repeated failure signature 3x/15m: <none>
+[2026-02-18T05:05:49+10:00] codex-worker closed cortex-oa5 (failure signature cleared)
+[2026-02-18T05:27:57+10:00] codex-worker escalation completed for cortex-otx
+[2026-02-18T05:33:31+10:00] codex-worker escalation completed for cortex-7fp

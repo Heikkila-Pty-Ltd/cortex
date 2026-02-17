@@ -192,10 +192,10 @@ func clearStaleLocks(agent string) {
 	}
 }
 
-func buildTmuxAgentCommand(scriptPath, tmpPath, agent, thinking, provider string) string {
-	// Execute a temp script file instead of inline "sh -c ..." so prompt content
-	// and shell metacharacters cannot break outer-shell quoting in tmux.
-	return fmt.Sprintf("sh %q %q %q %q %q", scriptPath, tmpPath, agent, thinking, provider)
+func buildTmuxAgentCommand(scriptPath, msgPath, agentPath, thinkingPath, providerPath string) string {
+	// Execute a temp script file with all parameters passed via temp files 
+	// to completely avoid shell parsing issues with user content
+	return BuildShellCommand("sh", scriptPath, msgPath, agentPath, thinkingPath, providerPath)
 }
 
 // Dispatch implements DispatcherInterface for tmux-based dispatching.
@@ -203,41 +203,61 @@ func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt stri
 	thinking := normalizeThinkingLevel(thinkingLevel)
 
 	// Write prompt to temp file to avoid shell escaping issues.
-	tmpFile, err := os.CreateTemp("", "cortex-prompt-*.txt")
+	promptPath, err := writeToTempFile(prompt, "cortex-prompt-*.txt")
 	if err != nil {
 		return 0, fmt.Errorf("tmux dispatch: create temp prompt file: %w", err)
 	}
-	tmpPath := tmpFile.Name()
-
-	if _, err := tmpFile.WriteString(prompt); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpPath)
-		return 0, fmt.Errorf("tmux dispatch: write prompt to temp file: %w", err)
-	}
-	tmpFile.Close()
 
 	// Write helper script to a temp file so tmux doesn't need to inline complex
 	// shell via "sh -c ...", which is fragile around quoting.
 	scriptFile, err := os.CreateTemp("", "cortex-openclaw-*.sh")
 	if err != nil {
-		os.Remove(tmpPath)
+		os.Remove(promptPath)
 		return 0, fmt.Errorf("tmux dispatch: create temp script file: %w", err)
 	}
 	scriptPath := scriptFile.Name()
 	if _, err := scriptFile.WriteString(openclawShellScript()); err != nil {
 		scriptFile.Close()
-		os.Remove(tmpPath)
+		os.Remove(promptPath)
 		os.Remove(scriptPath)
 		return 0, fmt.Errorf("tmux dispatch: write temp script file: %w", err)
 	}
 	if err := scriptFile.Close(); err != nil {
-		os.Remove(tmpPath)
+		os.Remove(promptPath)
 		os.Remove(scriptPath)
 		return 0, fmt.Errorf("tmux dispatch: close temp script file: %w", err)
 	}
 
-	// Build agent command
-	agentCmd := buildTmuxAgentCommand(scriptPath, tmpPath, agent, thinking, provider)
+	// Create temp files for each parameter to avoid shell escaping issues
+	agentPath, err := writeToTempFile(agent, "cortex-agent-*.txt")
+	if err != nil {
+		os.Remove(promptPath)
+		os.Remove(scriptPath)
+		return 0, fmt.Errorf("tmux dispatch: create agent temp file: %w", err)
+	}
+	
+	thinkingPath, err := writeToTempFile(thinking, "cortex-thinking-*.txt")
+	if err != nil {
+		os.Remove(promptPath)
+		os.Remove(scriptPath)
+		os.Remove(agentPath)
+		return 0, fmt.Errorf("tmux dispatch: create thinking temp file: %w", err)
+	}
+	
+	providerPath, err := writeToTempFile(provider, "cortex-provider-*.txt")
+	if err != nil {
+		os.Remove(promptPath)
+		os.Remove(scriptPath)
+		os.Remove(agentPath)
+		os.Remove(thinkingPath)
+		return 0, fmt.Errorf("tmux dispatch: create provider temp file: %w", err)
+	}
+
+	// Build agent command with all parameters passed via temp files
+	agentCmd := buildTmuxAgentCommand(scriptPath, promptPath, agentPath, thinkingPath, providerPath)
+	
+	// Collect all temp files for cleanup
+	tempFiles := []string{promptPath, scriptPath, agentPath, thinkingPath, providerPath}
 
 	// Generate unique session name with collision detection
 	var sessionName string
@@ -252,8 +272,9 @@ func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt stri
 
 	// Prepare clean session environment
 	if err := prepareSessionForAgent(agent, sessionName); err != nil {
-		os.Remove(tmpPath)
-		os.Remove(scriptPath)
+		for _, tf := range tempFiles {
+			os.Remove(tf)
+		}
 		return 0, fmt.Errorf("prepare session for agent %s: %w", agent, err)
 	}
 
@@ -264,8 +285,9 @@ func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt stri
 	err = d.dispatchWithRetry(ctx, sessionName, agentCmd, workDir, nil, agent)
 	if err != nil {
 		cleanupSessionResources(agent, sessionName)
-		os.Remove(tmpPath)
-		os.Remove(scriptPath)
+		for _, tf := range tempFiles {
+			os.Remove(tf)
+		}
 		return 0, err
 	}
 
@@ -282,8 +304,9 @@ func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt stri
 			}
 			time.Sleep(2 * time.Second)
 		}
-		os.Remove(tmpPath)
-		os.Remove(scriptPath)
+		for _, tf := range tempFiles {
+			os.Remove(tf)
+		}
 
 		// Register session cleanup when session eventually ends.
 		defer cleanupSessionResources(agent, sessionName)

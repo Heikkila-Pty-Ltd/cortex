@@ -21,3 +21,5 @@
 {"ts":"2026-02-17T18:20:23Z","running_count":0,"completed_15m":3,"failed_15m":6,"cancelled_15m":0,"usage_5h":145,"cap_5h":150,"usage_weekly":210,"cap_weekly":2000}
 {"ts":"2026-02-17T18:35:28Z","running_count":0,"completed_15m":4,"failed_15m":2,"cancelled_15m":0,"usage_5h":149,"cap_5h":150,"usage_weekly":216,"cap_weekly":2000}
 {"ts":"2026-02-17T18:50:33Z","running_count":1,"completed_15m":4,"failed_15m":3,"cancelled_15m":0,"usage_5h":150,"cap_5h":150,"usage_weekly":220,"cap_weekly":2000}
+{"ts":"2026-02-17T19:05:34Z","running_count":2,"completed_15m":6,"failed_15m":3,"cancelled_15m":0,"usage_5h":150,"cap_5h":150,"usage_weekly":220,"cap_weekly":2000}
+{"ts":"2026-02-17T19:20:35Z","running_count":1,"completed_15m":8,"failed_15m":0,"cancelled_15m":0,"usage_5h":150,"cap_5h":150,"usage_weekly":220,"cap_weekly":2000}

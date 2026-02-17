@@ -62613,3 +62613,2008 @@ exec
 internal/scheduler/pipeline.go:11:func CheckChildUnblock(completedBeadID string, beadsDir string, logger *slog.Logger) []beads.Bead {
 internal/scheduler/pipeline.go:51:func AutoCloseEpics(beadsDir string, logger *slog.Logger) {
 [2026-02-18T04:35:23+10:00] codex escalation completed for cortex-32o
+[2026-02-18T05:05:49+10:00] processing auto-issue cortex-oa5 title=Auto: repeated failure (3x/15m): <none>
+[2026-02-18T05:21:01+10:00] processing auto-issue cortex-otx title=Auto: repeated '-m/--message' runtime failures
+[2026-02-18T05:21:02+10:00] escalating issue cortex-otx to codex model=gpt-5.3-codex timeout=1200s
+OpenAI Codex v0.101.0 (research preview)
+--------
+workdir: /home/ubuntu/projects/cortex
+model: gpt-5.3-codex
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: auto
+session id: 019c6d0c-8d71-7513-92b4-eb0c584343b8
+--------
+user
+You are codex-incident-worker for overnight engine stabilization.
+
+Repository: /home/ubuntu/projects/cortex
+Issue ID: cortex-otx
+Issue title: Auto: repeated '-m/--message' runtime failures
+Issue description:
+Detected 3 failures in the last 15 minutes with: required option '-m, --message <text>' not specified.\n\nNightwatch restarted Cortex automatically. Inspect recent dispatch output tails and CLI routing config.
+
+Task:
+1) Attempt a minimal, safe fix for this issue now.
+2) If you can fix safely, implement and close issue cortex-otx with evidence in the close reason.
+3) If this is too large/risky for a quick fix, create a new scoped bead (task/bug) with acceptance criteria and dependency discovered-from:cortex-otx.
+4) Keep changes surgical and avoid stepping on active coders.
+
+Constraints:
+- No destructive git commands.
+- Prefer operational/config/script fixes first.
+- Do not pause scheduler/workers unless absolutely required to recover.
+- Keep command usage non-interactive.
+
+When done, print a concise summary of what you changed.
+
+mcp: linear starting
+mcp: linear failed: MCP client for `linear` failed to start: MCP startup failed: Environment variable LINEAR_API_KEY for MCP server 'linear' is not set
+mcp startup: failed: linear
+2026-02-17T19:21:06.091004Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c68d5-90e0-7601-94eb-10d106653269
+2026-02-17T19:21:06.125483Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c6b1d-9530-77a1-9a5a-7923286c4f6e
+2026-02-17T19:21:06.161871Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c6b75-4c4a-7c63-ba16-402b589d68ae
+
+thinking
+**Starting incident fix workflow**
+codex
+I’m taking `cortex-otx` and will start by inspecting recent logs/dispatch tails plus CLI argument-routing config to identify where `-m/--message` is being dropped, then apply the smallest safe operational fix I can verify quickly.
+
+thinking
+**Preparing to run onboarding commands**
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && bd onboard && bd show cortex-otx && git status -sb' in /home/ubuntu/projects/cortex succeeded in 297ms:
+
+bd Onboarding
+
+Add this minimal snippet to AGENTS.md (or create it):
+
+--- BEGIN AGENTS.MD CONTENT ---
+## Issue Tracking
+
+This project uses **bd (beads)** for issue tracking.
+Run `bd prime` for workflow context, or install hooks (`bd hooks install`) for auto-injection.
+
+**Quick reference:**
+- `bd ready` - Find unblocked work
+- `bd create "Title" --type task --priority 2` - Create issue
+- `bd close <id>` - Complete work
+- `bd sync` - Sync with git (run at session end)
+
+For full workflow details: `bd prime`
+--- END AGENTS.MD CONTENT ---
+
+
+thinking
+**Clarifying unexpected changes handling**
+codex
+I confirmed `cortex-otx` is open and the repo already has unrelated in-flight changes under `.cortex/`; I’ll avoid touching those and now trace the exact `-m/--message` failures in recent logs plus the dispatch/CLI wrapper paths.
+
+thinking
+**Running parallel searches for errors**
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && rg -n --no-heading "--message|-m, --message|option.*message|codex-incident-worker|dispatch"' in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && rg -n --no-heading \"required option '-m, --message <text>' not specified|--message <text>|-m, --message\" .cortex" in /home/ubuntu/projects/cortex exited 2 in 51ms:
+rg: unrecognized flag --message|-m, --message|option.*message|codex-incident-worker|dispatch
+ succeeded in 305ms:
+.cortex/codex-incident-worker.log:19909:969|failed|failed|0||unknown|error: required option '-m, --message <text>' not specified
+.cortex/codex-incident-worker.log:25411:1086  cortex-c4j.6      failed  2026-02-17 16:30:11      2026-02-17 16:32:01     unknown              error: required option '-m, --message <text>' not specified 
+.cortex/codex-incident-worker.log:25413:1084  cortex-3q5        failed  2026-02-17 16:29:08      2026-02-17 16:32:01     unknown              error: required option '-m, --message <text>' not specified 
+.cortex/codex-incident-worker.log:25415:1077  cortex-3q5        failed  2026-02-17 16:22:07      2026-02-17 16:29:00     unknown              error: required option '-m, --message <text>' not specified 
+.cortex/codex-incident-worker.log:25421:969   cortex-46d.2      failed  2026-02-17 14:32:13      2026-02-17 14:37:08     unknown              error: required option '-m, --message <text>' not specified 
+.cortex/codex-incident-worker.log:25423:968   cortex-46d.5      failed  2026-02-17 14:28:14      2026-02-17 14:32:08     unknown              error: required option '-m, --message <text>' not specified 
+.cortex/codex-incident-worker.log:25425:967   cortex-46d.7      failed  2026-02-17 14:19:12      2026-02-17 14:28:08     unknown              error: required option '-m, --message <text>' not specified 
+.cortex/codex-incident-worker.log:35213: {"id":"cortex-mlq","title":"Auto: repeated failure (3x/15m): error: required option '-m, --message \u003ctext\u003e' not specified","description":"Nightwatch detected repeated dispatch failures in the last 15 minutes.\\n\\nCount: 3\\nSummary: error: required option '-m, --message \u003ctext\u003e' not specified\\nDispatch IDs: 1077,1084,1086\\nBeads: cortex-3q5,cortex-c4j.6\\nDetected at: 2026-02-18T02:35:03+10:00\\n\\nPlease investigate root cause and patch.","status":"open","priority":1,"issue_type":"bug","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T02:35:04.315734538+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T02:35:04.315734538+10:00"}
+.cortex/codex-incident-worker.log:38392:[2026-02-18T02:48:15+10:00] processing auto-issue cortex-mlq title=Auto: repeated failure (3x/15m): error: required option '-m, --message <text>' not specified
+.cortex/codex-incident-worker.log:38605:{"ts":"2026-02-17T16:34:59Z","source":"nightwatch","category":"bug_filed","severity":"high","title":"Auto: repeated '-m/--message' runtime failures","details":"Detected 3 failures in the last 15 minutes with: required option '-m, --message <text>' not specified.\\n\\nNightwatch restarted Cortex automatically. Inspect recent dispatch output tails and CLI routing config.","related_issue":"cortex-otx"}
+.cortex/codex-incident-worker.log:38653:The incident stream shows a repeated runtime failure signature (`required option '-m, --message <text>'`) around the same window as `cortex-84h`; I’m now validating this against actual dispatch rows for `cortex-84h` and checking whether the CLI arg contract regressed for Codex runs.
+.cortex/codex-incident-worker.log:38656:/usr/bin/zsh -lc "sqlite3 ~/.local/share/cortex/cortex.db \"SELECT id,bead_id,status,exit_code,substr(failure_summary,1,140),dispatched_at,provider,backend FROM dispatches WHERE completed_at >= datetime('now','-3 hours') AND failure_summary LIKE '%required option ''-m, --message <text>'' not specified%' ORDER BY id DESC LIMIT 30;\"" in /home/ubuntu/projects/cortexexec
+.cortex/codex-incident-worker.log:38679:1104|cortex-1ik|failed|1|error: required option '-m, --message <text>' not specified|2026-02-17 17:05:20|gpt-5.3-codex|
+.cortex/codex-incident-worker.log:38680:1103|cortex-ood|failed|1|error: required option '-m, --message <text>' not specified|2026-02-17 17:05:20|gpt-5.3-codex|
+.cortex/codex-incident-worker.log:38681:1100|cortex-84h|failed|1|error: required option '-m, --message <text>' not specified|2026-02-17 17:00:17|gpt-5.3-codex|
+.cortex/codex-incident-worker.log:38682:1099|cortex-1ik|failed|1|error: required option '-m, --message <text>' not specified|2026-02-17 17:00:16|gpt-5.3-codex|
+.cortex/codex-incident-worker.log:38683:1098|cortex-ood|failed|1|error: required option '-m, --message <text>' not specified|2026-02-17 17:00:16|gpt-5.3-codex|
+.cortex/codex-incident-worker.log:38684:1094|cortex-1ik|failed|1|error: required option '-m, --message <text>' not specified|2026-02-17 16:51:09|gpt-5.3-codex|
+.cortex/codex-incident-worker.log:38685:1093|cortex-ood|failed|1|error: required option '-m, --message <text>' not specified|2026-02-17 16:47:10|gpt-5.3-codex|
+.cortex/codex-incident-worker.log:38686:1086|cortex-c4j.6|failed|1|error: required option '-m, --message <text>' not specified|2026-02-17 16:30:11|gpt-5.3-codex|
+
+thinking
+**Refining regex search**
+codex
+I found repeated failures in `.cortex` logs and now need to pinpoint the route that builds codex command arguments; I’ll claim the bead in progress and then inspect CLI/dispatch scripts for where `--message` can be omitted.
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && bd update cortex-otx --status in_progress && bd show cortex-otx' in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && rg -n --no-heading --hidden --glob '"'!.git'"' -- \"--message|message <text>|dispatch|codex\" scripts .cortex ." in /home/ubuntu/projects/cortex succeeded in 51ms:
+Total output lines: 4764
+
+.cortex/codex-incident-worker.latest:5:codex_escalation_enabled: 1
+.cortex/overnight-issues.jsonl:1:{"ts":"2026-02-17T15:49:56Z","source":"nightwatch","category":"dead_running_reconciled","severity":"high","title":"Reconciled dead-running dispatches","details":"- dispatch 1026 bead cortex-evu.3 pane=1 session=ctx-cortex-cortex-coder-1771343369466794887-3974660-0d00d1b9\n","related_issue":""}
+.cortex/overnight-issues.jsonl:2:{"ts":"2026-02-17T16:04:57Z","source":"nightwatch","category":"dead_running_reconciled","severity":"high","title":"Reconciled dead-running dispatches","details":"- dispatch 1041 bead cortex-c4j.2 pane=1 session=ctx-cortex-cortex-ops-1771344012750415965-4124876-69993a79\n- dispatch 1046 bead cortex-o3u pane=1 session=ctx-cortex-cortex-coder-1771344248944209132-4124876-b6ddbab6\n","related_issue":""}
+.cortex/overnight-issues.jsonl:3:{"ts":"2026-02-17T16:04:57Z","source":"nightwatch","category":"bug_filed","severity":"high","title":"Auto: multiple dead-running dispatches reconciled (2)","details":"Nightwatch found and cancelled 2 dead-running dispatches in one cycle at 2026-02-18T02:04:57+10:00.\\n\\n- dispatch 1041 bead cortex-c4j.2 pane=1 session=ctx-cortex-cortex-ops-1771344012750415965-4124876-69993a79\n- dispatch 1046 bead cortex-o3u pane=1 session=ctx-cortex-cortex-coder-1771344248944209132-4124876-b6ddbab6\n","related_issue":"cortex-k12"}
+.cortex/overnight-issues.jsonl:4:{"ts":"2026-02-17T16:04:58Z","source":"codex_worker","category":"auto_issue_seen","severity":"medium","title":"Auto: multiple dead-running dispatches reconciled (2)","details":"Nightwatch found and cancelled 2 dead-running dispatches in one cycle at 2026-02-18T02:04:57+10:00.\\n\\n- dispatch 1041 bead cortex-c4j.2 pane=1 session=ctx-cortex-cortex-ops-1771344012750415965-4124876-69993a79\n- dispatch 1046 bead cortex-o3u pane=1 session=ctx-cortex-cortex-coder-1771344248944209132-4124876-b6ddbab6","related_issue":"cortex-k12"}
+.cortex/overnight-issues.jsonl:5:{"ts":"2026-02-17T16:04:58Z","source":"codex_worker","category":"auto_issue_closed","severity":"medium","title":"Closed auto issue cortex-k12","details":"auto-verified by codex-worker: no dead-running dispatches remain","related_issue":"cortex-k12"}
+.cortex/overnight-issues.jsonl:6:{"ts":"2026-02-17T16:04:59Z","source":"codex_worker","category":"auto_issue_seen","severity":"medium","title":"Auto: churn guard blocked bead cortex-evu.1 (6 dispatches/1h0m0s)","details":"Bead `cortex-evu.1` in project `cortex` exceeded churn threshold (6 dispatches in 1h0m0s) and was blocked from further overnight dispatch.\n\nPlease investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.\n\nBead title: Add learner package tests\nBead type: task","related_issue":"cortex-5mz"}
+.cortex/overnight-issues.jsonl:7:{"ts":"2026-02-17T16:04:59Z","source":"codex_worker","category":"codex_escalation_started","severity":"high","title":"Codex escalation started for cortex-5mz","details":"model=gpt-5.3-codex timeout_sec=1200","related_issue":"cortex-5mz"}
+.cortex/overnight-issues.jsonl:8:{"ts":"2026-02-17T16:13:15Z","source":"codex_worker","category":"codex_escalation_completed","severity":"high","title":"Codex escalation completed for cortex-5mz","details":"Escalation finished successfully","related_issue":"cortex-5mz"}
+.cortex/overnight-issues.jsonl:9:{"ts":"2026-02-17T16:13:16Z","source":"codex_worker","category":"auto_issue_seen","severity":"medium","title":"Auto: churn guard blocked bead cortex-evu.2 (6 dispatches/1h0m0s)","details":"Bead `cortex-evu.2` in project `cortex` exceeded churn threshold (6 dispatches in 1h0m0s) and was blocked from further overnight dispatch.\n\nPlease investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.\n\nBead title: Add scheduler RunTick end-to-end test\nBead type: task","related_issue":"cortex-298"}
+.cortex/overnight-issues.jsonl:10:{"ts":"2026-02-17T16:13:16Z","source":"codex_worker","category":"auto_issue_seen","severity":"medium","title":"Auto: churn guard blocked bead cortex-evu.3 (7 dispatches/1h0m0s)","details":"Bead `cortex-evu.3` in project `cortex` exceeded churn threshold (7 dispatches in 1h0m0s) and was blocked from further overnight dispatch.\n\nPlease investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.\n\nBead title: Add concurrency and race condition tests\nBead type: task","related_issue":"cortex-cne"}
+.cortex/overnight-issues.jsonl:11:{"ts":"2026-02-17T16:13:16Z","source":"codex_worker","category":"auto_issue_seen","severity":"medium","title":"Auto: churn guard blocked bead cortex-46d.7 (8 dispatches/1h0m0s)","details":"Bead `cortex-46d.7` in project `cortex` exceeded churn threshold (8 dispatches in 1h0m0s) and was blocked from further overnight dispatch.\n\nPlease investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.\n\nBead title: Align runtime behavior with dispatch routing and CLI config\nBead type: task","related_issue":"cortex-3zi"}
+.cortex/overnight-issues.jsonl:12:{"ts":"2026-02-17T16:13:17Z","source":"codex_worker","category":"auto_issue_seen","severity":"medium","title":"Auto: churn guard blocked bead cortex-46d.8 (8 dispatches/1h0m0s)","details":"Bead `cortex-46d.8` in project `cortex` exceeded churn threshold (8 dispatches in 1h0m0s) and was blocked from further overnight dispatch.\n\nPlease investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.\n\nBead title: Harden tmux dispatcher command error handling and cleanup parsing\nBead type: bug","related_issue":"cortex-o3u"}
+.cortex/overnight-issues.jsonl:13:{"ts":"2026-02-17T16:13:17Z","source":"codex_worker","category":"auto_issue_seen","severity":"medium","title":"Auto: churn guard blocked bead cortex-46d.2 (9 dispatches/1h0m0s)","details":"Bead `cortex-46d.2` in project `cortex` exceeded churn threshold (9 dispatches in 1h0m0s) and was blocked from further overnight dispatch.\n\nPlease investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.\n\nBead title: Correct PID dispatcher completion semantics\nBead type: bug","related_issue":"cortex-5qx"}
+.cortex/overnight-issues.jsonl:14:{"ts":"2026-02-17T16:19:58Z","source":"nightwatch","category":"dead_running_reconciled","severity":"high","title":"Reconciled dead-running dispatches","details":"- dispatch 1073 bead cortex-x1f pane=1 session=ctx-cortex-cortex-coder-1771345146724783975-4124876-589d131e\n","related_issue":""}
+.cortex/overnight-issues.jsonl:15:{"ts":"2026-02-17T16:23:21Z","source":"codex_worker","category":"auto_issue_seen","severity":"medium","title":"Auto: churn guard blocked bead cortex-46d.2 (7 dispatches/1h0m0s)","details":"Bead `cortex-46d.2` in project `cortex` exceeded churn threshold (7 dispatches in 1h0m0s) and was blocked from further overnight dispatch.\n\nPlease investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.\n\nBead title: Correct PID dispatcher completion semantics\nBead type: bug","related_issue":"cortex-u37"}
+.cortex/overnight-issues.jsonl:16:{"ts":"2026-02-17T16:23:21Z","source":"codex_worker","category":"codex_escalation_started","severity":"high","title":"Codex escalation started for cortex-u37","details":"model=gpt-5.3-codex timeout_sec=1200","related_issue":"cortex-u37"}
+.cortex/overnight-issues.jsonl:17:{"ts":"2026-02-17T16:30:28Z","source":"codex_worker","category":"codex_escalation_completed","severity":"high","title":"Codex escalation completed for cortex-u37","details":"Escalation finished successfully","related_issue":"cortex-u37"}
+ succeeded in 976ms:
+✓ Updated issue: cortex-otx
+
+◐ cortex-otx [BUG] · Auto: repeated '-m/--message' runtime failures   [● P1 · IN_PROGRESS]
+Owner: Simon Heikkila · Type: bug
+Created: 2026-02-18 · Updated: 2026-02-18
+
+DESCRIPTION
+Detected 3 failures in the last 15 minutes with: required option '-m, --message <text>' not specified.\n\nNightwatch restarted Cortex automatically. Inspect recent dispatch output tails and CLI routing config.
+
+LABELS: stage:review
+
+
+thinking
+**Focusing targeted code search**
+codex
+The broad search was too noisy because of log volume; next I’m narrowing to source files (`cmd/`, `internal/`, scripts) to isolate the command builder that invokes Codex and drops `-m`.
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && ls -1' in /home/ubuntu/projects/cortex succeeded in 51ms:
+AGENTS.md
+BOOTSTRAP.md
+CORTEX-3Q5-ANALYSIS.md
+CORTEX-C5S-ANALYSIS.md
+CORTEX-NJB-ANALYSIS.md
+CORTEX-XCP-ANALYSIS.md
+HEARTBEAT.md
+IDENTITY.md
+Makefile
+README.md
+SOUL.md
+TOOLS.md
+USER.md
+artifacts
+cmd
+cortex
+cortex-learner-example.toml
+cortex.service
+cortex.toml
+cost.test
+
+thinking
+**Planning parallel search commands**
+exec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && rg -n --no-heading --glob '*.md' -- \"-m, --message|required option '-m\" docs README.md" in /home/ubuntu/projects/cortex exited 1 in 56ms:
+
+exec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && rg -n --no-heading --glob '*.sh' -- \"--message| -m|codex|dispatch\" scripts tools" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && rg -n --no-heading --glob '*.go' -- \"--message| -m|message <text>|required option\" cmd internal" in /home/ubuntu/projects/cortex succeeded in 51ms:
+internal/dispatch/dispatch.go:22:openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$err_file"
+internal/dispatch/dispatch.go:33:if grep -Fqi 'message (--message)' "$err_file"; then
+internal/dispatch/dispatch.go:36:if grep -Fqi 'unsupported --message' "$err_file"; then
+internal/dispatch/dispatch.go:39:if grep -Fqi 'unknown flag' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+internal/dispatch/dispatch.go:42:if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+internal/dispatch/dispatch.go:45:if grep -Fqi "required option '-m, --message" "$err_file"; then
+internal/dispatch/dispatch.go:48:if grep -Fqi 'required option.*--message' "$err_file"; then
+internal/dispatch/dispatch.go:160:	// as --message, since stdin piping can fail when the openclaw gateway
+internal/dispatch/dispatch_test.go:94:		`--session-id "$session_id" --message "$msg"`,
+ succeeded in 106ms:
+scripts/nightwatch.sh:12:NUDGE_SESSION="${NUDGE_SESSION:-codex-panel}"
+scripts/nightwatch.sh:21:NUDGE_FILE="$STATE_DIR/codex-nudges.log"
+scripts/nightwatch.sh:72:nudge_codex() {
+scripts/nightwatch.sh:82:ensure_codex_panel() {
+scripts/nightwatch.sh:90:  tmux new-session -d -s "$NUDGE_SESSION" "cd $ROOT && while true; do clear; echo 'Cortex Codex Panel'; echo; if [ -f .cortex/nightwatch.latest ]; then cat .cortex/nightwatch.latest; else echo 'waiting for first checkpoint...'; fi; echo; echo 'Recent nudges:'; tail -n 20 .cortex/codex-nudges.log 2>/dev/null || true; sleep 10; done"
+scripts/nightwatch.sh:142:  nudge_codex "Filed bead $issue_id: $title"
+scripts/nightwatch.sh:154:      nudge_codex "Cortex API still unavailable after restart"
+scripts/nightwatch.sh:163:    nudge_codex "Cortex was down and has been restarted successfully"
+scripts/nightwatch.sh:171:    nudge_codex "Scheduler was paused; nightwatch resumed it"
+scripts/nightwatch.sh:177:reconcile_dead_running_dispatches() {
+scripts/nightwatch.sh:182:  rows="$(sqlite3 "$DB" "SELECT id, bead_id, session_name FROM dispatches WHERE status='running' ORDER BY id;" 2>/dev/null || true)"
+scripts/nightwatch.sh:191:      resp="$(curl -fsS -X POST "$API/dispatches/$id/cancel" 2>/dev/null || true)"
+scripts/nightwatch.sh:192:      log "reconciled dead running dispatch id=$id bead=$bead pane=$pane resp=${resp:-<none>}"
+scripts/nightwatch.sh:193:      recon_details+="- dispatch $id bead $bead pane=$pane session=$session"$'\n'
+scripts/nightwatch.sh:199:    record_issue "dead_running_reconciled" "high" "Reconciled dead-running dispatches" "$recon_details"
+scripts/nightwatch.sh:200:    nudge_codex "Reconciled $reconciled dead-running dispatch(es)"
+scripts/nightwatch.sh:206:      "Auto: multiple dead-running dispatches reconciled (${reconciled})" \
+scripts/nightwatch.sh:207:      "Nightwatch found and cancelled $reconciled dead-running dispatches in one cycle at $(date -Is).\n\n$recon_details"
+scripts/nightwatch.sh:213:  fail_msg_count="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='failed' AND completed_at >= datetime('now','-15 minutes') AND failure_summary LIKE '%required option ''-m, --message <text>'' not specified%';" 2>/dev/null || echo 0)"
+scripts/nightwatch.sh:215:    log "detected repeated '-m/--message' failures in last 15m ($fail_msg_count); forcing restart"
+
+thinking
+**Investigating CLI flag conflict**
+codex
+I’ve located the likely hotspot: `scripts/codex_incident_worker.sh` calls `codex exec -m "$CODEX_MODEL"`; I’m now checking every `codex exec` invocation and the local CLI help to verify whether `-m` now means `--message`, which would explain the failure.
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && rg -n --no-heading -- "codex exec|codex .* -m |--model|--message" scripts cmd internal docs' in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && codex exec --help' in /home/ubuntu/projects/cortex succeeded in 51ms:
+scripts/nightwatch.sh:213:  fail_msg_count="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='failed' AND completed_at >= datetime('now','-15 minutes') AND failure_summary LIKE '%required option ''-m, --message <text>'' not specified%';" 2>/dev/null || echo 0)"
+scripts/nightwatch.sh:215:    log "detected repeated '-m/--message' failures in last 15m ($fail_msg_count); forcing restart"
+scripts/nightwatch.sh:216:    record_issue "repeated_failure_signature" "high" "Repeated '-m/--message' failures" "count_15m=$fail_msg_count; restart initiated"
+scripts/nightwatch.sh:217:    nudge_codex "Detected repeated '-m/--message' failures (${fail_msg_count}/15m); restarting Cortex"
+scripts/nightwatch.sh:220:      "Auto: repeated '-m/--message' runtime failures" \
+scripts/nightwatch.sh:221:      "Detected ${fail_msg_count} failures in the last 15 minutes with: required option '-m, --message <text>' not specified.\n\nNightwatch restarted Cortex automatically. Inspect recent dispatch output tails and CLI routing config."
+scripts/codex_incident_worker.sh:207:  if timeout "${CODEX_TIMEOUT_SEC}" codex exec --dangerously-bypass-approvals-and-sandbox -m "$CODEX_MODEL" -C "$ROOT" - <"$prompt_file" >>"$LOG_FILE" 2>&1; then
+scripts/codex_incident_worker.sh:274:    if echo "$summary" | rg -q "required option '-m, --message <text>' not specified"; then
+scripts/codex_incident_worker.sh:276:      record_issue "service_restart" "high" "Cortex restarted by codex-worker" "Applied remediation for repeated -m/--message failures" "$issue_id"
+scripts/codex_incident_worker.sh:278:      recent_count="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='failed' AND completed_at >= datetime('now','-15 minutes') AND failure_summary = 'error: required option ''-m, --message <text>'' not specified';" 2>/dev/null || echo 0)"
+internal/team/team.go:175:		"--model", model,
+internal/config/config.go:147:	ModelFlag     string   `toml:"model_flag"`     // e.g. "--model"
+internal/dispatch/dispatch.go:22:openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$err_file"
+internal/dispatch/dispatch.go:33:if grep -Fqi 'message (--message)' "$err_file"; then
+internal/dispatch/dispatch.go:36:if grep -Fqi 'unsupported --message' "$err_file"; then
+internal/dispatch/dispatch.go:39:if grep -Fqi 'unknown flag' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+internal/dispatch/dispatch.go:42:if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+internal/dispatch/dispatch.go:45:if grep -Fqi "required option '-m, --message" "$err_file"; then
+internal/dispatch/dispatch.go:48:if grep -Fqi 'required option.*--message' "$err_file"; then
+internal/dispatch/dispatch.go:160:	// as --message, since stdin piping can fail when the openclaw gateway
+ succeeded in 52ms:
+Run Codex non-interactively
+
+Usage: codex exec [OPTIONS] [PROMPT] [COMMAND]
+
+Commands:
+  resume  Resume a previous session by id or pick the most recent with --last
+  review  Run a code review against the current repository
+  help    Print this message or the help of the given subcommand(s)
+
+Arguments:
+  [PROMPT]
+          Initial instructions for the agent. If not provided as an argument (or if `-` is used),
+          instructions are read from stdin
+
+Options:
+  -c, --config <key=value>
+          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`.
+          Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed
+          as TOML. If it fails to parse as TOML, the raw string is used as a literal.
+          
+
+thinking
+**Investigating dispatch command construction**
+exec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && sed -n '1,260p' internal/team/team.go" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && sed -n '1,260p' internal/config/config.go" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && sed -n '1,280p' internal/dispatch/dispatch.go" in /home/ubuntu/projects/cortex succeeded in 51ms:
+// Package team handles auto-spawning openclaw agent teams for projects.
+package team
+
+import (
+	"bytes"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+)
+
+// roleDescriptions provides the ROLE.md content for each agent role.
+var roleDescriptions = map[string]string{
+	"scrum": `# Scrum Master Agent
+
+You are the scrum master for this project. Your job is to refine incoming tasks.
+
+## Responsibilities
+- Review task descriptions for clarity and completeness
+ succeeded in 50ms:
+// Package config loads and validates the Cortex TOML configuration.
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/BurntSushi/toml"
+)
+
+// Duration is a time.Duration that unmarshals from TOML strings like "60s" or "2m".
+type Duration struct {
+	time.Duration
+}
+
+func (d *Duration) UnmarshalText(text []byte) error {
+	var err error
+ succeeded in 51ms:
+package dispatch
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"sync"
+	"syscall"
+	"time"
+)
+
+// openclawShellScript is shared between PID and tmux dispatchers so model/provider
+// handling stays consistent.
+func openclawShellScript() string {
+	return `msg=$(cat "$1")
+agent="$2"
+thinking="$3"
+provider="$4"
+session_id="ctx-$$-$(date +%s)"
+
+thinking
+**Investigating dispatcher routing logic**
+exec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && rg -n --no-heading \"PromptMode|ModelFlag|ApprovalFlags|dispatch\\.cli|headless_cli|routing|Cmd|Args\" internal cmd | head -n 200" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && rg -n --no-heading \"required option '-m, --message|failure_summary|dispatches\" internal cmd scripts | head -n 200" in /home/ubuntu/projects/cortex succeeded in 55ms:
+internal/config/config.go:135:	Routing          DispatchRouting      `toml:"routing"`
+internal/config/config.go:144:	Cmd           string   `toml:"cmd"`
+internal/config/config.go:145:	PromptMode    string   `toml:"prompt_mode"` // "stdin", "file", "arg"
+internal/config/config.go:146:	Args          []string `toml:"args"`
+internal/config/config.go:147:	ModelFlag     string   `toml:"model_flag"`     // e.g. "--model"
+internal/config/config.go:148:	ApprovalFlags []string `toml:"approval_flags"` // e.g. ["--dangerously-skip-permissions"]
+internal/config/config.go:152:	FastBackend     string `toml:"fast_backend"`     // "headless_cli", "tmux"
+internal/dispatch/dispatch.go:64:func openclawCommandArgs(tmpPath, agent, thinking, provider string) []string {
+internal/dispatch/dispatch.go:102:	cmd         *exec.Cmd
+internal/dispatch/dispatch.go:164:	cmd := exec.Command("sh", openclawCommandArgs(tmpPath, agent, thinking, provider)...)
+internal/dispatch/dispatch_test.go:104:func TestOpenclawCommandArgs_PassesSessionID(t *testing.T) {
+internal/dispatch/dispatch_test.go:105:	args := openclawCommandArgs("/tmp/prompt.txt", "cortex-coder", "low", "gpt-5")
+internal/dispatch/backend.go:9:	Backend     string // "headless_cli", "tmux", "openclaw"
+internal/dispatch/tmux.go:240:	agentCmd := buildTmuxAgentCommand(scriptPath, tmpPath, agent, thinking, provider)
+internal/dispatch/tmux.go:264:	err = d.dispatchWithRetry(ctx, sessionName, agentCmd, workDir, nil, agent)
+internal/dispatch/tmux.go:296:func (d *TmuxDispatcher) dispatchWithRetry(ctx context.Context, sessionName, agentCmd, workDir string, env map[string]string, agent string) error {
+internal/dispatch/tmux.go:297:	err := d.DispatchToSession(ctx, sessionName, agentCmd, workDir, env)
+internal/dispatch/tmux.go:305:			err = d.DispatchToSession(ctx, sessionName, agentCmd, workDir, env)
+internal/dispatch/tmux.go:316:	agentCmd string,
+internal/dispatch/tmux.go:329:	fmt.Fprintf(&cmdBuf, "exec %s", agentCmd)
+ succeeded in 51ms:
+scripts/nightwatch.sh:177:reconcile_dead_running_dispatches() {
+scripts/nightwatch.sh:182:  rows="$(sqlite3 "$DB" "SELECT id, bead_id, session_name FROM dispatches WHERE status='running' ORDER BY id;" 2>/dev/null || true)"
+scripts/nightwatch.sh:191:      resp="$(curl -fsS -X POST "$API/dispatches/$id/cancel" 2>/dev/null || true)"
+scripts/nightwatch.sh:199:    record_issue "dead_running_reconciled" "high" "Reconciled dead-running dispatches" "$recon_details"
+scripts/nightwatch.sh:206:      "Auto: multiple dead-running dispatches reconciled (${reconciled})" \
+scripts/nightwatch.sh:207:      "Nightwatch found and cancelled $reconciled dead-running dispatches in one cycle at $(date -Is).\n\n$recon_details"
+scripts/nightwatch.sh:213:  fail_msg_count="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='failed' AND completed_at >= datetime('now','-15 minutes') AND failure_summary LIKE '%required option ''-m, --message <text>'' not specified%';" 2>/dev/null || echo 0)"
+scripts/nightwatch.sh:221:      "Detected ${fail_msg_count} failures in the last 15 minutes with: required option '-m, --message <text>' not specified.\n\nNightwatch restarted Cortex automatically. Inspect recent dispatch output tails and CLI routing config."
+scripts/nightwatch.sh:228:  rows="$(sqlite3 "$DB" "SELECT COALESCE(NULLIF(failure_summary,''), '<none>') AS summary, COUNT(*) AS cnt, GROUP_CONCAT(id) AS ids, GROUP_CONCAT(DISTINCT bead_id) AS beads FROM dispatches WHERE status='failed' AND completed_at >= datetime('now','-15 minutes') GROUP BY summary HAVING COUNT(*) >= $BUG_MIN_REPEAT_15M ORDER BY cnt DESC;" 2>/dev/null || true)"
+scripts/nightwatch.sh:258:  completed15="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='completed' AND completed_at >= datetime('now','-15 minutes');" 2>/dev/null || echo 0)"
+scripts/nightwatch.sh:259:  failed15="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='failed' AND completed_at >= datetime('now','-15 minutes');" 2>/dev/null || echo 0)"
+scripts/nightwatch.sh:260:  cancelled15="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='cancelled' AND completed_at >= datetime('now','-15 minutes');" 2>/dev/null || echo 0)"
+scripts/nightwatch.sh:262:  top_failures="$(sqlite3 "$DB" "SELECT REPLACE(COALESCE(NULLIF(failure_summary,''),'<none>'), char(10), ' ') || ' x' || COUNT(*) FROM dispatches WHERE status='failed' AND completed_at >= datetime('now','-15 minutes') GROUP BY failure_summary ORDER BY COUNT(*) DESC LIMIT 3;" 2>/dev/null || true)"
+scripts/nightwatch.sh:294:  reconcile_dead_running_dispatches || true
+scripts/codex_incident_worker.sh:97:count_dead_running_dispatches() {
+scripts/codex_incident_worker.sh:100:  rows="$(sqlite3 "$DB" "SELECT id, bead_id, session_name FROM dispatches WHERE status='running' ORDER BY id;" 2>/dev/null || true)"
+scripts/codex_incident_worker.sh:114:reconcile_dead_running_dispatches() {
+scripts/codex_incident_worker.sh:116:  rows="$(sqlite3 "$DB" "SELECT id, bead_id, session_name FROM dispatches WHERE status='running' ORDER BY id;" 2>/dev/null || true)"
+scripts/codex_incident_worker.sh:123:      curl -fsS -X POST "$API/dispatches/$id/cancel" >/dev/null 2>&1 || true
+scripts/codex_incident_worker.sh:243:  if echo "$title" | rg -qi "dead-running dispatches reconciled"; then
+
+thinking
+**Exploring dispatch directory**
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && ls -1 internal/dispatch' in /home/ubuntu/projects/cortex succeeded in 93ms:
+backend.go
+backoff.go
+backoff_test.go
+dispatch.go
+dispatch_test.go
+pid_completion_test.go
+ratelimit.go
+ratelimit_test.go
+session_lock_test.go
+tmux.go
+tmux_test.go
+
+thinking
+**Checking CLI usage location**
+codex
+I confirmed the failing string isn’t from Codex CLI itself; next I’m tracing where Cortex composes external CLI commands from `dispatch.cli` config, since that path is most likely omitting the prompt message argument.
+exec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && rg -n --no-heading \"Dispatch\\.CLI|cfg\\.Dispatch\\.CLI|PromptMode|ModelFlag|ApprovalFlags|build.*command|exec\\.Command\\(\" internal cmd" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && rg -n --no-heading "openclawShellScript|openclaw agent|--message|session-id|thinking" internal/dispatch internal/scheduler cmd' in /home/ubuntu/projects/cortex succeeded in 63ms:
+internal/team/team.go:173:	cmd := exec.Command("openclaw", "agents", "add", name,
+internal/git/diff.go:11:	cmd := exec.Command("gh", "pr", "diff", fmt.Sprintf("%d", prNumber))
+internal/git/pr.go:20:	cmd := exec.Command("gh", "pr", "create",
+internal/git/pr.go:46:	cmd := exec.Command("gh", "pr", "view", branch, "--json", "number,url,state,reviewDecision")
+internal/git/branch_test.go:17:	cmd := exec.Command("git", "init")
+internal/git/branch_test.go:24:	exec.Command("git", "config", "user.name", "Test User").Dir = tmpDir
+internal/git/branch_test.go:25:	exec.Command("git", "config", "user.email", "test@example.com").Dir = tmpDir
+internal/git/branch_test.go:33:	cmd = exec.Command("git", "add", "README.md")
+internal/git/branch_test.go:39:	cmd = exec.Command("git", "commit", "-m", "Initial commit")
+internal/git/branch_test.go:129:	cmd := exec.Command("git", "checkout", baseBranch)
+internal/dispatch/dispatch.go:164:	cmd := exec.Command("sh", openclawCommandArgs(tmpPath, agent, thinking, provider)...)
+internal/git/branch.go:15:	cmd := exec.Command("git", "checkout", "-b", branchName, baseBranch)
+internal/git/branch.go:26:	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+internal/git/branch.go:38:	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", fmt.Sprintf("refs/heads/%s", branch))
+internal/git/branch.go:64:		cmd := exec.Command("git", "checkout", branchName)
+internal/git/branch.go:72:		cmd := exec.Command("git", "fetch", "origin")
+internal/git/branch.go:99:		cmd := exec.Command("git", "checkout", branchName)
+internal/git/branch.go:107:		cmd := exec.Command("git", "fetch", "origin")
+internal/git/branch.go:113:		cmd = exec.Command("git", "checkout", "-b", branchName, remoteBranch)
+internal/git/branch.go:117:			cmd = exec.Command("git", "checkout", "-b", branchName, baseBranch)
+ succeeded in 61ms:
+internal/dispatch/dispatch.go:13:// openclawShellScript is shared between PID and tmux dispatchers so model/provider
+internal/dispatch/dispatch.go:15:func openclawShellScript() string {
+internal/dispatch/dispatch.go:18:thinking="$3"
+internal/dispatch/dispatch.go:22:openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$err_file"
+internal/dispatch/dispatch.go:33:if grep -Fqi 'message (--message)' "$err_file"; then
+internal/dispatch/dispatch.go:36:if grep -Fqi 'unsupported --message' "$err_file"; then
+internal/dispatch/dispatch.go:39:if grep -Fqi 'unknown flag' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+internal/dispatch/dispatch.go:42:if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+internal/dispatch/dispatch.go:45:if grep -Fqi "required option '-m, --message" "$err_file"; then
+internal/dispatch/dispatch.go:48:if grep -Fqi 'required option.*--message' "$err_file"; then
+internal/dispatch/dispatch.go:53:  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
+internal/dispatch/dispatch.go:64:func openclawCommandArgs(tmpPath, agent, thinking, provider string) []string {
+internal/dispatch/dispatch.go:65:	return []string{"-c", openclawShellScript(), "_", tmpPath, agent, thinking, provider}
+internal/dispatch/dispatch.go:68:func normalizeThinkingLevel(thinkingOrTier string) string {
+internal/dispatch/dispatch.go:69:	switch thinkingOrTier {
+internal/dispatch/dispatch.go:71:		return thinkingOrTier
+internal/dispatch/dispatch.go:73:		return ThinkingLevel(thinkingOrTier)
+internal/dispatch/dispatch.go:87:	Dispatch(ctx context.Context, agent string, prompt string, provider string, thinkingLevel string, workDir string) (int, error)
+internal/dispatch/dispatch.go:95:// Dispatcher launches and manages openclaw agent processes using PIDs.
+internal/dispatch/dispatch.go:118:// ThinkingLevel maps a tier to the openclaw --thinking flag value.
+
+thinking
+**Analyzing CLI dispatch fallback and config**
+exec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && sed -n '1,320p' cortex.toml" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && sed -n '220,420p' scripts/codex_incident_worker.sh" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && sed -n '1,220p' scripts/codex_incident_worker.sh" in /home/ubuntu/projects/cortex succeeded in 51ms:
+# Cortex Agent Orchestrator Configuration
+
+[general]
+tick_interval = "60s"
+max_per_tick = 5
+stuck_timeout = "30m"
+max_retries = 2
+log_level = "info"
+state_db = "~/.local/share/cortex/cortex.db"
+
+[projects.cortex]
+enabled = true
+beads_dir = "~/projects/cortex/.beads"
+workspace = "~/projects/cortex"
+priority = 0
+
+[projects.hg-website]
+enabled = true
+beads_dir = "~/projects/hg-website/.beads"
+workspace = "~/projects/hg-website"
+ succeeded in 51ms:
+}
+
+process_issue() {
+  local issue_id="$1"
+  local json title description updated_at status key dead_count summary summary_sql recent_count
+  json="$(issue_json "$issue_id")"
+  [[ -z "$json" || "$json" == "null" ]] && return 0
+
+  title="$(echo "$json" | jq -r '.title // ""')"
+  description="$(echo "$json" | jq -r '.description // ""')"
+  updated_at="$(echo "$json" | jq -r '.updated_at // ""')"
+  status="$(echo "$json" | jq -r '.status // ""')"
+
+  [[ "$status" != "open" ]] && return 0
+
+  key="$(hash_key "${issue_id}|${updated_at}|${title}")"
+  if is_seen "$key"; then
+    return 0
+  fi
+
+ succeeded in 50ms:
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${ROOT:-/home/ubuntu/projects/cortex}"
+DB="${DB:-$HOME/.local/share/cortex/cortex.db}"
+API="${API:-http://127.0.0.1:8900}"
+POLL_SEC="${POLL_SEC:-300}"
+NUDGE_SESSION="${NUDGE_SESSION:-codex-panel}"
+
+# Codex escalation settings
+ENABLE_CODEX_ESCALATION="${ENABLE_CODEX_ESCALATION:-1}"
+CODEX_MODEL="${CODEX_MODEL:-gpt-5.3-codex}"
+CODEX_TIMEOUT_SEC="${CODEX_TIMEOUT_SEC:-1200}"
+MAX_CODEX_ISSUES_PER_CYCLE="${MAX_CODEX_ISSUES_PER_CYCLE:-1}"
+
+STATE_DIR="$ROOT/.cortex"
+LOCK_FILE="$STATE_DIR/codex-incident-worker.lock"
+LOG_FILE="$STATE_DIR/codex-incident-worker.log"
+SEEN_FILE="$STATE_DIR/codex-incident-worker-seen.tsv"
+LATEST_FILE="$STATE_DIR/codex-incident-worker.latest"
+
+thinking
+**Analyzing scheduler dispatch routing**
+exec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && sed -n '300,560p' internal/scheduler/scheduler.go" in /home/ubuntu/projects/cortex succeeded in 51ms:
+			continue
+		}
+
+		// Detect complexity -> tier
+		tier := DetectComplexity(item.bead)
+
+		// Pick provider — try downgrade first, then upgrade if no providers found
+		var provider *config.Provider
+		currentTier := tier
+		tried := map[string]bool{tier: true}
+		for {
+			provider = s.rateLimiter.PickProvider(currentTier, s.cfg.Providers, s.cfg.Tiers)
+			if provider != nil {
+				break
+			}
+			// Try downgrade
+			next := dispatch.DowngradeTier(currentTier)
+			if next != "" && !tried[next] {
+				s.logger.Info("tier downgrade", "bead", item.bead.ID, "from", currentTier, "to", next)
+				tried[next] = true
+
+thinking
+**Inspecting scheduler backend selection**
+exec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && rg -n --no-heading \"NewScheduler|SelectBackend|BackendConfig|headless_cli|tmux|openclaw|dispatch\\.routing|dispatch backend\" cmd internal | head -n 200" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && sed -n '1,260p' cmd/cortex/main.go" in /home/ubuntu/projects/cortex succeeded in 55ms:
+cmd/cortex/main.go:81:	// Choose dispatcher based on tmux availability
+cmd/cortex/main.go:84:		logger.Info("tmux available, using TmuxDispatcher")
+cmd/cortex/main.go:87:		logger.Info("tmux not available, using PID-based Dispatcher")
+cmd/cortex/main.go:143:	// Graceful shutdown: drain dispatches if using tmux
+cmd/cortex/main.go:145:		logger.Info("draining tmux sessions", "timeout", "30s")
+internal/store/store_test.go:751:		"tmux",             // backend
+internal/store/store_test.go:779:	if d.Backend != "tmux" {
+internal/store/store_test.go:780:		t.Errorf("Backend mismatch: expected 'tmux', got '%s'", d.Backend)
+internal/scheduler/scheduler.go:132:			s.logger.Warn("failed to kill tmux session for cancel", "id", id, "session", d.SessionName, "error", err)
+internal/scheduler/scheduler.go:296:		// Check for live tmux sessions — even if DB says agent is free,
+internal/scheduler/scheduler.go:297:		// a previous dispatch's tmux session may still be running.
+internal/scheduler/scheduler.go:299:			s.logger.Debug("agent has live tmux session, skipping", "agent", agent, "bead", item.bead.ID)
+internal/scheduler/scheduler.go:454:		// Get session name for tmux dispatchers (empty for PID dispatchers)
+internal/scheduler/scheduler.go:553:		// For tmux sessions, capture output and get exit code from the session
+internal/scheduler/scheduler.go:818:// For tmux dispatches, it uses the stored session name (crash-resilient).
+internal/scheduler/scheduler.go:1227:		// Get session name for tmux dispatchers
+internal/scheduler/completion_semantics_test.go:172:	output := "exec sh \"/tmp/cortex-openclaw-726809661.sh\" \"/tmp/cortex-prompt-1676569569.txt\"\n" +
+internal/scheduler/prompt.go:81:// BuildPrompt constructs the prompt sent to an openclaw agent.
+internal/scheduler/prompt.go:86:// BuildPromptWithRole constructs a role-aware prompt sent to an openclaw agent.
+internal/team/team.go:1:// Package team handles auto-spawning openclaw agent teams for projects.
+ succeeded in 51ms:
+package main
+
+import (
+	"context"
+	"flag"
+	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/antigravity-dev/cortex/internal/api"
+	"github.com/antigravity-dev/cortex/internal/config"
+	"github.com/antigravity-dev/cortex/internal/dispatch"
+	"github.com/antigravity-dev/cortex/internal/health"
+	"github.com/antigravity-dev/cortex/internal/learner"
+	"github.com/antigravity-dev/cortex/internal/scheduler"
+	"github.com/antigravity-dev/cortex/internal/store"
+)
+
+
+thinking
+**Analyzing fallback logic flaw**
+codex
+I traced scheduler flow and found it always uses the OpenClaw dispatcher; the suspicious piece is a fallback in `internal/dispatch/dispatch.go` that can intentionally rerun `openclaw agent` without `--message` after certain errors. I’m now pulling failing dispatch rows/output to verify that this fallback path matches the observed signature.
+exec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && sqlite3 ~/.local/share/cortex/cortex.db \"SELECT id,bead_id,status,exit_code,provider,tier,backend,session_name,substr(failure_summary,1,120),dispatched_at,completed_at FROM dispatches WHERE failure_summary LIKE '%required option ''-m, --message <text>'' not specified%' ORDER BY id DESC LIMIT 30;\"" in /home/ubuntu/projects/cortex succeeded in 51ms:
+1184|cortex-c4j.7.1|failed|1|llama-4-scout|fast||ctx-cortex-cortex-ops-1771354054989780728-561001-df872cc4|error: required option '-m, --message <text>' not specified|2026-02-17 18:47:35|2026-02-17 18:49:26
+1183|cortex-84h|failed|1|llama-4-scout|fast||ctx-cortex-cortex-coder-1771353994122108432-561001-c78d7d0f|error: required option '-m, --message <text>' not specified|2026-02-17 18:46:34|2026-02-17 18:49:26
+1178|cortex-c4j.7.1|failed|1|gpt-5.3-codex|balanced||ctx-cortex-cortex-coder-1771353333226188417-561001-aaafda36|error: required option '-m, --message <text>' not specified|2026-02-17 18:35:33|2026-02-17 18:38:26
+1176|cortex-c4j.7.1|failed|1|gpt-5.3-codex|balanced||ctx-cortex-cortex-coder-1771353031496507190-502198-02462fab|error: required option '-m, --message <text>' not specified|2026-02-17 18:30:31|2026-02-17 18:33:22
+1172|cortex-32o|failed|1|gpt-5.3-codex|balanced||ctx-cortex-cortex-coder-1771352434793234009-502198-18f51842|error: required option '-m, --message <text>' not specified|2026-02-17 18:20:34|2026-02-17 18:22:22
+1171|cortex-san|failed|1|gpt-5.3-codex|balanced||ctx-cortex-cortex-coder-1771352185510040255-261856-22ed8170|error: required option '-m, --message <text>' not specified|2026-02-17 18:16:25|2026-02-17 18:20:15
+1170|cortex-yw1|failed|1|gpt-5.3-codex|balanced||ctx-cortex-cortex-coder-1771352064875770142-261856-8a3e6fa8|error: required option '-m, --message <text>' not specified|2026-02-17 18:14:25|2026-02-17 18:16:15
+1169|cortex-y6s|failed|1|gpt-5.3-codex|balanced||ctx-cortex-cortex-ops-1771352064513471726-261856-a72dd8f6|error: required option '-m, --message <text>' not specified|2026-02-17 18:14:24|2026-02-17 18:16:15
+1168|cortex-cm5|failed|1|gpt-5.3-codex|balanced||ctx-cortex-cortex-reviewer-1771352064289423076-261856-e69edbd0|error: required option '-m, --message <text>' not specified|2026-02-17 18:14:24|2026-02-17 18:16:15
+1164|cortex-34e|failed|1|gpt-5.3-codex|balanced||ctx-cortex-cortex-reviewer-1771351527190026558-261856-46bd4a49|error: required option '-m, --message <text>' not specified|2026-02-17 18:05:27|2026-02-17 18:07:15
+1163|cortex-67d|failed|1|llama-4-scout|fast||ctx-cortex-cortex-coder-1771351463765516519-261856-a92a785e|error: required option '-m, --message <text>' not specified|2026-02-17 18:04:23|2026-02-17 18:07:15
+1162|cortex-34e|failed|1|llama-4-scout|fast||ctx-cortex-cortex-coder-1771351236330098386-261856-32569ec7|error: required option '-m, --message <text>' not specified|2026-02-17 18:00:36|2026-02-17 18:04:15
+1104|cortex-1ik|failed|1|gpt-5.3-codex|balanced||ctx-cortex-cortex-reviewer-1771347920303202540-199991-6ba321aa|error: required option '-m, --message <text>' not specified|2026-02-17 17:05:20|2026-02-17 17:06:08
+1103|cortex-ood|failed|1|gpt-5.3-codex|balanced||ctx-cortex-cortex-ops-1771347919932478929-199991-c7c2b7af|error: required option '-m, --message <text>' not specified|2026-02-17 17:05:20|2026-02-17 17:07:08
+1100|cortex-84h|failed|1|gpt-5.3-codex|balanced||ctx-cortex-cortex-coder-1771347617457728285-73025-49d78f4c|error: required option '-m, --message <text>' not specified|2026-02-17 17:00:17|2026-02-17 17:02:01
+1099|cortex-1ik|failed|1|gpt-5.3-codex|balanced||ctx-cortex-cortex-reviewer-1771347616544099019-73025-7f3c37dc|error: required option '-m, --message <text>' not specified|2026-02-17 17:00:16|2026-02-17 17:02:01
+1098|cortex-ood|failed|1|gpt-5.3-codex|balanced||ctx-cortex-cortex-ops-1771347616015346335-73025-b2994dfd|error: required option '-m, --message <text>' not specified|2026-02-17 17:00:16|2026-02-17 17:02:01
+1094|cortex-1ik|failed|1|gpt-5.3-codex|balanced||ctx-cortex-cortex-coder-1771347069771246219-73025-c1f755f6|error: required option '-m, --message <text>' not specified|2026-02-17 16:51:09|2026-02-17 16:55:00
+1093|cortex-ood|failed|1|gpt-5.3-codex|balanced||ctx-cortex-cortex-coder-1771346830605946033-73025-9beb1e61|error: required option '-m, --message <text>' not specified|2026-02-17 16:47:10|2026-02-17 16:51:00
+1086|cortex-c4j.6|failed|1|gpt-5.3-codex|balanced||ctx-cortex-cortex-ops-1771345811130311406-4124876-dc0100bb|error: required option '-m, --message <text>' not specified|2026-02-17 16:30:11|2026-02-17 16:32:01
+
+thinking
+**Analyzing multi-provider failure pattern**
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && sqlite3 ~/.local/share/cortex/cortex.db "SELECT id,session_name,log_path,substr(prompt,1,80) FROM dispatches WHERE id IN (1184,1183,1178,1100,1098,967);"' in /home/ubuntu/projects/cortex succeeded in 51ms:
+967|ctx-cortex-cortex-coder-1771337952669039301-3592502-b090b21a||You are working on project in ~/projects/cortex.
+
+## Task: Align runtime behavio
+1098|ctx-cortex-cortex-ops-1771347616015346335-73025-b2994dfd||You are working on project in ~/projects/cortex.
+
+## Task: Add rate limit budget
+1100|ctx-cortex-cortex-coder-1771347617457728285-73025-49d78f4c||You are working on project in ~/projects/cortex.
+
+## Task: Runbook: backup/resto
+1178|ctx-cortex-cortex-coder-1771353333226188417-561001-aaafda36||You are working on project in ~/projects/cortex.
+
+## Task: Collect and validate 
+1183|ctx-cortex-cortex-coder-1771353994122108432-561001-c78d7d0f||You are working on project in ~/projects/cortex.
+
+## Task: Runbook: backup/resto
+1184|ctx-cortex-cortex-ops-1771354054989780728-561001-df872cc4||You are working on project in ~/projects/cortex.
+
+## Task: Collect and validate 
+
+thinking
+**Assessing tmux session output availability**
+exec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && tmux list-sessions -F '#{session_name}' 2>/dev/null | rg '"'^ctx-cortex-'"' | tail -n 20" in /home/ubuntu/projects/cortex succeeded in 51ms:
+ctx-cortex-cortex-coder-1771356098637209250-617464-5a5e27f0
+ctx-cortex-cortex-reviewer-1771356098157837339-617464-77265945
+
+thinking
+**Querying recent failed dispatches**
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && sqlite3 ~/.local/share/cortex/cortex.db "SELECT id,bead_id,status,provider,substr(failure_summary,1,120),session_name,dispatched_at,completed_at FROM dispatches ORDER BY id DESC LIMIT 20;"' in /home/ubuntu/projects/cortex succeeded in 51ms:
+1204|cortex-zly|running|llama-4-scout||ctx-cortex-cortex-coder-1771356098637209250-617464-5a5e27f0|2026-02-17 19:21:38|
+1203|cortex-otx|running|llama-4-scout||ctx-cortex-cortex-reviewer-1771356098157837339-617464-77265945|2026-02-17 19:21:38|
+1202|cortex-otx|completed|llama-4-scout||ctx-cortex-cortex-coder-1771355856573476708-617464-324e9f9b|2026-02-17 19:17:36|2026-02-17 19:21:30
+1201|cortex-070|completed|llama-4-scout||ctx-cortex-cortex-ops-1771355855928388252-617464-feeaf31a|2026-02-17 19:17:35|2026-02-17 19:19:30
+1200|cortex-7e2|completed|llama-4-scout||ctx-cortex-cortex-coder-1771355736873940558-617464-835db8c7|2026-02-17 19:15:36|2026-02-17 19:17:30
+1199|cortex-070|completed|llama-4-scout||ctx-cortex-cortex-reviewer-1771355736622071667-617464-74b8ea82|2026-02-17 19:15:36|2026-02-17 19:17:30
+1198|cortex-wp6|completed|llama-4-scout||ctx-cortex-cortex-ops-1771355496688914241-617464-52cf5263|2026-02-17 19:11:36|2026-02-17 19:15:30
+1197|cortex-070|completed|llama-4-scout||ctx-cortex-cortex-coder-1771355375897239772-617464-d9e7ad55|2026-02-17 19:09:35|2026-02-17 19:15:30
+1196|cortex-wp6|completed|llama-4-scout||ctx-cortex-cortex-reviewer-1771355375700381758-617464-323d60db|2026-02-17 19:09:35|2026-02-17 19:11:30
+1195|cortex-byi|completed|llama-4-scout||ctx-cortex-cortex-ops-1771355075760271989-617464-126bd5b9|2026-02-17 19:04:35|2026-02-17 19:06:30
+1194|cortex-wp6|completed|llama-4-scout||ctx-cortex-cortex-coder-1771354956604377007-617464-9eea7442|2026-02-17 19:02:36|2026-02-17 19:09:30
+1193|cortex-byi|completed|llama-4-scout||ctx-cortex-cortex-reviewer-1771354956349404910-617464-270ca4e0|2026-02-17 19:02:36|2026-02-17 19:04:30
+1192|cortex-84h|completed|llama-4-scout||ctx-cortex-cortex-ops-1771354838683198790-617464-2b9dbd90|2026-02-17 19:00:38|2026-02-17 19:03:30
+1191|cortex-byi|failed|llama-4-scout||ctx-cortex-cortex-coder-1771354658319340352-617464-0ebffb0f|2026-02-17 18:57:38|2026-02-17 19:02:30
+1190|cortex-trl|failed|llama-4-scout||ctx-cortex-cortex-ops-1771354657816207012-617464-e358303f|2026-02-17 18:57:37|2026-02-17 19:00:30
+1189|cortex-84h|failed|llama-4-scout||ctx-cortex-cortex-reviewer-1771354657466215102-617464-6fec3032|2026-02-17 18:57:37|2026-02-17 18:59:30
+1188|cortex-84h|completed|llama-4-scout||ctx-cortex-cortex-coder-1771354416406719349-617464-f51c66a5|2026-02-17 18:53:36|2026-02-17 18:57:30
+1187|cortex-trl|completed|llama-4-scout||ctx-cortex-cortex-reviewer-1771354415985842143-617464-076b4355|2026-02-17 18:53:36|2026-02-17 18:55:30
+1186|cortex-c4j.7.1|completed|llama-4-scout||ctx-cortex-cortex-ops-1771354358165853040-617464-447d733c|2026-02-17 18:52:38|2026-02-17 18:57:30
+1185|cortex-trl|completed|llama-4-scout||ctx-cortex-cortex-coder-1771354172726712781-561001-3a41d7d6|2026-02-17 18:49:32|2026-02-17 18:53:30
+
+thinking
+**Investigating message failure parsing**
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && openclaw agent --help' in /home/ubuntu/projects/cortex succeeded in 11.50s:
+
+🦞 OpenClaw 2026.2.15 (4bdb857) — curl for conversations.
+
+Usage: openclaw agent [options]
+
+Run an agent turn via the Gateway (use --local for embedded)
+
+Options:
+  --agent <id>               Agent id (overrides routing bindings)
+  --channel <channel>        Delivery channel:
+                             last|telegram|whatsapp|discord|irc|googlechat|slack|signal|imessage|feishu|nostr|msteams|mattermost|nextcloud-talk|matrix|bluebubbles|line|zalo|zalouser|tlon
+                             (default: whatsapp)
+  --deliver                  Send the agent's reply back to the selected channel
+                             (default: false)
+  -h, --help                 display help for command
+  --json                     Output result as JSON (default: false)
+  --local                    Run the embedded agent locally (requires model
+                             provider API keys in your shell) (default: false)
+  -m, --message <text>       Message body for the agent
+  --reply-account <id>       Delivery account id override
+
+thinking
+**Identifying hanging interactive command**
+codex
+I’m validating the live `openclaw agent` CLI contract directly now; if the command layout changed, that will confirm whether dispatch fallback logic is causing the dropped-message failures.
+
+thinking
+**Investigating error-triggered help text**
+exec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && timeout 20 openclaw agent --agent does-not-exist --session-id test-foo --message 'hi' --thinking low" in /home/ubuntu/projects/cortex exited 1 in 3.92s:
+Gateway agent failed; falling back to embedded: Error: Unknown agent id "does-not-exist". Use "openclaw agents list" to see configured agents.
+Error: Unknown agent id "does-not-exist". Use "openclaw agents list" to see configured agents.
+
+thinking
+**Analyzing fallback script bug and fixes**
+codex
+I confirmed the root behavior: when the first OpenClaw call errors, our helper can rerun without `--message`, which directly yields the exact failure signature. I’m preparing a surgical patch to keep `--message` on fallback paths and update tests accordingly.
+exec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && sed -n '150,320p' internal/dispatch/tmux.go" in /home/ubuntu/projects/cortex succeeded in 51ms:
+		data, err := os.ReadFile(lockPath)
+		if err != nil {
+			continue
+		}
+
+		// Lock files contain JSON with a "pid" field.
+		// Quick parse: find "pid": <number>
+		pidStr := ""
+		if idx := strings.Index(string(data), `"pid"`); idx >= 0 {
+			rest := string(data)[idx+5:]
+			rest = strings.TrimLeft(rest, ": ")
+			for _, c := range rest {
+				if c >= '0' && c <= '9' {
+					pidStr += string(c)
+				} else if pidStr != "" {
+					break
+				}
+			}
+		}
+		if pidStr == "" {
+exec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && sed -n '1,220p' internal/dispatch/dispatch_test.go" in /home/ubuntu/projects/cortex succeeded in 791ms:
+package dispatch
+
+import (
+	"os"
+	"os/exec"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+func TestThinkingLevel(t *testing.T) {
+	tests := []struct {
+		tier string
+		want string
+	}{
+		{"fast", "off"},
+		{"balanced", "low"},
+		{"premium", "high"},
+		{"unknown", "low"},
+
+thinking
+**Searching logs for failure details**
+exec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && rg -n --no-heading \"1183|1184|required option '-m, --message <text>'|Gateway agent failed|falling back to embedded\" /tmp/cortex-dev.log .cortex/nightwatch.log .cortex/codex-incident-worker.log | tail -n 200" in /home/ubuntu/projects/cortex succeeded in 51ms:
+.cortex/nightwatch.log:47:[2026-02-18T02:35:05+10:00] filed bead bug key=failsig-02bdeb1afb4e1604d31000508c901da186d6c8d9 issue=cortex-mlq title=Auto: repeated failure (3x/15m): error: required option '-m, --message <text>' not specified
+.cortex/nightwatch.log:48:[2026-02-18T02:35:05+10:00] NUDGE: Filed bead cortex-mlq: Auto: repeated failure (3x/15m): error: required option '-m, --message <text>' not specified
+.cortex/nightwatch.log:49:[2026-02-18T02:35:05+10:00] NUDGE: Repeated failure signature 3x/15m: error: required option '-m, --message <text>' not specified
+.cortex/nightwatch.log:55:[2026-02-18T03:05:11+10:00] NUDGE: Repeated failure signature 5x/15m: error: required option '-m, --message <text>' not specified
+.cortex/nightwatch.log:60:[2026-02-18T03:20:16+10:00] NUDGE: Repeated failure signature 2x/15m: error: required option '-m, --message <text>' not specified
+.cortex/nightwatch.log:68:[2026-02-18T04:20:23+10:00] NUDGE: Repeated failure signature 6x/15m: error: required option '-m, --message <text>' not specified
+.cortex/nightwatch.log:73:[2026-02-18T04:35:28+10:00] NUDGE: Repeated failure signature 2x/15m: error: required option '-m, --message <text>' not specified
+.cortex/nightwatch.log:78:[2026-02-18T04:50:33+10:00] NUDGE: Repeated failure signature 3x/15m: error: required option '-m, --message <text>' not specified
+/tmp/cortex-dev.log:351:time=2026-02-18T02:29:00.905+10:00 level=WARN msg="dispatch failure diagnosed" component=scheduler bead=cortex-3q5 category=unknown summary="error: required option '-m, --message <text>' not specified"
+/tmp/cortex-dev.log:381:time=2026-02-18T02:32:01.254+10:00 level=WARN msg="dispatch failure diagnosed" component=scheduler bead=cortex-3q5 category=unknown summary="error: required option '-m, --message <text>' not specified"
+/tmp/cortex-dev.log:383:time=2026-02-18T02:32:01.747+10:00 level=WARN msg="dispatch failure diagnosed" component=scheduler bead=cortex-c4j.6 category=unknown summary="error: required option '-m, --message <text>' not specified"
+/tmp/cortex-dev.log:484:time=2026-02-18T02:51:00.810+10:00 level=WARN msg="dispatch failure diagnosed" component=scheduler bead=cortex-ood category=unknown summary="error: required option '-m, --message <text>' not specified"
+/tmp/cortex-dev.log:498:time=2026-02-18T02:55:00.847+10:00 level=WARN msg="dispatch failure diagnosed" component=scheduler bead=cortex-1ik category=unknown summary="error: required option '-m, --message <text>' not specified"
+/tmp/cortex-dev.log:533:time=2026-02-18T03:02:01.121+10:00 level=WARN msg="dispatch failure diagnosed" component=scheduler bead=cortex-ood category=unknown summary="error: required option '-m, --message <text>' not specified"
+/tmp/cortex-dev.log:535:time=2026-02-18T03:02:01.193+10:00 level=WARN msg="dispatch failure diagnosed" component=scheduler bead=cortex-1ik category=unknown summary="error: required option '-m, --message <text>' not specified"
+/tmp/cortex-dev.log:537:time=2026-02-18T03:02:01.236+10:00 level=WARN msg="dispatch failure diagnosed" component=scheduler bead=cortex-84h category=unknown summary="error: required option '-m, --message <text>' not specified"
+/tmp/cortex-dev.log:578:time=2026-02-18T03:06:08.662+10:00 level=WARN msg="dispatch failure diagnosed" component=scheduler bead=cortex-1ik category=unknown summary="error: required option '-m, --message <text>' not specified"
+/tmp/cortex-dev.log:589:time=2026-02-18T03:07:08.855+10:00 level=WARN msg="dispatch failure diagnosed" component=scheduler bead=cortex-ood category=unknown summary="error: required option '-m, --message <text>' not specified"
+/tmp/cortex-dev.log:1133:time=2026-02-18T04:04:15.029+10:00 level=WARN msg="dispatch failure diagnosed" component=scheduler bead=cortex-34e category=unknown summary="error: required option '-m, --message <text>' not specified"
+/tmp/cortex-dev.log:1150:time=2026-02-18T04:07:15.136+10:00 level=WARN msg="dispatch failure diagnosed" component=scheduler bead=cortex-67d category=unknown summary="error: required option '-m, --message <text>' not specified"
+
+thinking
+**Investigating fallback message patch**
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && git log --oneline -- internal/dispatch/dispatch.go | head -n 20' in /home/ubuntu/projects/cortex succeeded in 279ms:
+eefcc0f feat(cortex-otx): Auto: repeated '-m/--message' runtime failures
+4877ab9 fix(dispatch): isolate openclaw session per run
+9f1ccf1 feat(cortex-46d.2): Correct PID dispatcher completion semantics
+c1cb3ba fix: Properly handle stuck dispatch retries and cooldown logic
+0c533b6 feat(cortex-2px.3): Reviewer agent now reviews actual PR diffs
+57d58d0 feat: crash-resilient session tracking — store tmux session names in DB
+a7f94b1 feat(cortex-j5d.1): Integrate TmuxDispatcher into scheduler
+9f69083 fix: dispatch reliability — detach from context, fix thinking level, fix bd flags
+e10da4e feat: implement full Cortex agent orchestrator (phases 0-5)
+
+thinking
+**Checking recent commits**
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && git log --oneline -n 8' in /home/ubuntu/projects/cortex succeeded in 51ms:
+bca5f44 feat(cortex-zly): Define burn-in SLO metrics and thresholds
+9463e1c bd sync: update cortex-otx status to review stage
+eefcc0f feat(cortex-otx): Auto: repeated '-m/--message' runtime failures
+f24bf38 feat(cortex-7e2): Auto: break down epic cortex-46d into executable bug/task beads
+9211813 feat(cortex-070): Runbook: scheduler pause/resume maintenance operations
+7e81474 chore: update beads after cortex-wp6 completion
+e4fb165 feat(cortex-wp6): Runbook: stuck dispatch triage and recovery
+a3b72c5 Complete backup/restore drill evidence consolidation (cortex-84h)
+
+thinking
+**Inspecting recent relevant commit**
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && git show --stat --oneline eefcc0f' in /home/ubuntu/projects/cortex succeeded in 51ms:
+eefcc0f feat(cortex-otx): Auto: repeated '-m/--message' runtime failures
+ .beads/issues.jsonl           | 4 ++--
+ internal/dispatch/dispatch.go | 6 ++++++
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && git show eefcc0f -- internal/dispatch/dispatch.go .beads/issues.jsonl' in /home/ubuntu/projects/cortex succeeded in 51ms:
+commit eefcc0f360e1bf326cc1dbcea782a5b9286bff5f
+Author: Simon Heikkila <simon.heikkila@gmail.com>
+Date:   Wed Feb 18 05:19:51 2026 +1000
+
+    feat(cortex-otx): Auto: repeated '-m/--message' runtime failures
+    
+    - Add fallback detection for 'required option -m, --message' errors
+    - Fix shell script to properly detect and handle openclaw message flag failures
+    - Prevents repeated nightwatch restarts from unhandled CLI routing failures
+
+diff --git a/.beads/issues.jsonl b/.beads/issues.jsonl
+index 8ed98bb..f29144b 100644
+--- a/.beads/issues.jsonl
++++ b/.beads/issues.jsonl
+@@ -1,4 +1,4 @@
+-{"id":"cortex-070","title":"Runbook: scheduler pause/resume maintenance operations","description":"Create a dedicated runbook for safe maintenance windows using scheduler pause/resume.\n\nAcceptance criteria:\n1) Document pre-checks, exact pause/resume API commands, and post-resume verification steps.\n2) Include at least one tabletop drill transcript or checklist under artifacts/launch/runbooks/.\n3) Link the runbook from docs/LAUNCH_READINESS_CHECKLIST.md runbook gate section.","status":"open","priority":1,"issue_type":"task","assignee":"Simon Heikkila","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T02:42:07.401303699+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T05:15:36.600538287+10:00","labels":["stage:review"],"dependencies":[{"issue_id":"cortex-070","depends_on_id":"cortex-c4j.3","type":"discovered-from","created_at":"2026-02-18T02:42:07.405631308+10:00","created_by":"Simon Heikkila"}]}
++{"id":"cortex-070","title":"Runbook: scheduler pause/resume maintenance operations","description":"Create a dedicated runbook for safe maintenance windows using scheduler pause/resume.\n\nAcceptance criteria:\n1) Document pre-checks, exact pause/resume API commands, and post-resume verification steps.\n2) Include at least one tabletop drill transcript or checklist under artifacts/launch/runbooks/.\n3) Link the runbook from docs/LAUNCH_READINESS_CHECKLIST.md runbook gate section.","status":"closed","priority":1,"issue_type":"task","assignee":"Simon Heikkila","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T02:42:07.401303699+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T05:18:52.800671034+10:00","closed_at":"2026-02-18T05:18:52.800671034+10:00","close_reason":"Closed","labels":["stage:qa"],"dependencies":[{"issue_id":"cortex-070","depends_on_id":"cortex-c4j.3","type":"discovered-from","created_at":"2026-02-18T02:42:07.405631308+10:00","created_by":"Simon Heikkila"}]}
+ {"id":"cortex-08z","title":"Phase 1: Cortex Core — Scheduler + Rate Limiter","description":"Working Go binary that reads beads from project dirs, builds dependency graphs, finds unblocked tasks, respects unified rate limits, dispatches openclaw agents, and tracks state in SQLite. This is the core scheduling engine.","status":"closed","priority":2,"issue_type":"epic","owner":"simon.heikkila@gmail.com","estimated_minutes":480,"created_at":"2026-02-17T13:33:07.156580998+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-17T14:54:32.932625657+10:00","closed_at":"2026-02-17T14:54:32.932625657+10:00","close_reason":"Phase 1 complete: all 10 tasks done, binary builds and tests pass","labels":["core","phase-1"]}
+ {"id":"cortex-08z.1","title":"Go module init + project scaffold","description":"Initialize Go module and create the full directory structure:\n\n  go mod init github.com/antigravity-dev/cortex\n  \nCreate all package directories per module layout:\n  cmd/cortex/, internal/config/, internal/beads/, internal/scheduler/,\n  internal/dispatch/, internal/health/, internal/learner/, internal/api/, internal/store/\n\nAdd core dependencies:\n  modernc.org/sqlite (pure-Go SQLite driver)\n  github.com/BurntSushi/toml (config parsing)\n\nCreate minimal main.go with signal handling skeleton (SIGINT/SIGTERM graceful shutdown).\nCreate Makefile with build, install, clean targets.\n\nAcceptance criteria:\n- go build ./cmd/cortex/ produces a working binary\n- Binary starts and exits cleanly on SIGINT\n- All package dirs exist with placeholder .go files","status":"closed","priority":2,"issue_type":"task","owner":"simon.heikkila@gmail.com","estimated_minutes":30,"created_at":"2026-02-17T13:45:59.053458725+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-17T14:40:50.31309257+10:00","closed_at":"2026-02-17T14:40:50.31309257+10:00","close_reason":"Scaffold complete: go mod, all packages, main.go with signal handling, Makefile, deps installed, builds clean","labels":["core","phase-1"],"dependencies":[{"issue_id":"cortex-08z.1","depends_on_id":"cortex-08z","type":"parent-child","created_at":"2026-02-17T13:45:59.057613426+10:00","created_by":"Simon Heikkila"}]}
+ {"id":"cortex-08z.10","title":"Main binary entry point + systemd unit","description":"Wire everything together in cmd/cortex/main.go and create the systemd service file.\n\nmain.go:\n1. Parse flags: --config (default: cortex.toml), --once (run single tick then exit, for testing)\n2. Load config via config.Load()\n3. Open store via store.Open(config.StateDB)\n4. Create rateLimiter, dispatcher, scheduler\n5. Start scheduler in goroutine\n6. Block on signal (SIGINT/SIGTERM) for graceful shutdown\n7. On shutdown: cancel context, wait for running tick to finish, close store\n\ncortex.service (systemd user unit):\n  [Unit]\n  Description=Cortex Agent Orchestrator\n  After=openclaw-gateway.service\n\n  [Service]\n  Type=simple\n  ExecStart=%h/projects/cortex/cortex --config %h/projects/cortex/cortex.toml\n  Restart=always\n  RestartSec=10\n  Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin\n\n  [Install]\n  WantedBy=default.target\n\nMakefile targets:\n  build: go build -o cortex ./cmd/cortex/\n  install: cp cortex ~/.local/bin/\n  service-install: cp cortex.service ~/.config/systemd/user/ \u0026\u0026 systemctl --user daemon-reload\n  service-start: systemctl --user enable --now cortex.service\n\nAcceptance criteria:\n- cortex binary starts, runs one tick with --once flag, exits cleanly\n- cortex binary runs continuously and responds to SIGTERM\n- systemd unit installs and starts correctly\n- Logs appear in journalctl --user -u cortex.service","status":"closed","priority":2,"issue_type":"task","owner":"simon.heikkila@gmail.com","estimated_minutes":45,"created_at":"2026-02-17T14:12:41.806052224+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-17T14:54:32.551083368+10:00","closed_at":"2026-02-17T14:54:32.551083368+10:00","close_reason":"Main binary, systemd unit, and Makefile all implemented","labels":["core","phase-1"],"dependencies":[{"issue_id":"cortex-08z.10","depends_on_id":"cortex-08z","type":"parent-child","created_at":"2026-02-17T14:12:41.809619678+10:00","created_by":"Simon Heikkila"},{"issue_id":"cortex-08z.10","depends_on_id":"cortex-08z.9","type":"blocks","created_at":"2026-02-17T14:12:41.815717384+10:00","created_by":"Simon Heikkila"}]}
+
+
+thinking
+**Refining fallback triggers and logic**
+thinking
+**Planning test update for fallback retry**
+codex
+I’m editing the shared dispatcher shell helper now: keeping compatibility fallback, but adding a guarded retry that restores `--message` when stdin fallback returns the exact required-message error, so we stop self-generating this failure signature.
+
+thinking
+**Patching fallback logic with retry**
+file update
+M /home/ubuntu/projects/cortex/internal/dispatch/dispatch.go
+@@ -44,13 +44,17 @@
+ fi
+-if grep -Fqi "required option '-m, --message" "$err_file"; then
+-  should_fallback=1
+-fi
+-if grep -Fqi 'required option.*--message' "$err_file"; then
+-  should_fallback=1
+-fi
+ 
+ if [ "$should_fallback" -eq 1 ]; then
+-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
++  fallback_err=$(mktemp)
++  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
+   status=$?
+-  rm -f "$err_file"
++  if [ "$status" -ne 0 ]; then
++    if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
++      openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"
++      status=$?
++    fi
++  fi
++  if [ "$status" -ne 0 ]; then
++    cat "$fallback_err" >&2
++  fi
++  rm -f "$err_file" "$fallback_err"
+   exit $status
+apply_patch(auto_approved=true) exited 0 in 27ms:
+Success. Updated the following files:
+M /home/ubuntu/projects/cortex/internal/dispatch/dispatch.go
+file update:
+diff --git a/internal/dispatch/dispatch.go b/internal/dispatch/dispatch.go
+index 7bc6766dc8cb4ea6472f04d9198201d4cd70ad9b..de44b0e9efd31920c8f98d8fbd86cc6c8c666653
+--- a/internal/dispatch/dispatch.go
++++ b/internal/dispatch/dispatch.go
+@@ -42,17 +42,21 @@
+ if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+   should_fallback=1
+ fi
+-if grep -Fqi "required option '-m, --message" "$err_file"; then
+-  should_fallback=1
+-fi
+-if grep -Fqi 'required option.*--message' "$err_file"; then
+-  should_fallback=1
+-fi
+ 
+ if [ "$should_fallback" -eq 1 ]; then
+-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
++  fallback_err=$(mktemp)
++  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
+   status=$?
+-  rm -f "$err_file"
++  if [ "$status" -ne 0 ]; then
++    if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
++      openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"
++      status=$?
++    fi
++  fi
++  if [ "$status" -ne 0 ]; then
++    cat "$fallback_err" >&2
++  fi
++  rm -f "$err_file" "$fallback_err"
+   exit $status
+ fi
+ 
+
+file update:
+diff --git a/internal/dispatch/dispatch.go b/internal/dispatch/dispatch.go
+index 7bc6766dc8cb4ea6472f04d9198201d4cd70ad9b..de44b0e9efd31920c8f98d8fbd86cc6c8c666653
+--- a/internal/dispatch/dispatch.go
++++ b/internal/dispatch/dispatch.go
+@@ -42,17 +42,21 @@
+ if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+   should_fallback=1
+ fi
+-if grep -Fqi "required option '-m, --message" "$err_file"; then
+-  should_fallback=1
+-fi
+-if grep -Fqi 'required option.*--message' "$err_file"; then
+-  should_fallback=1
+-fi
+ 
+ if [ "$should_fallback" -eq 1 ]; then
+-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
++  fallback_err=$(mktemp)
++  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
+   status=$?
+-  rm -f "$err_file"
++  if [ "$status" -ne 0 ]; then
++    if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
++      openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"
++      status=$?
++    fi
++  fi
++  if [ "$status" -ne 0 ]; then
++    cat "$fallback_err" >&2
++  fi
++  rm -f "$err_file" "$fallback_err"
+   exit $status
+ fi
+ 
+
+
+thinking
+**Adding fallback retry test**
+file update
+M /home/ubuntu/projects/cortex/internal/dispatch/dispatch_test.go
+@@ -127 +127,16 @@
+ }
++
++func TestOpenclawShellScript_RetriesMessageAfterFallbackRequiredOption(t *testing.T) {
++	script := openclawShellScript()
++	checks := []string{
++		`fallback_err=$(mktemp)`,
++		`printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"`,
++		`grep -Fqi "required option '-m, --message" "$fallback_err"`,
++		`openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"`,
++	}
++	for _, check := range checks {
++		if !strings.Contains(script, check) {
++			t.Fatalf("shell script missing %q", check)
++		}
++	}
++}
+apply_patch(auto_approved=true) exited 0 in 9ms:
+Success. Updated the following files:
+M /home/ubuntu/projects/cortex/internal/dispatch/dispatch_test.go
+file update:
+diff --git a/internal/dispatch/dispatch.go b/internal/dispatch/dispatch.go
+index 7bc6766dc8cb4ea6472f04d9198201d4cd70ad9b..de44b0e9efd31920c8f98d8fbd86cc6c8c666653
+--- a/internal/dispatch/dispatch.go
++++ b/internal/dispatch/dispatch.go
+@@ -42,17 +42,21 @@
+ if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+   should_fallback=1
+ fi
+-if grep -Fqi "required option '-m, --message" "$err_file"; then
+-  should_fallback=1
+-fi
+-if grep -Fqi 'required option.*--message' "$err_file"; then
+-  should_fallback=1
+-fi
+ 
+ if [ "$should_fallback" -eq 1 ]; then
+-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
++  fallback_err=$(mktemp)
++  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
+   status=$?
+-  rm -f "$err_file"
++  if [ "$status" -ne 0 ]; then
++    if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
++      openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"
++      status=$?
++    fi
++  fi
++  if [ "$status" -ne 0 ]; then
++    cat "$fallback_err" >&2
++  fi
++  rm -f "$err_file" "$fallback_err"
+   exit $status
+ fi
+ 
+diff --git a/internal/dispatch/dispatch_test.go b/internal/dispatch/dispatch_test.go
+index 99b3117bc1481cbfb89a6358fce265f23dc90729..3ae3866f793054cfd4d7ae7e7525973dc60a0fd2
+--- a/internal/dispatch/dispatch_test.go
++++ b/internal/dispatch/dispatch_test.go
+@@ -125,3 +125,18 @@
+ 		t.Fatalf("expected provider arg at position 6, got %q", args[6])
+ 	}
+ }
++
++func TestOpenclawShellScript_RetriesMessageAfterFallbackRequiredOption(t *testing.T) {
++	script := openclawShellScript()
++	checks := []string{
++		`fallback_err=$(mktemp)`,
++		`printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"`,
++		`grep -Fqi "required option '-m, --message" "$fallback_err"`,
++		`openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"`,
++	}
++	for _, check := range checks {
++		if !strings.Contains(script, check) {
++			t.Fatalf("shell script missing %q", check)
++		}
++	}
++}
+
+file update:
+diff --git a/internal/dispatch/dispatch.go b/internal/dispatch/dispatch.go
+index 7bc6766dc8cb4ea6472f04d9198201d4cd70ad9b..de44b0e9efd31920c8f98d8fbd86cc6c8c666653
+--- a/internal/dispatch/dispatch.go
++++ b/internal/dispatch/dispatch.go
+@@ -42,17 +42,21 @@
+ if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+   should_fallback=1
+ fi
+-if grep -Fqi "required option '-m, --message" "$err_file"; then
+-  should_fallback=1
+-fi
+-if grep -Fqi 'required option.*--message' "$err_file"; then
+-  should_fallback=1
+-fi
+ 
+ if [ "$should_fallback" -eq 1 ]; then
+-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
++  fallback_err=$(mktemp)
++  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
+   status=$?
+-  rm -f "$err_file"
++  if [ "$status" -ne 0 ]; then
++    if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
++      openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"
++      status=$?
++    fi
++  fi
++  if [ "$status" -ne 0 ]; then
++    cat "$fallback_err" >&2
++  fi
++  rm -f "$err_file" "$fallback_err"
+   exit $status
+ fi
+ 
+diff --git a/internal/dispatch/dispatch_test.go b/internal/dispatch/dispatch_test.go
+index 99b3117bc1481cbfb89a6358fce265f23dc90729..3ae3866f793054cfd4d7ae7e7525973dc60a0fd2
+--- a/internal/dispatch/dispatch_test.go
++++ b/internal/dispatch/dispatch_test.go
+@@ -125,3 +125,18 @@
+ 		t.Fatalf("expected provider arg at position 6, got %q", args[6])
+ 	}
+ }
++
++func TestOpenclawShellScript_RetriesMessageAfterFallbackRequiredOption(t *testing.T) {
++	script := openclawShellScript()
++	checks := []string{
++		`fallback_err=$(mktemp)`,
++		`printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"`,
++		`grep -Fqi "required option '-m, --message" "$fallback_err"`,
++		`openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"`,
++	}
++	for _, check := range checks {
++		if !strings.Contains(script, check) {
++			t.Fatalf("shell script missing %q", check)
++		}
++	}
++}
+
+
+thinking
+**Planning test execution**
+codex
+I’ve patched the dispatcher helper and added a regression test for the new guard; next I’ll run `go test ./internal/dispatch` to confirm behavior remains stable before touching bead status.
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && go test ./internal/dispatch' in /home/ubuntu/projects/cortexfile update:
+diff --git a/internal/dispatch/dispatch.go b/internal/dispatch/dispatch.go
+index 7bc6766dc8cb4ea6472f04d9198201d4cd70ad9b..de44b0e9efd31920c8f98d8fbd86cc6c8c666653
+--- a/internal/dispatch/dispatch.go
++++ b/internal/dispatch/dispatch.go
+@@ -42,17 +42,21 @@
+ if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+   should_fallback=1
+ fi
+-if grep -Fqi "required option '-m, --message" "$err_file"; then
+-  should_fallback=1
+-fi
+-if grep -Fqi 'required option.*--message' "$err_file"; then
+-  should_fallback=1
+-fi
+ 
+ if [ "$should_fallback" -eq 1 ]; then
+-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
++  fallback_err=$(mktemp)
++  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
+   status=$?
+-  rm -f "$err_file"
++  if [ "$status" -ne 0 ]; then
++    if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
++      openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"
++      status=$?
++    fi
++  fi
++  if [ "$status" -ne 0 ]; then
++    cat "$fallback_err" >&2
++  fi
++  rm -f "$err_file" "$fallback_err"
+   exit $status
+ fi
+ 
+diff --git a/internal/dispatch/dispatch_test.go b/internal/dispatch/dispatch_test.go
+index 99b3117bc1481cbfb89a6358fce265f23dc90729..3ae3866f793054cfd4d7ae7e7525973dc60a0fd2
+--- a/internal/dispatch/dispatch_test.go
++++ b/internal/dispatch/dispatch_test.go
+@@ -125,3 +125,18 @@
+ 		t.Fatalf("expected provider arg at position 6, got %q", args[6])
+ 	}
+ }
++
++func TestOpenclawShellScript_RetriesMessageAfterFallbackRequiredOption(t *testing.T) {
++	script := openclawShellScript()
++	checks := []string{
++		`fallback_err=$(mktemp)`,
++		`printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"`,
++		`grep -Fqi "required option '-m, --message" "$fallback_err"`,
++		`openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"`,
++	}
++	for _, check := range checks {
++		if !strings.Contains(script, check) {
++			t.Fatalf("shell script missing %q", check)
++		}
++	}
++}
+
+file update:
+diff --git a/internal/dispatch/dispatch.go b/internal/dispatch/dispatch.go
+index 7bc6766dc8cb4ea6472f04d9198201d4cd70ad9b..de44b0e9efd31920c8f98d8fbd86cc6c8c666653
+--- a/internal/dispatch/dispatch.go
++++ b/internal/dispatch/dispatch.go
+@@ -42,17 +42,21 @@
+ if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+   should_fallback=1
+ fi
+-if grep -Fqi "required option '-m, --message" "$err_file"; then
+-  should_fallback=1
+-fi
+-if grep -Fqi 'required option.*--message' "$err_file"; then
+-  should_fallback=1
+-fi
+ 
+ if [ "$should_fallback" -eq 1 ]; then
+-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
++  fallback_err=$(mktemp)
++  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
+   status=$?
+-  rm -f "$err_file"
++  if [ "$status" -ne 0 ]; then
++    if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
++      openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"
++      status=$?
++    fi
++  fi
++  if [ "$status" -ne 0 ]; then
++    cat "$fallback_err" >&2
++  fi
++  rm -f "$err_file" "$fallback_err"
+   exit $status
+ fi
+ 
+diff --git a/internal/dispatch/dispatch_test.go b/internal/dispatch/dispatch_test.go
+index 99b3117bc1481cbfb89a6358fce265f23dc90729..3ae3866f793054cfd4d7ae7e7525973dc60a0fd2
+--- a/internal/dispatch/dispatch_test.go
++++ b/internal/dispatch/dispatch_test.go
+@@ -125,3 +125,18 @@
+ 		t.Fatalf("expected provider arg at position 6, got %q", args[6])
+ 	}
+ }
++
++func TestOpenclawShellScript_RetriesMessageAfterFallbackRequiredOption(t *testing.T) {
++	script := openclawShellScript()
++	checks := []string{
++		`fallback_err=$(mktemp)`,
++		`printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"`,
++		`grep -Fqi "required option '-m, --message" "$fallback_err"`,
++		`openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"`,
++	}
++	for _, check := range checks {
++		if !strings.Contains(script, check) {
++			t.Fatalf("shell script missing %q", check)
++		}
++	}
++}
+
+
+thinking
+**Extending test polling timeout**
+file update:
+diff --git a/internal/dispatch/dispatch.go b/internal/dispatch/dispatch.go
+index 7bc6766dc8cb4ea6472f04d9198201d4cd70ad9b..de44b0e9efd31920c8f98d8fbd86cc6c8c666653
+--- a/internal/dispatch/dispatch.go
++++ b/internal/dispatch/dispatch.go
+@@ -42,17 +42,21 @@
+ if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+   should_fallback=1
+ fi
+-if grep -Fqi "required option '-m, --message" "$err_file"; then
+-  should_fallback=1
+-fi
+-if grep -Fqi 'required option.*--message' "$err_file"; then
+-  should_fallback=1
+-fi
+ 
+ if [ "$should_fallback" -eq 1 ]; then
+-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
++  fallback_err=$(mktemp)
++  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
+   status=$?
+-  rm -f "$err_file"
++  if [ "$status" -ne 0 ]; then
++    if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
++      openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"
++      status=$?
++    fi
++  fi
++  if [ "$status" -ne 0 ]; then
++    cat "$fallback_err" >&2
++  fi
++  rm -f "$err_file" "$fallback_err"
+   exit $status
+ fi
+ 
+diff --git a/internal/dispatch/dispatch_test.go b/internal/dispatch/dispatch_test.go
+index 99b3117bc1481cbfb89a6358fce265f23dc90729..3ae3866f793054cfd4d7ae7e7525973dc60a0fd2
+--- a/internal/dispatch/dispatch_test.go
++++ b/internal/dispatch/dispatch_test.go
+@@ -125,3 +125,18 @@
+ 		t.Fatalf("expected provider arg at position 6, got %q", args[6])
+ 	}
+ }
++
++func TestOpenclawShellScript_RetriesMessageAfterFallbackRequiredOption(t *testing.T) {
++	script := openclawShellScript()
++	checks := []string{
++		`fallback_err=$(mktemp)`,
++		`printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"`,
++		`grep -Fqi "required option '-m, --message" "$fallback_err"`,
++		`openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"`,
++	}
++	for _, check := range checks {
++		if !strings.Contains(script, check) {
++			t.Fatalf("shell script missing %q", check)
++		}
++	}
++}
+
+ succeeded in 17.14s:
+ok  	github.com/antigravity-dev/cortex/internal/dispatch	15.438s
+
+thinking
+**Assessing test necessity and closure steps**
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && git status -sb' in /home/ubuntu/projects/cortex succeeded in 50ms:
+## master...origin/master
+ M .beads/issues.jsonl
+ M .cortex/codex-incident-worker-seen.tsv
+ M .cortex/codex-incident-worker.latest
+ M .cortex/codex-incident-worker.log
+ M .cortex/codex-nudges.log
+ M .cortex/nightwatch-bug-state.tsv
+ M .cortex/nightwatch-checkpoints.jsonl
+ M .cortex/nightwatch.latest
+ M .cortex/nightwatch.log
+ M .cortex/overnight-issues.jsonl
+ M internal/dispatch/dispatch.go
+ M internal/dispatch/dispatch_test.go
+?? artifacts/launch/runbooks/stuck-dispatch-triage-recovery.md
+file update:
+diff --git a/internal/dispatch/dispatch.go b/internal/dispatch/dispatch.go
+index 7bc6766dc8cb4ea6472f04d9198201d4cd70ad9b..de44b0e9efd31920c8f98d8fbd86cc6c8c666653
+--- a/internal/dispatch/dispatch.go
++++ b/internal/dispatch/dispatch.go
+@@ -42,17 +42,21 @@
+ if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+   should_fallback=1
+ fi
+-if grep -Fqi "required option '-m, --message" "$err_file"; then
+-  should_fallback=1
+-fi
+-if grep -Fqi 'required option.*--message' "$err_file"; then
+-  should_fallback=1
+-fi
+ 
+ if [ "$should_fallback" -eq 1 ]; then
+-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
++  fallback_err=$(mktemp)
++  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
+   status=$?
+-  rm -f "$err_file"
++  if [ "$status" -ne 0 ]; then
++    if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
++      openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"
++      status=$?
++    fi
++  fi
++  if [ "$status" -ne 0 ]; then
++    cat "$fallback_err" >&2
++  fi
++  rm -f "$err_file" "$fallback_err"
+   exit $status
+ fi
+ 
+diff --git a/internal/dispatch/dispatch_test.go b/internal/dispatch/dispatch_test.go
+index 99b3117bc1481cbfb89a6358fce265f23dc90729..3ae3866f793054cfd4d7ae7e7525973dc60a0fd2
+--- a/internal/dispatch/dispatch_test.go
++++ b/internal/dispatch/dispatch_test.go
+@@ -125,3 +125,18 @@
+ 		t.Fatalf("expected provider arg at position 6, got %q", args[6])
+ 	}
+ }
++
++func TestOpenclawShellScript_RetriesMessageAfterFallbackRequiredOption(t *testing.T) {
++	script := openclawShellScript()
++	checks := []string{
++		`fallback_err=$(mktemp)`,
++		`printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"`,
++		`grep -Fqi "required option '-m, --message" "$fallback_err"`,
++		`openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"`,
++	}
++	for _, check := range checks {
++		if !strings.Contains(script, check) {
++			t.Fatalf("shell script missing %q", check)
++		}
++	}
++}
+
+
+thinking
+**Planning selective commit of relevant changes**
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && git diff -- internal/dispatch/dispatch.go internal/dispatch/dispatch_test.go' in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && git diff -- .beads/issues.jsonl | head -n 120' in /home/ubuntu/projects/cortex succeeded in 50ms:
+diff --git a/internal/dispatch/dispatch.go b/internal/dispatch/dispatch.go
+index 7bc6766..de44b0e 100644
+--- a/internal/dispatch/dispatch.go
++++ b/internal/dispatch/dispatch.go
+@@ -42,17 +42,21 @@ fi
+ if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+   should_fallback=1
+ fi
+-if grep -Fqi "required option '-m, --message" "$err_file"; then
+-  should_fallback=1
+-fi
+-if grep -Fqi 'required option.*--message' "$err_file"; then
+-  should_fallback=1
+-fi
+ 
+ if [ "$should_fallback" -eq 1 ]; then
+-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
++  fallback_err=$(mktemp)
++  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
+   status=$?
+ succeeded in 51ms:
+diff --git a/.beads/issues.jsonl b/.beads/issues.jsonl
+index 7e06116..34b4d63 100644
+--- a/.beads/issues.jsonl
++++ b/.beads/issues.jsonl
+@@ -253,5 +253,5 @@
+ {"id":"cortex-xhk.9","title":"Definition of Done enforcement","description":"Configurable per-project DoD that the ops/qa agent checks. Pure Go code — run commands, check results.\n\n**Implementation:**\n\nConfig:\n```toml\n[projects.hg-website.dod]\nchecks = [\n    \"go test ./...\",\n    \"go vet ./...\",\n    \"golangci-lint run\",\n]\ncoverage_min = 70          # optional: fail if coverage \u003c N%\nrequire_estimate = true    # bead must have estimate before closing\nrequire_acceptance = true  # bead must have acceptance criteria\n```\n\nCreate internal/scheduler/dod.go:\n```go\ntype DoDChecker struct {\n    checks          []string\n    coverageMin     int\n    requireEstimate bool\n    requireAcceptance bool\n}\n\n// CheckDoD runs all DoD checks in the project workspace. Returns pass/fail with details.\n// This is called by the scheduler when a dispatch completes (before marking bead as done).\nfunc (d *DoDChecker) Check(ctx context.Context, workspace string, bead beads.Bead) (*DoDResult, error)\n\ntype DoDResult struct {\n    Passed  bool\n    Checks  []CheckResult  // per-command results\n    Failures []string       // human-readable failure reasons\n}\n\ntype CheckResult struct {\n    Command  string\n    ExitCode int\n    Output   string  // truncated\n    Passed   bool\n}\n```\n\nIntegration:\n- After ops/qa agent completes and before bd close, scheduler runs DoDChecker\n- If DoD fails, bead transitions back to stage:coding with failure notes\n- DoD results recorded in store for retro analysis\n- No LLM needed — this is running commands and checking exit codes\n\nAcceptance: DoD checks run on completion, failures block closing, results recorded, configurable per project","status":"open","priority":2,"issue_type":"task","owner":"simon.heikkila@gmail.com","created_at":"2026-02-17T17:41:18.931164144+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-17T17:41:18.931164144+10:00","labels":["code"],"dependencies":[{"issue_id":"cortex-xhk.9","depends_on_id":"cortex-xhk","type":"parent-child","created_at":"2026-02-17T17:41:18.953268002+10:00","created_by":"Simon Heikkila"}]}
+ {"id":"cortex-y6s","title":"Auto: break down epic cortex-46d into executable bug/task beads","description":"Epic `cortex-46d` is still open in project `cortex`.\n\nPolicy: epics should not be assigned directly to coders. Break this epic into concrete `bug`/`task` beads with acceptance criteria so overnight automation can execute them.\n\nEpic title: Self-healing control-loop hardening","status":"closed","priority":1,"issue_type":"task","assignee":"Simon Heikkila","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T03:20:16.086055589+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T04:21:28.096302161+10:00","closed_at":"2026-02-18T04:21:28.096302161+10:00","close_reason":"Epic breakdown completed successfully - 13 tasks created and approved","labels":["stage:qa"],"dependencies":[{"issue_id":"cortex-y6s","depends_on_id":"cortex-46d","type":"discovered-from","created_at":"2026-02-18T03:20:16.10937239+10:00","created_by":"Simon Heikkila"}],"comments":[{"id":1,"issue_id":"cortex-y6s","author":"Simon Heikkila","text":"**REVIEWER ASSESSMENT: APPROVED ✅**\n\nEpic cortex-46d breakdown completed to exceptional standards:\n- 13 properly specified bug/task beads with executable acceptance criteria  \n- Outstanding technical architecture with safety boundaries\n- Comprehensive test coverage and observability strategies\n- All tasks ready for overnight automation execution\n\nTransitioned to stage:qa for validation.","created_at":"2026-02-17T18:13:09Z"}]}
+ {"id":"cortex-yh4","title":"Treat tmux session status 'gone' as failed / needs-check in scheduler","description":"In scheduler.checkRunningDispatches, tmux sessions returning status 'gone' are currently classified as completed with exit_code=0. Update classification to mark dispatch as failed and/or NeedsCheck so it can be manually diagnosed and retried according to policy.","notes":"**Review Result: APPROVED**\n\n**Excellent Implementation - Complete Solution**:\n\n## Core Functionality - CORRECTLY IMPLEMENTED\n\n**Before (Bug):**\n- Tmux sessions with status gone were marked as completed with exit_code=0\n- No diagnostic information was captured\n- Sessions that disappeared were treated as successful\n\n**After (Fixed):**\n- Status gone → dispatch marked as failed with exit_code=-1\n- finalStage set to gone for clear identification  \n- Comprehensive logging and health event recording\n- Failure diagnosis with specific category and summary\n\n## Implementation Quality\n\n**1. Proper Status Handling:**\n- gone case now sets status=failed, exitCode=-1, finalStage=gone\n\n**2. Comprehensive Logging:**\n- Error-level logging with detailed context (bead, session, agent, provider, duration)\n- Health event recording for tracking patterns\n- Structured logging for observability\n\n**3. Failure Diagnosis Integration:**\n- Category: session_disappeared\n- Summary: Clear explanation of potential causes and need for manual investigation\n- Stored in database for analysis and retry decisions\n\n**4. Database Schema Support:**\n- failure_category and failure_summary columns exist\n- UpdateFailureDiagnosis method implemented and tested\n- Proper schema migration logic in place\n\n## Testing Status\n\n**Core Components Tested:**\n- SessionStatus gone returns correct values (tmux_test.go)\n- UpdateFailureDiagnosis database operations (store_test.go)\n- All scheduler tests pass\n- All store tests pass\n\n## Acceptance Criteria Assessment\n\n- Mark dispatch as failed: IMPLEMENTED\n- NeedsCheck capability: IMPLEMENTED - failure diagnosis with manual investigation note\n- Manual diagnosis: IMPLEMENTED - detailed health events and failure summaries  \n- Retry policy compatibility: IMPLEMENTED - failed dispatches can be retried per existing policy\n\n**Overall Assessment:** \nThis is a thorough, well-architected fix that properly addresses the core issue while providing excellent observability and diagnostic capabilities.\n\nApproved for stage:qa","status":"closed","priority":1,"issue_type":"bug","owner":"simon.heikkila@gmail.com","created_at":"2026-02-17T20:48:15.22403479+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-17T21:08:05.65529401+10:00","closed_at":"2026-02-17T21:08:05.65529401+10:00","close_reason":"Closed","labels":["stage:qa"]}
+-{"id":"cortex-zly","title":"Define burn-in SLO metrics and thresholds","description":"Establish clear definitions and thresholds for 7-day burn-in SLO metrics required for launch readiness evaluation.\n\n## Goal\nDefine precise calculations and acceptable thresholds for each burn-in metric to enable consistent scoring.\n\n## Metrics to Define\n\n### 1. Unknown/Disappeared Failure Rate\n- **Calculation**: (dispatches with failure_category='session_disappeared' OR failure_category='unknown_exit_state') / total_dispatches * 100\n- **7-day threshold**: \u003c 2%\n- **Daily threshold**: \u003c 5%\n\n### 2. Intervention Rate  \n- **Calculation**: (manual cancellations + manual retries) / total_dispatches * 100\n- **7-day threshold**: \u003c 10% \n- **Daily threshold**: \u003c 15%\n\n### 3. Critical Health Events\n- **Events**: gateway_critical, dispatch_session_gone, bead_churn_blocked\n- **7-day threshold**: \u003c 5 events\n- **Daily threshold**: \u003c 2 events\n\n### 4. System Stability\n- **Calculation**: uptime_percentage over 7 days\n- **Threshold**: \u003e 99%\n\n## Deliverables\n1. **burn-in-metrics.md** - Formal metric definitions\n2. **slo-thresholds.json** - Machine-readable thresholds  \n3. **Data source mapping** - Which tables/columns provide each metric\n\n## Acceptance Criteria  \n1) All metric calculations are precisely defined with SQL queries\n2) Thresholds are set for both daily and 7-day evaluations\n3) Data sources are identified and verified to exist\n4) Definitions are reviewable by ops team for correctness\n5) Machine-readable format enables automated scoring","status":"open","priority":1,"issue_type":"task","assignee":"Simon Heikkila","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T02:33:21.450591703+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T05:21:38.602310725+10:00","labels":["definition","launch","metrics","slo"]}
++{"id":"cortex-zly","title":"Define burn-in SLO metrics and thresholds","description":"Establish clear definitions and thresholds for 7-day burn-in SLO metrics required for launch readiness evaluation.\n\n## Goal\nDefine precise calculations and acceptable thresholds for each burn-in metric to enable consistent scoring.\n\n## Metrics to Define\n\n### 1. Unknown/Disappeared Failure Rate\n- **Calculation**: (dispatches with failure_category='session_disappeared' OR failure_category='unknown_exit_state') / total_dispatches * 100\n- **7-day threshold**: \u003c 2%\n- **Daily threshold**: \u003c 5%\n\n### 2. Intervention Rate  \n- **Calculation**: (manual cancellations + manual retries) / total_dispatches * 100\n- **7-day threshold**: \u003c 10% \n- **Daily threshold**: \u003c 15%\n\n### 3. Critical Health Events\n- **Events**: gateway_critical, dispatch_session_gone, bead_churn_blocked\n- **7-day threshold**: \u003c 5 events\n- **Daily threshold**: \u003c 2 events\n\n### 4. System Stability\n- **Calculation**: uptime_percentage over 7 days\n- **Threshold**: \u003e 99%\n\n## Deliverables\n1. **burn-in-metrics.md** - Formal metric definitions\n2. **slo-thresholds.json** - Machine-readable thresholds  \n3. **Data source mapping** - Which tables/columns provide each metric\n\n## Acceptance Criteria  \n1) All metric calculations are precisely defined with SQL queries\n2) Thresholds are set for both daily and 7-day evaluations\n3) Data sources are identified and verified to exist\n4) Definitions are reviewable by ops team for correctness\n5) Machine-readable format enables automated scoring","status":"open","priority":1,"issue_type":"task","assignee":"Simon Heikkila","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T02:33:21.450591703+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T05:21:38.602310725+10:00","labels":["stage:review"]}
+ {"id":"cortex-ztu","title":"Auto: churn guard blocked bead cortex-c4j.3 (6 dispatches/1h0m0s)","description":"Bead `cortex-c4j.3` in project `cortex` exceeded churn threshold (6 dispatches in 1h0m0s) and was blocked from further overnight dispatch.\n\nPlease investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.\n\nBead title: Publish operational runbook set for launch operations\nBead type: task","status":"closed","priority":1,"issue_type":"bug","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T02:35:14.303927803+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T02:43:26.011072479+10:00","closed_at":"2026-02-18T02:43:26.011072479+10:00","close_reason":"Root cause confirmed from dispatch output: dispatches 1039,1050,1059,1068,1078,1082 for cortex-c4j.3 all contained 'LLM request rejected ... context limit' and looped as completed re-dispatches. Fixes applied: scheduler churn-escalation dedupe (active existing churn issue check) plus regression tests (TestHasActiveChurnEscalation, TestDetectTerminalOutputFailure_OpenClawContextLimitRejection). Operational split applied: created scoped runbook tasks cortex-070, cortex-wp6, cortex-byi, cortex-trl, cortex-84h; moved cortex-c4j.3 to in_progress to stop overnight re-dispatch while subtasks proceed. Verification: go test ./... passed.","dependencies":[{"issue_id":"cortex-ztu","depends_on_id":"cortex-c4j.3","type":"discovered-from","created_at":"2026-02-18T02:35:14.307299072+10:00","created_by":"Simon Heikkila"}]}
+file update:
+diff --git a/internal/dispatch/dispatch.go b/internal/dispatch/dispatch.go
+index 7bc6766dc8cb4ea6472f04d9198201d4cd70ad9b..de44b0e9efd31920c8f98d8fbd86cc6c8c666653
+--- a/internal/dispatch/dispatch.go
++++ b/internal/dispatch/dispatch.go
+@@ -42,17 +42,21 @@
+ if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+   should_fallback=1
+ fi
+-if grep -Fqi "required option '-m, --message" "$err_file"; then
+-  should_fallback=1
+-fi
+-if grep -Fqi 'required option.*--message' "$err_file"; then
+-  should_fallback=1
+-fi
+ 
+ if [ "$should_fallback" -eq 1 ]; then
+-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
++  fallback_err=$(mktemp)
++  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
+   status=$?
+-  rm -f "$err_file"
++  if [ "$status" -ne 0 ]; then
++    if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
++      openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"
++      status=$?
++    fi
++  fi
++  if [ "$status" -ne 0 ]; then
++    cat "$fallback_err" >&2
++  fi
++  rm -f "$err_file" "$fallback_err"
+   exit $status
+ fi
+ 
+diff --git a/internal/dispatch/dispatch_test.go b/internal/dispatch/dispatch_test.go
+index 99b3117bc1481cbfb89a6358fce265f23dc90729..3ae3866f793054cfd4d7ae7e7525973dc60a0fd2
+--- a/internal/dispatch/dispatch_test.go
++++ b/internal/dispatch/dispatch_test.go
+@@ -125,3 +125,18 @@
+ 		t.Fatalf("expected provider arg at position 6, got %q", args[6])
+ 	}
+ }
++
++func TestOpenclawShellScript_RetriesMessageAfterFallbackRequiredOption(t *testing.T) {
++	script := openclawShellScript()
++	checks := []string{
++		`fallback_err=$(mktemp)`,
++		`printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"`,
++		`grep -Fqi "required option '-m, --message" "$fallback_err"`,
++		`openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"`,
++	}
++	for _, check := range checks {
++		if !strings.Contains(script, check) {
++			t.Fatalf("shell script missing %q", check)
++		}
++	}
++}
+
+
+thinking
+**Planning staged commits and issue close sequence**
+codex
+I’ve validated the code-path fix with dispatch tests; I’m now closing `cortex-otx` with concrete evidence (failing dispatch IDs, root cause in fallback routing, and test proof), then I’ll sync/commit/push.
+exec
+/usr/bin/zsh -lc "cd /home/ubuntu/projects/cortex && bd close cortex-otx --reason \"Patched shared OpenClaw dispatch script to stop self-generating missing-message failures: stdin fallback now captures stderr and, when it returns required option '-m/--message', retries with explicit --message. Also removed direct fallback trigger on required-option text from first attempt. Evidence: repeated failures observed in dispatches 1077,1084,1086,1098-1104,1162-1184 with summary 'error: required option \\\"-m, --message <text>\\\" not specified'; root cause was fallback invocation lacking --message. Validation: go test ./internal/dispatch passed.\" && bd show cortex-otx" in /home/ubuntu/projects/cortex succeeded in 582ms:
+✓ Closed cortex-otx: Patched shared OpenClaw dispatch script to stop self-generating missing-message failures: stdin fallback now captures stderr and, when it returns required option '-m/--message', retries with explicit --message. Also removed direct fallback trigger on required-option text from first attempt. Evidence: repeated failures observed in dispatches 1077,1084,1086,1098-1104,1162-1184 with summary 'error: required option "-m, --message <text>" not specified'; root cause was fallback invocation lacking --message. Validation: go test ./internal/dispatch passed.
+
+✓ cortex-otx [BUG] · Auto: repeated '-m/--message' runtime failures   [● P1 · CLOSED]
+Owner: Simon Heikkila · Assignee: Simon Heikkila · Type: bug
+Created: 2026-02-18 · Updated: 2026-02-18
+Close reason: Patched shared OpenClaw dispatch script to stop self-generating missing-message failures: stdin fallback now captures stderr and, when it returns required option '-m/--message', retries with explicit --message. Also removed direct fallback trigger on required-option text from first attempt. Evidence: repeated failures observed in dispatches 1077,1084,1086,1098-1104,1162-1184 with summary 'error: required option "-m, --message <text>" not specified'; root cause was fallback invocation lacking --message. Validation: go test ./internal/dispatch passed.
+
+DESCRIPTION
+Detected 3 failures in the last 15 minutes with: required option '-m, --message <text>' not specified.\n\nNightwatch restarted Cortex automatically. Inspect recent dispatch output tails and CLI routing config.
+
+LABELS: stage:qa, stage:review
+
+file update:
+diff --git a/internal/dispatch/dispatch.go b/internal/dispatch/dispatch.go
+index 7bc6766dc8cb4ea6472f04d9198201d4cd70ad9b..de44b0e9efd31920c8f98d8fbd86cc6c8c666653
+--- a/internal/dispatch/dispatch.go
++++ b/internal/dispatch/dispatch.go
+@@ -42,17 +42,21 @@
+ if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+   should_fallback=1
+ fi
+-if grep -Fqi "required option '-m, --message" "$err_file"; then
+-  should_fallback=1
+-fi
+-if grep -Fqi 'required option.*--message' "$err_file"; then
+-  should_fallback=1
+-fi
+ 
+ if [ "$should_fallback" -eq 1 ]; then
+-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
++  fallback_err=$(mktemp)
++  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
+   status=$?
+-  rm -f "$err_file"
++  if [ "$status" -ne 0 ]; then
++    if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
++      openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"
++      status=$?
++    fi
++  fi
++  if [ "$status" -ne 0 ]; then
++    cat "$fallback_err" >&2
++  fi
++  rm -f "$err_file" "$fallback_err"
+   exit $status
+ fi
+ 
+diff --git a/internal/dispatch/dispatch_test.go b/internal/dispatch/dispatch_test.go
+index 99b3117bc1481cbfb89a6358fce265f23dc90729..3ae3866f793054cfd4d7ae7e7525973dc60a0fd2
+--- a/internal/dispatch/dispatch_test.go
++++ b/internal/dispatch/dispatch_test.go
+@@ -125,3 +125,18 @@
+ 		t.Fatalf("expected provider arg at position 6, got %q", args[6])
+ 	}
+ }
++
++func TestOpenclawShellScript_RetriesMessageAfterFallbackRequiredOption(t *testing.T) {
++	script := openclawShellScript()
++	checks := []string{
++		`fallback_err=$(mktemp)`,
++		`printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"`,
++		`grep -Fqi "required option '-m, --message" "$fallback_err"`,
++		`openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"`,
++	}
++	for _, check := range checks {
++		if !strings.Contains(script, check) {
++			t.Fatalf("shell script missing %q", check)
++		}
++	}
++}
+
+
+thinking
+**Planning selective commit and pull strategy**
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && git add internal/dispatch/dispatch.go internal/dispatch/dispatch_test.go .beads/issues.jsonl && git commit -m "fix(dispatch): harden --message fallback handling"' in /home/ubuntu/projects/cortex succeeded in 1.25s:
+[master 3c83436] fix(dispatch): harden --message fallback handling
+ 3 files changed, 30 insertions(+), 11 deletions(-)
+file update:
+diff --git a/internal/dispatch/dispatch.go b/internal/dispatch/dispatch.go
+index 7bc6766dc8cb4ea6472f04d9198201d4cd70ad9b..de44b0e9efd31920c8f98d8fbd86cc6c8c666653
+--- a/internal/dispatch/dispatch.go
++++ b/internal/dispatch/dispatch.go
+@@ -42,17 +42,21 @@
+ if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+   should_fallback=1
+ fi
+-if grep -Fqi "required option '-m, --message" "$err_file"; then
+-  should_fallback=1
+-fi
+-if grep -Fqi 'required option.*--message' "$err_file"; then
+-  should_fallback=1
+-fi
+ 
+ if [ "$should_fallback" -eq 1 ]; then
+-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
++  fallback_err=$(mktemp)
++  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
+   status=$?
+-  rm -f "$err_file"
++  if [ "$status" -ne 0 ]; then
++    if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
++      openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"
++      status=$?
++    fi
++  fi
++  if [ "$status" -ne 0 ]; then
++    cat "$fallback_err" >&2
++  fi
++  rm -f "$err_file" "$fallback_err"
+   exit $status
+ fi
+ 
+diff --git a/internal/dispatch/dispatch_test.go b/internal/dispatch/dispatch_test.go
+index 99b3117bc1481cbfb89a6358fce265f23dc90729..3ae3866f793054cfd4d7ae7e7525973dc60a0fd2
+--- a/internal/dispatch/dispatch_test.go
++++ b/internal/dispatch/dispatch_test.go
+@@ -125,3 +125,18 @@
+ 		t.Fatalf("expected provider arg at position 6, got %q", args[6])
+ 	}
+ }
++
++func TestOpenclawShellScript_RetriesMessageAfterFallbackRequiredOption(t *testing.T) {
++	script := openclawShellScript()
++	checks := []string{
++		`fallback_err=$(mktemp)`,
++		`printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"`,
++		`grep -Fqi "required option '-m, --message" "$fallback_err"`,
++		`openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"`,
++	}
++	for _, check := range checks {
++		if !strings.Contains(script, check) {
++			t.Fatalf("shell script missing %q", check)
++		}
++	}
++}
+
+
+thinking
+**Running bd sync**
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && bd sync' in /home/ubuntu/projects/cortex succeeded in 287ms:
+Exporting beads to JSONL...
+✓ Exported 0 issues
+✓ /home/ubuntu/projects/cortex/.beads/issues.jsonl updated
+file update:
+diff --git a/internal/dispatch/dispatch.go b/internal/dispatch/dispatch.go
+index 7bc6766dc8cb4ea6472f04d9198201d4cd70ad9b..de44b0e9efd31920c8f98d8fbd86cc6c8c666653
+--- a/internal/dispatch/dispatch.go
++++ b/internal/dispatch/dispatch.go
+@@ -42,17 +42,21 @@
+ if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+   should_fallback=1
+ fi
+-if grep -Fqi "required option '-m, --message" "$err_file"; then
+-  should_fallback=1
+-fi
+-if grep -Fqi 'required option.*--message' "$err_file"; then
+-  should_fallback=1
+-fi
+ 
+ if [ "$should_fallback" -eq 1 ]; then
+-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
++  fallback_err=$(mktemp)
++  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
+   status=$?
+-  rm -f "$err_file"
++  if [ "$status" -ne 0 ]; then
++    if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
++      openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"
++      status=$?
++    fi
++  fi
++  if [ "$status" -ne 0 ]; then
++    cat "$fallback_err" >&2
++  fi
++  rm -f "$err_file" "$fallback_err"
+   exit $status
+ fi
+ 
+diff --git a/internal/dispatch/dispatch_test.go b/internal/dispatch/dispatch_test.go
+index 99b3117bc1481cbfb89a6358fce265f23dc90729..3ae3866f793054cfd4d7ae7e7525973dc60a0fd2
+--- a/internal/dispatch/dispatch_test.go
++++ b/internal/dispatch/dispatch_test.go
+@@ -125,3 +125,18 @@
+ 		t.Fatalf("expected provider arg at position 6, got %q", args[6])
+ 	}
+ }
++
++func TestOpenclawShellScript_RetriesMessageAfterFallbackRequiredOption(t *testing.T) {
++	script := openclawShellScript()
++	checks := []string{
++		`fallback_err=$(mktemp)`,
++		`printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"`,
++		`grep -Fqi "required option '-m, --message" "$fallback_err"`,
++		`openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"`,
++	}
++	for _, check := range checks {
++		if !strings.Contains(script, check) {
++			t.Fatalf("shell script missing %q", check)
++		}
++	}
++}
+
+
+thinking
+**Checking sync results and git status**
+exec
+/usr/bin/zsh -lc 'cd /home/ubuntu/projects/cortex && git status -sb' in /home/ubuntu/projects/cortex succeeded in 51ms:
+## master...origin/master [ahead 1]
+ M .beads/issues.jsonl
+ M .cortex/codex-incident-worker-seen.tsv
+ M .cortex/codex-incident-worker.latest
+ M .cortex/codex-incident-worker.log
+ M .cortex/codex-nudges.log
+ M .cortex/nightwatch-bug-state.tsv
+ M .cortex/nightwatch-checkpoints.jsonl
+ M .cortex/nightwatch.latest
+ M .cortex/nightwatch.log
+ M .cortex/overnight-issues.jsonl
+?? artifacts/launch/runbooks/stuck-dispatch-triage-recovery.md
+?? internal/dispatch/shell_escape.go
+?? internal/dispatch/shell_escape_test.go
+file update:
+diff --git a/internal/dispatch/dispatch.go b/internal/dispatch/dispatch.go
+index 7bc6766dc8cb4ea6472f04d9198201d4cd70ad9b..de44b0e9efd31920c8f98d8fbd86cc6c8c666653
+--- a/internal/dispatch/dispatch.go
++++ b/internal/dispatch/dispatch.go
+@@ -42,17 +42,21 @@
+ if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+   should_fallback=1
+ fi
+-if grep -Fqi "required option '-m, --message" "$err_file"; then
+-  should_fallback=1
+-fi
+-if grep -Fqi 'required option.*--message' "$err_file"; then
+-  should_fallback=1
+-fi
+ 
+ if [ "$should_fallback" -eq 1 ]; then
+-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
++  fallback_err=$(mktemp)
++  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
+   status=$?
+-  rm -f "$err_file"
++  if [ "$status" -ne 0 ]; then
++    if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
++      openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"
++      status=$?
++    fi
++  fi
++  if [ "$status" -ne 0 ]; then
++    cat "$fallback_err" >&2
++  fi
++  rm -f "$err_file" "$fallback_err"
+   exit $status
+ fi
+ 
+diff --git a/internal/dispatch/dispatch_test.go b/internal/dispatch/dispatch_test.go
+index 99b3117bc1481cbfb89a6358fce265f23dc90729..3ae3866f793054cfd4d7ae7e7525973dc60a0fd2
+--- a/internal/dispatch/dispatch_test.go
++++ b/internal/dispatch/dispatch_test.go
+@@ -125,3 +125,18 @@
+ 		t.Fatalf("expected provider arg at position 6, got %q", args[6])
+ 	}
+ }
++
++func TestOpenclawShellScript_RetriesMessageAfterFallbackRequiredOption(t *testing.T) {
++	script := openclawShellScript()
++	checks := []string{
++		`fallback_err=$(mktemp)`,
++		`printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"`,
++		`grep -Fqi "required option '-m, --message" "$fallback_err"`,
++		`openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"`,
++	}
++	for _, check := range checks {
++		if !strings.Contains(script, check) {
++			t.Fatalf("shell script missing %q", check)
++		}
++	}
++}
+
+
+thinking
+**Stopping due to unexpected files**
+codex
+I hit a blocker: new untracked files appeared that I did not create (`internal/dispatch/shell_escape.go` and `internal/dispatch/shell_escape_test.go`) while working, which indicates concurrent edits in the same area. I’m stopping here per safety rules; tell me whether you want me to proceed by ignoring those files and finishing pull/rebase/push of my fix, or pause and reconcile with those new files first.
+codex
+I hit a blocker: new untracked files appeared that I did not create (`internal/dispatch/shell_escape.go` and `internal/dispatch/shell_escape_test.go`) while working, which indicates concurrent edits in the same area. I’m stopping here per safety rules; tell me whether you want me to proceed by ignoring those files and finishing pull/rebase/push of my fix, or pause and reconcile with those new files first.
+file update:
+diff --git a/internal/dispatch/dispatch.go b/internal/dispatch/dispatch.go
+index 7bc6766dc8cb4ea6472f04d9198201d4cd70ad9b..c4e5578add2a9f9e95f9e70bbe5ebf48322153d2
+--- a/internal/dispatch/dispatch.go
++++ b/internal/dispatch/dispatch.go
+@@ -11,21 +11,35 @@
+ )
+ 
+ // openclawShellScript is shared between PID and tmux dispatchers so model/provider
+-// handling stays consistent.
++// handling stays consistent. This script reads all parameters from files to avoid
++// shell parsing issues with special characters in user input.
+ func openclawShellScript() string {
+-	return `msg=$(cat "$1")
+-agent="$2"
+-thinking="$3"
+-provider="$4"
++	return `#!/bin/bash
++# Read all parameters from temp files to avoid shell parsing issues
++msg_file="$1"
++agent_file="$2"
++thinking_file="$3"
++provider_file="$4"
++
++# Safely read parameters from files
++msg=$(cat "$msg_file")
++agent=$(cat "$agent_file")
++thinking=$(cat "$thinking_file")
++provider=$(cat "$provider_file")
++
+ session_id="ctx-$$-$(date +%s)"
+ err_file=$(mktemp)
++
++# Execute openclaw with all parameters safely passed
+ openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$err_file"
+ status=$?
++
+ if [ $status -eq 0 ]; then
+   rm -f "$err_file"
+   exit 0
+ fi
+ 
++# Check if fallback is needed based on error patterns
+ should_fallback=0
+ if grep -Fqi 'falling back to embedded' "$err_file"; then
+   should_fallback=1
+@@ -40,19 +54,23 @@
+   should_fallback=1
+ fi
+ if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
+-  should_fallback=1
+-fi
+-if grep -Fqi "required option '-m, --message" "$err_file"; then
+   should_fallback=1
+ fi
+-if grep -Fqi 'required option.*--message' "$err_file"; then
+-  should_fallback=1
+-fi
+ 
+ if [ "$should_fallback" -eq 1 ]; then
+-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
++  fallback_err=$(mktemp)
++  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
+   status=$?
+-  rm -f "$err_file"
++  if [ "$status" -ne 0 ]; then
++    if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
++      openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"
++      status=$?
++    fi
++  fi
++  if [ "$status" -ne 0 ]; then
++    cat "$fallback_err" >&2
++  fi
++  rm -f "$err_file" "$fallback_err"
+   exit $status
+ fi
+ 
+diff --git a/internal/dispatch/dispatch_test.go b/internal/dispatch/dispatch_test.go
+index 99b3117bc1481cbfb89a6358fce265f23dc90729..3ae3866f793054cfd4d7ae7e7525973dc60a0fd2
+--- a/internal/dispatch/dispatch_test.go
++++ b/internal/dispatch/dispatch_test.go
+@@ -125,3 +125,18 @@
+ 		t.Fatalf("expected provider arg at position 6, got %q", args[6])
+ 	}
+ }
++
++func TestOpenclawShellScript_RetriesMessageAfterFallbackRequiredOption(t *testing.T) {
++	script := openclawShellScript()
++	checks := []string{
++		`fallback_err=$(mktemp)`,
++		`printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"`,
++		`grep -Fqi "required option '-m, --message" "$fallback_err"`,
++		`openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"`,
++	}
++	for _, check := range checks {
++		if !strings.Contains(script, check) {
++			t.Fatalf("shell script missing %q", check)
++		}
++	}
++}
+
+tokens used
+152,237
+I hit a blocker: new untracked files appeared that I did not create (`internal/dispatch/shell_escape.go` and `internal/dispatch/shell_escape_test.go`) while working, which indicates concurrent edits in the same area. I’m stopping here per safety rules; tell me whether you want me to proceed by ignoring those files and finishing pull/rebase/push of my fix, or pause and reconcile with those new files first.
+[2026-02-18T05:27:57+10:00] codex escalation completed for cortex-otx
+[2026-02-18T05:33:00+10:00] processing auto-issue cortex-7fp title=Auto: churn guard blocked bead cortex-46d.2 (6 dispatches/1h0m0s)
+[2026-02-18T05:33:00+10:00] escalating issue cortex-7fp to codex model=gpt-5.3-codex timeout=1200s
+OpenAI Codex v0.101.0 (research preview)
+--------
+workdir: /home/ubuntu/projects/cortex
+model: gpt-5.3-codex
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: auto
+session id: 019c6d17-7cf5-7f23-b9f7-521de5aeac3d
+--------
+user
+You are codex-incident-worker for overnight engine stabilization.
+
+Repository: /home/ubuntu/projects/cortex
+Issue ID: cortex-7fp
+Issue title: Auto: churn guard blocked bead cortex-46d.2 (6 dispatches/1h0m0s)
+Issue description:
+Bead `cortex-46d.2` in project `cortex` exceeded churn threshold (6 dispatches in 1h0m0s) and was blocked from further overnight dispatch.
+
+Please investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.
+
+Bead title: Correct PID dispatcher completion semantics
+Bead type: bug
+
+Task:
+1) Attempt a minimal, safe fix for this issue now.
+2) If you can fix safely, implement and close issue cortex-7fp with evidence in the close reason.
+3) If this is too large/risky for a quick fix, create a new scoped bead (task/bug) with acceptance criteria and dependency discovered-from:cortex-7fp.
+4) Keep changes surgical and avoid stepping on active coders.
+
+Constraints:
+- No destructive git commands.
+- Prefer operational/config/script fixes first.
+- Do not pause scheduler/workers unless absolutely required to recover.
+- Keep command usage non-interactive.
+
+When done, print a concise summary of what you changed.
+
+mcp: linear starting
+mcp: linear failed: MCP client for `linear` failed to start: MCP startup failed: Environment variable LINEAR_API_KEY for MCP server 'linear' is not set
+mcp startup: failed: linear
+2026-02-17T19:33:01.870411Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c68d5-90e0-7601-94eb-10d106653269
+2026-02-17T19:33:01.932046Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c6b1d-9530-77a1-9a5a-7923286c4f6e
+2026-02-17T19:33:02.122490Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c6b75-4c4a-7c63-ba16-402b589d68ae
+
+thinking
+**Planning initial steps**
+codex
+I’m going to inspect `cortex-7fp`, claim it in beads, and trace the code path around PID dispatcher completion semantics to identify why `cortex-46d.2` kept redispatching. Then I’ll apply the smallest safe fix with targeted tests and close/sync if verification passes.
+
+thinking
+**Running parallel repo status and bd commands**
+exec
+/usr/bin/zsh -lc 'git status --short --branch && git remote -v' in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'bd show cortex-7fp' in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'bd ready' in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'bd show cortex-46d.2' in /home/ubuntu/projects/cortex succeeded in 51ms:
+## master...origin/master [ahead 1]
+ M .beads/issues.jsonl
+ M .cortex/codex-incident-worker-seen.tsv
+ M .cortex/codex-incident-worker.latest
+ M .cortex/codex-incident-worker.log
+ M .cortex/codex-nudges.log
+ M .cortex/nightwatch-bug-state.tsv
+ M .cortex/nightwatch-checkpoints.jsonl
+ M .cortex/nightwatch.latest
+ M .cortex/nightwatch.log
+ M .cortex/overnight-issues.jsonl
+ M internal/dispatch/dispatch.go
+ M internal/dispatch/dispatch_test.go
+ M internal/dispatch/tmux.go
+?? artifacts/launch/runbooks/stuck-dispatch-triage-recovery.md
+?? internal/dispatch/shell_escape.go
+?? internal/dispatch/shell_escape_test.go
+origin	git@github.com:doctorspritz/cortex.git (fetch)
+origin	git@github.com:doctorspritz/cortex.git (push)
+ succeeded in 94ms:
+
+📋 Ready work (10 issues with no blockers):
+
+1. [● P1] [task] cortex-ax7: Auto: break down epic cortex-xhk into executable bug/task beads
+2. [● P1] [task] cortex-kvo: Auto: break down epic cortex-a4s into executable bug/task beads
+   Assignee: Simon Heikkila
+3. [● P1] [bug] cortex-5qx: Auto: churn guard blocked bead cortex-46d.2 (9 dispatches/1h0m0s)
+   Assignee: Simon Heikkila
+4. [● P1] [bug] cortex-o3u: Auto: churn guard blocked bead cortex-46d.8 (8 dispatches/1h0m0s)
+   Assignee: Simon Heikkila
+5. [● P1] [bug] cortex-3zi: Auto: churn guard blocked bead cortex-46d.7 (8 dispatches/1h0m0s)
+   Assignee: Simon Heikkila
+6. [● P1] [bug] cortex-cne: Auto: churn guard blocked bead cortex-evu.3 (7 dispatches/1h0m0s)
+   Assignee: Simon Heikkila
+7. [● P1] [bug] cortex-298: Auto: churn guard blocked bead cortex-evu.2 (6 dispatches/1h0m0s)
+   Assignee: Simon Heikkila
+8. [● P1] [bug] cortex-kg9: Auto: churn guard blocked bead cortex-46d.8 (7 dispatches/1h0m0s)
+   Assignee: Simon Heikkila
+9. [● P1] [bug] cortex-7fp: Auto: churn guard blocked bead cortex-46d.2 (6 dispatches/1h0m0s)
+   Assignee: Simon Heikkila
+ succeeded in 106ms:
+
+✓ cortex-46d.2 [BUG] · Correct PID dispatcher completion semantics   [● P1 · CLOSED]
+Owner: Simon Heikkila · Type: bug
+Created: 2026-02-17 · Updated: 2026-02-18
+Close reason: Closed
+
+DESCRIPTION
+PID mode currently infers completion from process death and defaults to completed without reliable exit code or output capture. Non-zero failures can be misclassified as success, breaking self-healing decisions.
+
+DESIGN
+## Goal
+Keep PID mode supported, but make completion/failure classification accurate and diagnosable.
+
+## Policy (selected)
+- Keep PID backend and harden it (no deprecation).
+- Non-zero process exits must produce `failed` status.
+- PID completion must not default to `completed` without observed exit info.
+
+## Problem
+Current scheduler treats non-session dispatch death as completed by default, because only liveness is checked.
+ succeeded in 170ms:
+
+○ cortex-7fp [BUG] · Auto: churn guard blocked bead cortex-46d.2 (6 dispatches/1h0m0s)   [● P1 · OPEN]
+Owner: Simon Heikkila · Assignee: Simon Heikkila · Type: bug
+Created: 2026-02-18 · Updated: 2026-02-18
+
+DESCRIPTION
+Bead `cortex-46d.2` in project `cortex` exceeded churn threshold (6 dispatches in 1h0m0s) and was blocked from further overnight dispatch.
+
+Please investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.
+
+Bead title: Correct PID dispatcher completion semantics
+Bead type: bug
+
+DISCOVERED FROM
+  ◊ ✓ cortex-46d.2: Correct PID dispatcher completion semantics ● P1
+
+
+thinking
+**Requesting guidance on dirty tree**
+codex
+I found unexpected local modifications already present, including the exact dispatcher files implicated (`internal/dispatch/dispatch.go`, `internal/dispatch/dispatch_test.go`, `internal/dispatch/tmux.go`) plus new untracked dispatch files. To avoid stepping on active work, should I proceed by building on top of the current dirty tree, or isolate only ops-level changes outside those files?
+codex
+I found unexpected local modifications already present, including the exact dispatcher files implicated (`internal/dispatch/dispatch.go`, `internal/dispatch/dispatch_test.go`, `internal/dispatch/tmux.go`) plus new untracked dispatch files. To avoid stepping on active work, should I proceed by building on top of the current dirty tree, or isolate only ops-level changes outside those files?
+tokens used
+6,475
+I found unexpected local modifications already present, including the exact dispatcher files implicated (`internal/dispatch/dispatch.go`, `internal/dispatch/dispatch_test.go`, `internal/dispatch/tmux.go`) plus new untracked dispatch files. To avoid stepping on active work, should I proceed by building on top of the current dirty tree, or isolate only ops-level changes outside those files?
+[2026-02-18T05:33:31+10:00] codex escalation completed for cortex-7fp
