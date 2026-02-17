@@ -2,7 +2,7 @@
 
 [general]
 tick_interval = "60s"
-max_per_tick = 3
+max_per_tick = 5
 stuck_timeout = "30m"
 max_retries = 2
 log_level = "info"
@@ -21,9 +21,9 @@ workspace = "~/projects/hg-website"
 priority = 1
 
 [rate_limits]
-window_5h_cap = 20
-weekly_cap = 200
-weekly_headroom_pct = 80
+window_5h_cap = 50
+weekly_cap = 500
+weekly_headroom_pct = 70
 
 [providers.claude-max20]
 tier = "balanced"
