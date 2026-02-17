@@ -42,6 +42,12 @@ fi
 if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
   should_fallback=1
 fi
+if grep -Fqi "required option '-m, --message" "$err_file"; then
+  should_fallback=1
+fi
+if grep -Fqi 'required option.*--message' "$err_file"; then
+  should_fallback=1
+fi
 
 if [ "$should_fallback" -eq 1 ]; then
   printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
