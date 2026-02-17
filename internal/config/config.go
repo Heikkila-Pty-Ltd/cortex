@@ -50,10 +50,13 @@ type General struct {
 }
 
 type Project struct {
-	Enabled   bool   `toml:"enabled"`
-	BeadsDir  string `toml:"beads_dir"`
-	Workspace string `toml:"workspace"`
-	Priority  int    `toml:"priority"`
+	Enabled      bool   `toml:"enabled"`
+	BeadsDir     string `toml:"beads_dir"`
+	Workspace    string `toml:"workspace"`
+	Priority     int    `toml:"priority"`
+	BaseBranch   string `toml:"base_branch"`    // branch to create features from (default "main")
+	BranchPrefix string `toml:"branch_prefix"`  // prefix for feature branches (default "feat/")
+	UseBranches  bool   `toml:"use_branches"`   // enable branch workflow (default false)
 }
 
 type RateLimits struct {
@@ -214,6 +217,17 @@ func applyDefaults(cfg *Config) {
 	// Dispatch log retention
 	if cfg.Dispatch.LogRetentionDays == 0 {
 		cfg.Dispatch.LogRetentionDays = 30
+	}
+
+	// Project branch defaults
+	for name, project := range cfg.Projects {
+		if project.BaseBranch == "" {
+			project.BaseBranch = "main"
+		}
+		if project.BranchPrefix == "" {
+			project.BranchPrefix = "feat/"
+		}
+		cfg.Projects[name] = project
 	}
 }
 

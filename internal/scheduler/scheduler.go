@@ -10,6 +10,7 @@ import (
 	"github.com/antigravity-dev/cortex/internal/beads"
 	"github.com/antigravity-dev/cortex/internal/config"
 	"github.com/antigravity-dev/cortex/internal/dispatch"
+	"github.com/antigravity-dev/cortex/internal/git"
 	"github.com/antigravity-dev/cortex/internal/learner"
 	"github.com/antigravity-dev/cortex/internal/store"
 	"github.com/antigravity-dev/cortex/internal/team"
@@ -236,7 +237,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		}
 
 		// Build prompt with role awareness and dispatch
-		prompt := BuildPromptWithRole(item.bead, item.project, role)
+		prompt := BuildPromptWithRoleBranches(item.bead, item.project, role, item.project.UseBranches)
 		thinkingLevel := dispatch.ThinkingLevel(currentTier)
 
 		// Determine stage for logging
@@ -264,7 +265,17 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			continue
 		}
 
-		handle, err := s.dispatcher.Dispatch(ctx, agent, prompt, provider.Model, thinkingLevel, config.ExpandHome(item.project.Workspace))
+		// Create feature branch if branch workflow is enabled
+		workspace := config.ExpandHome(item.project.Workspace)
+		if item.project.UseBranches {
+			if err := git.EnsureFeatureBranchWithBase(workspace, item.bead.ID, item.project.BaseBranch, item.project.BranchPrefix); err != nil {
+				s.logger.Error("failed to create feature branch", "bead", item.bead.ID, "error", err)
+				continue
+			}
+			s.logger.Debug("ensured feature branch", "bead", item.bead.ID, "branch", item.project.BranchPrefix+item.bead.ID)
+		}
+
+		handle, err := s.dispatcher.Dispatch(ctx, agent, prompt, provider.Model, thinkingLevel, workspace)
 		if err != nil {
 			s.logger.Error("dispatch failed", "bead", item.bead.ID, "agent", agent, "error", err)
 			continue

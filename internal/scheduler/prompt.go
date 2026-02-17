@@ -12,8 +12,8 @@ import (
 var filePathRe = regexp.MustCompile(`(?:^|\s)((?:src|internal|cmd|pkg|lib|app|public|templates|static|test|tests|scripts)/[\w./-]+|[\w-]+\.(?:go|ts|tsx|js|jsx|py|rs|rb|java|vue|svelte|css|scss|html|sql|yaml|yml|toml|json|md|sh))`)
 
 // stageInstructions maps roles to stage-specific prompt instructions.
-var stageInstructions = map[string]func(bead beads.Bead) string{
-	"scrum": func(b beads.Bead) string {
+var stageInstructions = map[string]func(bead beads.Bead, useBranches bool) string{
+	"scrum": func(b beads.Bead, useBranches bool) string {
 		return fmt.Sprintf(`## Instructions (Scrum Master)
 1. Review and refine the task description
 2. Add or improve acceptance criteria using: bd update %s --acceptance="..."
@@ -22,7 +22,7 @@ var stageInstructions = map[string]func(bead beads.Bead) string{
 5. Unassign yourself: bd update %s --assignee=""
 `, b.ID, b.ID, b.ID)
 	},
-	"planner": func(b beads.Bead) string {
+	"planner": func(b beads.Bead, useBranches bool) string {
 		return fmt.Sprintf(`## Instructions (Planner)
 1. Read the task description and acceptance criteria carefully
 2. Create an implementation plan with design notes: bd update %s --design="..."
@@ -32,10 +32,14 @@ var stageInstructions = map[string]func(bead beads.Bead) string{
 6. Unassign yourself: bd update %s --assignee=""
 `, b.ID, b.ID, b.ID)
 	},
-	"coder": func(b beads.Bead) string {
+	"coder": func(b beads.Bead, useBranches bool) string {
 		shortTitle := b.Title
 		if len(shortTitle) > 50 {
 			shortTitle = shortTitle[:50]
+		}
+		pushInstructions := "7. Push: git push"
+		if useBranches {
+			pushInstructions = "7. Push: git push (PR creation will be handled automatically)"
 		}
 		return fmt.Sprintf(`## Instructions (Coder)
 1. Read the acceptance criteria and design notes carefully
@@ -44,10 +48,10 @@ var stageInstructions = map[string]func(bead beads.Bead) string{
 4. Commit with message: feat(%s): %s
 5. Transition to review: bd update %s --set-labels stage:review
 6. Unassign yourself: bd update %s --assignee=""
-7. Push: git push
-`, b.ID, shortTitle, b.ID, b.ID)
+%s
+`, b.ID, shortTitle, b.ID, b.ID, pushInstructions)
 	},
-	"reviewer": func(b beads.Bead) string {
+	"reviewer": func(b beads.Bead, useBranches bool) string {
 		return fmt.Sprintf(`## Instructions (Reviewer)
 1. Review the code changes against acceptance criteria
 2. Check for correctness, style, and test coverage
@@ -56,7 +60,7 @@ var stageInstructions = map[string]func(bead beads.Bead) string{
 5. Unassign yourself: bd update %s --assignee=""
 `, b.ID, b.ID, b.ID)
 	},
-	"ops": func(b beads.Bead) string {
+	"ops": func(b beads.Bead, useBranches bool) string {
 		return fmt.Sprintf(`## Instructions (QA/Ops)
 1. Run the full test suite
 2. Verify acceptance criteria are met
@@ -74,6 +78,11 @@ func BuildPrompt(bead beads.Bead, project config.Project) string {
 
 // BuildPromptWithRole constructs a role-aware prompt sent to an openclaw agent.
 func BuildPromptWithRole(bead beads.Bead, project config.Project, role string) string {
+	return BuildPromptWithRoleBranches(bead, project, role, false)
+}
+
+// BuildPromptWithRoleBranches constructs a role-aware prompt with branch workflow support.
+func BuildPromptWithRoleBranches(bead beads.Bead, project config.Project, role string, useBranches bool) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "You are working on project in %s.\n\n", project.Workspace)
@@ -90,7 +99,7 @@ func BuildPromptWithRole(bead beads.Bead, project config.Project, role string) s
 
 	// Use stage-specific instructions if role is known
 	if fn, ok := stageInstructions[role]; ok {
-		b.WriteString(fn(bead))
+		b.WriteString(fn(bead, useBranches))
 	} else {
 		// Generic fallback (original behavior)
 		b.WriteString("## Instructions\n")
@@ -103,7 +112,11 @@ func BuildPromptWithRole(bead beads.Bead, project config.Project, role string) s
 		}
 		fmt.Fprintf(&b, "4. Commit with message: feat(%s): %s\n", bead.ID, shortTitle)
 		fmt.Fprintf(&b, "5. When done, run: bd close %s\n", bead.ID)
-		b.WriteString("6. Push: git push\n")
+		if useBranches {
+			b.WriteString("6. Push: git push (PR creation will be handled automatically)\n")
+		} else {
+			b.WriteString("6. Push: git push\n")
+		}
 	}
 	b.WriteString("\n")
 
