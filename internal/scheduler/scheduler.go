@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/antigravity-dev/cortex/internal/beads"
@@ -22,6 +23,8 @@ type Scheduler struct {
 	dispatcher  dispatch.DispatcherInterface
 	logger      *slog.Logger
 	dryRun      bool
+	mu          sync.Mutex
+	paused      bool
 }
 
 // New creates a new Scheduler with all dependencies.
@@ -62,8 +65,37 @@ type projectBeads struct {
 	beads   []beads.Bead
 }
 
+// Pause pauses the scheduler, preventing new dispatches.
+func (s *Scheduler) Pause() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.paused = true
+	s.logger.Info("scheduler paused")
+}
+
+// Resume resumes the scheduler.
+func (s *Scheduler) Resume() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.paused = false
+	s.logger.Info("scheduler resumed")
+}
+
+// IsPaused returns true if the scheduler is paused.
+func (s *Scheduler) IsPaused() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.paused
+}
+
 // RunTick executes a single scheduler tick.
 func (s *Scheduler) RunTick(ctx context.Context) {
+	// Check if paused first
+	if s.IsPaused() {
+		s.logger.Debug("tick skipped (paused)")
+		return
+	}
+
 	s.logger.Info("tick started")
 
 	// Check running dispatches first
@@ -242,7 +274,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		sessionName := s.dispatcher.GetSessionName(handle)
 
 		// Record dispatch with session name for crash-resilient tracking
-		_, err = s.store.RecordDispatch(item.bead.ID, item.name, agent, provider.Model, currentTier, handle, sessionName, prompt)
+		_, err = s.store.RecordDispatch(item.bead.ID, item.name, agent, provider.Model, currentTier, handle, sessionName, prompt, "", "", "")
 		if err != nil {
 			s.logger.Error("failed to record dispatch", "bead", item.bead.ID, "error", err)
 			continue

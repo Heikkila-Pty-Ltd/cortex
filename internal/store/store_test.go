@@ -22,7 +22,7 @@ func tempStore(t *testing.T) *Store {
 func TestOpenAndSchema(t *testing.T) {
 	s := tempStore(t)
 	// Verify tables exist by inserting a row
-	_, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 12345, "", "do stuff")
+	_, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 12345, "", "do stuff", "", "", "")
 	if err != nil {
 		t.Fatalf("RecordDispatch failed: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestOpenAndSchema(t *testing.T) {
 func TestRecordAndGetDispatches(t *testing.T) {
 	s := tempStore(t)
 
-	id, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "prompt1")
+	id, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "prompt1", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestIsBeadDispatched(t *testing.T) {
 		t.Error("bead should not be dispatched yet")
 	}
 
-	_, err = s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "prompt")
+	_, err = s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "prompt", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestIsBeadDispatched(t *testing.T) {
 func TestGetStuckDispatches(t *testing.T) {
 	s := tempStore(t)
 
-	_, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "prompt")
+	_, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "prompt", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestIsAgentBusy(t *testing.T) {
 		t.Error("agent should not be busy yet")
 	}
 
-	_, err = s.RecordDispatch("bead-1", "proj", "proj-coder", "cerebras", "fast", 100, "", "prompt")
+	_, err = s.RecordDispatch("bead-1", "proj", "proj-coder", "cerebras", "fast", 100, "", "prompt", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestCaptureAndGetOutput(t *testing.T) {
 	s := tempStore(t)
 
 	// Create a dispatch first
-	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "test prompt")
+	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "test prompt", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestCaptureOutputSizeLimit(t *testing.T) {
 	s := tempStore(t)
 
 	// Create a dispatch first
-	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "test prompt")
+	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "test prompt", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +297,7 @@ func TestCaptureOutputTail(t *testing.T) {
 	s := tempStore(t)
 
 	// Create a dispatch first
-	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "test prompt")
+	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "test prompt", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +331,7 @@ func TestSessionNameStorage(t *testing.T) {
 	s := tempStore(t)
 
 	// Record dispatch with session name
-	id, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 42, "ctx-proj-bead1-12345", "prompt")
+	id, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 42, "ctx-proj-bead1-12345", "prompt", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +373,7 @@ func TestRecordDispatchCost(t *testing.T) {
 	s := tempStore(t)
 
 	// Create a dispatch
-	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "claude", "premium", 100, "", "test prompt")
+	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "claude", "premium", 100, "", "test prompt", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +429,7 @@ func TestGetTotalCost(t *testing.T) {
 
 	for i, d := range dispatches {
 		beadID := fmt.Sprintf("bead-%d", i)
-		dispatchID, err := s.RecordDispatch(beadID, d.project, "agent-1", "claude", "premium", 100+i, "", "prompt")
+		dispatchID, err := s.RecordDispatch(beadID, d.project, "agent-1", "claude", "premium", 100+i, "", "prompt", "", "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -484,17 +484,17 @@ func TestInterruptRunningDispatches(t *testing.T) {
 	s := tempStore(t)
 
 	// Create some running dispatches
-	id1, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "prompt1")
+	id1, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "prompt1", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	id2, err := s.RecordDispatch("bead-2", "proj", "agent-2", "cerebras", "fast", 101, "", "prompt2")
+	id2, err := s.RecordDispatch("bead-2", "proj", "agent-2", "cerebras", "fast", 101, "", "prompt2", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = s.RecordDispatch("bead-3", "proj", "agent-3", "cerebras", "fast", 102, "", "prompt3")
+	_, err = s.RecordDispatch("bead-3", "proj", "agent-3", "cerebras", "fast", 102, "", "prompt3", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -530,7 +530,7 @@ func TestInterruptRunningDispatches(t *testing.T) {
 	err = s.db.QueryRow(`SELECT `+dispatchCols+` FROM dispatches WHERE id = ?`, id2).Scan(
 		&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName,
 		&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.ExitCode, &d.DurationS, &d.Retries, &d.EscalatedFromTier,
-		&d.FailureCategory, &d.FailureSummary,
+		&d.FailureCategory, &d.FailureSummary, &d.LogPath, &d.Branch, &d.Backend,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -546,7 +546,7 @@ func TestInterruptRunningDispatches(t *testing.T) {
 func TestUpdateFailureDiagnosis(t *testing.T) {
 	s := tempStore(t)
 
-	id, err := s.RecordDispatch("bead-diag", "proj", "agent1", "provider1", "fast", 100, "", "prompt")
+	id, err := s.RecordDispatch("bead-diag", "proj", "agent1", "provider1", "fast", 100, "", "prompt", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -574,5 +574,53 @@ func TestUpdateFailureDiagnosis(t *testing.T) {
 	}
 	if dispatches[0].FailureSummary != "--- FAIL: TestFoo (0.01s)" {
 		t.Errorf("expected summary '--- FAIL: TestFoo (0.01s)', got %q", dispatches[0].FailureSummary)
+	}
+}
+
+func TestNewColumnsStorage(t *testing.T) {
+	s := tempStore(t)
+
+	// Record a dispatch with all new fields
+	id, err := s.RecordDispatch(
+		"test-bead",
+		"test-project",
+		"test-agent",
+		"test-provider",
+		"fast",
+		12345,
+		"test-session",
+		"test prompt",
+		"/path/to/log.txt",     // logPath
+		"feature-branch",        // branch
+		"tmux",                  // backend
+	)
+	if err != nil {
+		t.Fatalf("RecordDispatch failed: %v", err)
+	}
+
+	// Retrieve the dispatch
+	dispatches, err := s.GetDispatchesByBead("test-bead")
+	if err != nil {
+		t.Fatalf("GetDispatchesByBead failed: %v", err)
+	}
+
+	if len(dispatches) != 1 {
+		t.Fatalf("expected 1 dispatch, got %d", len(dispatches))
+	}
+
+	d := dispatches[0]
+
+	// Verify all fields including new ones
+	if d.ID != id {
+		t.Errorf("ID mismatch: expected %d, got %d", id, d.ID)
+	}
+	if d.LogPath != "/path/to/log.txt" {
+		t.Errorf("LogPath mismatch: expected '/path/to/log.txt', got '%s'", d.LogPath)
+	}
+	if d.Branch != "feature-branch" {
+		t.Errorf("Branch mismatch: expected 'feature-branch', got '%s'", d.Branch)
+	}
+	if d.Backend != "tmux" {
+		t.Errorf("Backend mismatch: expected 'tmux', got '%s'", d.Backend)
 	}
 }

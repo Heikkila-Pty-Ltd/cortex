@@ -23,17 +23,19 @@ type Server struct {
 	cfg         *config.Config
 	store       *store.Store
 	rateLimiter *dispatch.RateLimiter
+	scheduler   *scheduler.Scheduler
 	logger      *slog.Logger
 	startTime   time.Time
 	httpServer  *http.Server
 }
 
 // NewServer creates a new API server.
-func NewServer(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, logger *slog.Logger) *Server {
+func NewServer(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, sched *scheduler.Scheduler, logger *slog.Logger) *Server {
 	return &Server{
 		cfg:         cfg,
 		store:       s,
 		rateLimiter: rl,
+		scheduler:   sched,
 		logger:      logger,
 		startTime:   time.Now(),
 	}
@@ -49,7 +51,10 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/teams", s.handleTeams)
 	mux.HandleFunc("/teams/", s.handleTeamDetail)
 	mux.HandleFunc("/metrics", s.handleMetrics)
-	mux.HandleFunc("/dispatches/", s.handleDispatchDetail)
+	mux.HandleFunc("/dispatches/", s.routeDispatches)
+	mux.HandleFunc("/scheduler/pause", s.handleSchedulerPause)
+	mux.HandleFunc("/scheduler/resume", s.handleSchedulerResume)
+	mux.HandleFunc("/scheduler/status", s.handleSchedulerStatus)
 
 	s.httpServer = &http.Server{
 		Addr:        s.cfg.API.Bind,
@@ -271,6 +276,24 @@ func (s *Server) handleTeamDetail(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// routeDispatches routes /dispatches/* to the appropriate handler
+func (s *Server) routeDispatches(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/dispatches/")
+
+	// Check for /cancel or /retry suffix
+	if strings.HasSuffix(path, "/cancel") {
+		s.handleDispatchCancel(w, r)
+		return
+	}
+	if strings.HasSuffix(path, "/retry") {
+		s.handleDispatchRetry(w, r)
+		return
+	}
+
+	// Otherwise, handle as dispatch detail (by bead_id)
+	s.handleDispatchDetail(w, r)
+}
+
 // GET /dispatches/{bead_id} — dispatch history for a bead
 func (s *Server) handleDispatchDetail(w http.ResponseWriter, r *http.Request) {
 	beadID := strings.TrimPrefix(r.URL.Path, "/dispatches/")
@@ -332,4 +355,141 @@ func (s *Server) handleDispatchDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, resp)
+}
+
+// POST /dispatches/{id}/cancel - Cancel a running dispatch
+func (s *Server) handleDispatchCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// Extract dispatch ID from path
+	path := strings.TrimPrefix(r.URL.Path, "/dispatches/")
+	idStr := strings.TrimSuffix(path, "/cancel")
+
+	var id int64
+	if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid dispatch id")
+		return
+	}
+
+	// Look up dispatch
+	dispatch, err := s.store.GetDispatchByID(id)
+	if err != nil {
+		s.logger.Error("failed to get dispatch", "id", id, "error", err)
+		writeError(w, http.StatusNotFound, "dispatch not found")
+		return
+	}
+
+	// Check if dispatch is running
+	if dispatch.Status != "running" {
+		writeError(w, http.StatusBadRequest, "dispatch not running")
+		return
+	}
+
+	// Update status to cancelled
+	if err := s.store.UpdateDispatchStatus(id, "cancelled", 0, 0); err != nil {
+		s.logger.Error("failed to update dispatch status", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to cancel dispatch")
+		return
+	}
+
+	s.logger.Info("dispatch cancelled", "id", id, "bead", dispatch.BeadID)
+
+	writeJSON(w, map[string]any{
+		"status":      "cancelled",
+		"dispatch_id": id,
+	})
+}
+
+// POST /dispatches/{id}/retry - Retry a failed dispatch
+func (s *Server) handleDispatchRetry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// Extract dispatch ID from path
+	path := strings.TrimPrefix(r.URL.Path, "/dispatches/")
+	idStr := strings.TrimSuffix(path, "/retry")
+
+	var id int64
+	if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid dispatch id")
+		return
+	}
+
+	// Look up dispatch
+	dispatch, err := s.store.GetDispatchByID(id)
+	if err != nil {
+		s.logger.Error("failed to get dispatch", "id", id, "error", err)
+		writeError(w, http.StatusNotFound, "dispatch not found")
+		return
+	}
+
+	// Check if dispatch can be retried
+	if dispatch.Status != "failed" && dispatch.Status != "cancelled" {
+		writeError(w, http.StatusBadRequest, "dispatch cannot be retried")
+		return
+	}
+
+	// Update status to pending_retry and increment retries
+	_, err = s.store.DB().Exec(
+		`UPDATE dispatches SET status = ?, retries = retries + 1 WHERE id = ?`,
+		"pending_retry", id,
+	)
+	if err != nil {
+		s.logger.Error("failed to update dispatch for retry", "id", id, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to retry dispatch")
+		return
+	}
+
+	s.logger.Info("dispatch marked for retry", "id", id, "bead", dispatch.BeadID, "retries", dispatch.Retries+1)
+
+	writeJSON(w, map[string]any{
+		"status":      "pending_retry",
+		"dispatch_id": id,
+	})
+}
+
+// POST /scheduler/pause - Pause the scheduler
+func (s *Server) handleSchedulerPause(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	s.scheduler.Pause()
+
+	writeJSON(w, map[string]any{
+		"paused": true,
+	})
+}
+
+// POST /scheduler/resume - Resume the scheduler
+func (s *Server) handleSchedulerResume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	s.scheduler.Resume()
+
+	writeJSON(w, map[string]any{
+		"paused": false,
+	})
+}
+
+// GET /scheduler/status - Get scheduler status
+func (s *Server) handleSchedulerStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"paused":        s.scheduler.IsPaused(),
+		"tick_interval": s.cfg.General.TickInterval.Duration.String(),
+	})
 }

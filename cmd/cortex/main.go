@@ -106,8 +106,8 @@ func main() {
 	hm := health.NewMonitor(cfg.Health, st, logger.With("component", "health"))
 	go hm.Start(ctx)
 
-	// Start API server
-	apiSrv := api.NewServer(cfg, st, rl, logger.With("component", "api"))
+	// Start API server with scheduler reference
+	apiSrv := api.NewServer(cfg, st, rl, sched, logger.With("component", "api"))
 	go func() {
 		if err := apiSrv.Start(ctx); err != nil {
 			logger.Error("api server error", "error", err)

@@ -34,6 +34,9 @@ type Dispatch struct {
 	EscalatedFromTier string
 	FailureCategory   string
 	FailureSummary    string
+	LogPath           string
+	Branch            string
+	Backend           string
 }
 
 // HealthEvent represents a recorded health event.
@@ -216,6 +219,39 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// Add log_path column if it doesn't exist
+	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('dispatches') WHERE name = 'log_path'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check log_path column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE dispatches ADD COLUMN log_path TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add log_path column: %w", err)
+		}
+	}
+
+	// Add branch column if it doesn't exist
+	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('dispatches') WHERE name = 'branch'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check branch column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE dispatches ADD COLUMN branch TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add branch column: %w", err)
+		}
+	}
+
+	// Add backend column if it doesn't exist
+	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('dispatches') WHERE name = 'backend'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check backend column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE dispatches ADD COLUMN backend TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add backend column: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -230,10 +266,10 @@ func (s *Store) DB() *sql.DB {
 }
 
 // RecordDispatch inserts a new dispatch record and returns its ID.
-func (s *Store) RecordDispatch(beadID, project, agent, provider, tier string, handle int, sessionName, prompt string) (int64, error) {
+func (s *Store) RecordDispatch(beadID, project, agent, provider, tier string, handle int, sessionName, prompt, logPath, branch, backend string) (int64, error) {
 	res, err := s.db.Exec(
-		`INSERT INTO dispatches (bead_id, project, agent_id, provider, tier, pid, session_name, prompt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		beadID, project, agent, provider, tier, handle, sessionName, prompt,
+		`INSERT INTO dispatches (bead_id, project, agent_id, provider, tier, pid, session_name, prompt, log_path, branch, backend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		beadID, project, agent, provider, tier, handle, sessionName, prompt, logPath, branch, backend,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("store: record dispatch: %w", err)
@@ -253,7 +289,7 @@ func (s *Store) UpdateDispatchStatus(id int64, status string, exitCode int, dura
 	return nil
 }
 
-const dispatchCols = `id, bead_id, project, agent_id, provider, tier, pid, session_name, prompt, dispatched_at, completed_at, status, exit_code, duration_s, retries, escalated_from_tier, failure_category, failure_summary`
+const dispatchCols = `id, bead_id, project, agent_id, provider, tier, pid, session_name, prompt, dispatched_at, completed_at, status, exit_code, duration_s, retries, escalated_from_tier, failure_category, failure_summary, log_path, branch, backend`
 
 // GetRunningDispatches returns all dispatches with status 'running'.
 func (s *Store) GetRunningDispatches() ([]Dispatch, error) {
@@ -271,6 +307,18 @@ func (s *Store) GetDispatchesByBead(beadID string) ([]Dispatch, error) {
 	return s.queryDispatches(`SELECT `+dispatchCols+` FROM dispatches WHERE bead_id = ? ORDER BY dispatched_at DESC`, beadID)
 }
 
+// GetDispatchByID returns a dispatch by its ID.
+func (s *Store) GetDispatchByID(id int64) (*Dispatch, error) {
+	dispatches, err := s.queryDispatches(`SELECT `+dispatchCols+` FROM dispatches WHERE id = ?`, id)
+	if err != nil {
+		return nil, err
+	}
+	if len(dispatches) == 0 {
+		return nil, fmt.Errorf("dispatch not found: %d", id)
+	}
+	return &dispatches[0], nil
+}
+
 func (s *Store) queryDispatches(query string, args ...any) ([]Dispatch, error) {
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -281,7 +329,7 @@ func (s *Store) queryDispatches(query string, args ...any) ([]Dispatch, error) {
 	var dispatches []Dispatch
 	for rows.Next() {
 		var d Dispatch
-		if err := rows.Scan(&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName, &d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.ExitCode, &d.DurationS, &d.Retries, &d.EscalatedFromTier, &d.FailureCategory, &d.FailureSummary); err != nil {
+		if err := rows.Scan(&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName, &d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.ExitCode, &d.DurationS, &d.Retries, &d.EscalatedFromTier, &d.FailureCategory, &d.FailureSummary, &d.LogPath, &d.Branch, &d.Backend); err != nil {
 			return nil, fmt.Errorf("store: scan dispatch: %w", err)
 		}
 		dispatches = append(dispatches, d)
