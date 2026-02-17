@@ -16,8 +16,10 @@ func openclawShellScript() string {
 	return `msg=$(cat "$1")
 agent="$2"
 thinking="$3"
+provider="$4"
+session_id="ctx-$$-$(date +%s)"
 err_file=$(mktemp)
-openclaw agent --agent "$agent" --message "$msg" --thinking "$thinking" 2>"$err_file"
+openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$err_file"
 status=$?
 if [ $status -eq 0 ]; then
   rm -f "$err_file"
@@ -42,7 +44,7 @@ if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file
 fi
 
 if [ "$should_fallback" -eq 1 ]; then
-  printf '%s' "$msg" | openclaw agent --agent "$agent" --thinking "$thinking"
+  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
   status=$?
   rm -f "$err_file"
   exit $status
@@ -79,8 +81,8 @@ type DispatcherInterface interface {
 	Dispatch(ctx context.Context, agent string, prompt string, provider string, thinkingLevel string, workDir string) (int, error)
 	IsAlive(handle int) bool
 	Kill(handle int) error
-	GetHandleType() string            // "pid" or "session"
-	GetSessionName(handle int) string // Returns session name for tmux dispatchers, empty for PID dispatchers
+	GetHandleType() string                   // "pid" or "session"
+	GetSessionName(handle int) string        // Returns session name for tmux dispatchers, empty for PID dispatchers
 	GetProcessState(handle int) ProcessState // Get detailed process state for completion logic
 }
 
@@ -155,7 +157,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, agent string, prompt string, 
 	// exits in --once mode (the parent context gets cancelled on exit).
 	cmd := exec.Command("sh", openclawCommandArgs(tmpPath, agent, thinking, provider)...)
 	cmd.Dir = workDir
-	
+
 	// Capture both stdout and stderr to the output file
 	cmd.Stdout = outputFile
 	cmd.Stderr = outputFile
@@ -166,21 +168,21 @@ func (d *Dispatcher) Dispatch(ctx context.Context, agent string, prompt string, 
 		os.Remove(outputPath)
 		return 0, fmt.Errorf("dispatch: start openclaw agent: %w", err)
 	}
-	
+
 	// Close the output file handle now that the process has it
 	outputFile.Close()
 
 	pid = cmd.Process.Pid
-	
+
 	// Store process info
 	d.mu.Lock()
 	d.processes[pid] = &processInfo{
-		cmd:       cmd,
-		startedAt: time.Now(),
-		state:     "running",
-		exitCode:  -1,
+		cmd:        cmd,
+		startedAt:  time.Now(),
+		state:      "running",
+		exitCode:   -1,
 		outputPath: outputPath,
-		tmpPath:   tmpPath,
+		tmpPath:    tmpPath,
 	}
 	d.mu.Unlock()
 
@@ -202,19 +204,19 @@ func (d *Dispatcher) monitorProcess(pid int) {
 	d.mu.RUnlock()
 
 	err := cmd.Wait()
-	
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	
+
 	// Check if process info still exists (might have been cleaned up)
 	info, exists = d.processes[pid]
 	if !exists {
 		return
 	}
-	
+
 	info.completedAt = time.Now()
 	info.state = "exited"
-	
+
 	if err != nil {
 		if exitError, ok := err.(*exec.ExitError); ok {
 			info.exitCode = exitError.ExitCode()
@@ -225,7 +227,7 @@ func (d *Dispatcher) monitorProcess(pid int) {
 	} else {
 		info.exitCode = 0
 	}
-	
+
 	// Clean up temp prompt file
 	if info.tmpPath != "" {
 		os.Remove(info.tmpPath)
@@ -243,13 +245,13 @@ func IsProcessAlive(pid int) bool {
 func (d *Dispatcher) IsAlive(handle int) bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	
+
 	info, exists := d.processes[handle]
 	if !exists {
 		// Process not tracked, fall back to system check
 		return IsProcessAlive(handle)
 	}
-	
+
 	return info.state == "running"
 }
 
@@ -264,7 +266,7 @@ func (d *Dispatcher) Kill(handle int) error {
 		info.completedAt = time.Now()
 	}
 	d.mu.Unlock()
-	
+
 	return KillProcess(handle)
 }
 
@@ -283,7 +285,7 @@ func (d *Dispatcher) GetSessionName(handle int) string {
 func (d *Dispatcher) GetProcessState(handle int) ProcessState {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	
+
 	info, exists := d.processes[handle]
 	if !exists {
 		// Process not tracked, check if it's still alive
@@ -300,7 +302,7 @@ func (d *Dispatcher) GetProcessState(handle int) ProcessState {
 			OutputPath: "",
 		}
 	}
-	
+
 	return ProcessState{
 		State:       info.state,
 		ExitCode:    info.exitCode,
@@ -313,7 +315,7 @@ func (d *Dispatcher) GetProcessState(handle int) ProcessState {
 func (d *Dispatcher) CleanupProcess(handle int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	
+
 	info, exists := d.processes[handle]
 	if exists {
 		// Clean up output file if it exists
