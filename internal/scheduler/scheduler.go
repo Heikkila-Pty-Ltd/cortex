@@ -114,6 +114,9 @@ func (s *Scheduler) CancelDispatch(id int64) error {
 	if err := s.store.UpdateDispatchStatus(id, "cancelled", 0, time.Since(d.DispatchedAt).Seconds()); err != nil {
 		return fmt.Errorf("failed to update dispatch status: %w", err)
 	}
+	if err := s.store.UpdateDispatchStage(id, "cancelled"); err != nil {
+		s.logger.Warn("failed to update dispatch stage", "dispatch_id", id, "stage", "cancelled", "error", err)
+	}
 
 	s.logger.Info("dispatch cancelled", "id", id, "bead", d.BeadID, "handle", d.PID)
 	return nil
@@ -315,10 +318,13 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		sessionName := s.dispatcher.GetSessionName(handle)
 
 		// Record dispatch with session name for crash-resilient tracking
-		_, err = s.store.RecordDispatch(item.bead.ID, item.name, agent, provider.Model, currentTier, handle, sessionName, prompt, "", "", "")
+		dispatchID, err := s.store.RecordDispatch(item.bead.ID, item.name, agent, provider.Model, currentTier, handle, sessionName, prompt, "", "", "")
 		if err != nil {
 			s.logger.Error("failed to record dispatch", "bead", item.bead.ID, "error", err)
 			continue
+		}
+		if err := s.store.UpdateDispatchStage(dispatchID, "running"); err != nil {
+			s.logger.Warn("failed to set dispatch stage", "dispatch_id", dispatchID, "stage", "running", "error", err)
 		}
 
 		// Record authed usage
@@ -369,6 +375,11 @@ func (s *Scheduler) checkRunningDispatches() {
 	for _, d := range running {
 		alive := s.isDispatchAlive(d)
 		if alive {
+			if d.Stage != "running" {
+				if err := s.store.UpdateDispatchStage(d.ID, "running"); err != nil {
+					s.logger.Warn("failed to update running dispatch stage", "dispatch_id", d.ID, "error", err)
+				}
+			}
 			continue
 		}
 
@@ -376,6 +387,7 @@ func (s *Scheduler) checkRunningDispatches() {
 		duration := time.Since(d.DispatchedAt).Seconds()
 		status := "completed"
 		exitCode := 0
+		finalStage := "completed"
 
 		// For tmux sessions, capture output and get exit code from the session
 		if d.SessionName != "" {
@@ -384,12 +396,30 @@ func (s *Scheduler) checkRunningDispatches() {
 			case "gone":
 				status = "failed"
 				exitCode = -1
-				s.logger.Warn("dispatch session disappeared before completion capture", "bead", d.BeadID, "session", d.SessionName)
-				_ = s.store.RecordHealthEvent("dispatch_session_gone", fmt.Sprintf("bead %s session %s disappeared during completion check", d.BeadID, d.SessionName))
+				finalStage = "gone"
+				s.logger.Error("dispatch session disappeared - needs manual diagnosis", 
+					"bead", d.BeadID, 
+					"session", d.SessionName,
+					"agent", d.AgentID,
+					"provider", d.Provider,
+					"duration_s", duration)
+				
+				// Record detailed health event for tracking
+				healthDetails := fmt.Sprintf("bead %s session %s (agent=%s, provider=%s) disappeared after %.1fs - session may have crashed or been terminated externally", 
+					d.BeadID, d.SessionName, d.AgentID, d.Provider, duration)
+				_ = s.store.RecordHealthEvent("dispatch_session_gone", healthDetails)
+				
+				// Set failure diagnosis for manual review
+				category := "session_disappeared"
+				summary := fmt.Sprintf("Tmux session %s disappeared unexpectedly during execution. This may indicate a system crash, out-of-memory condition, or external termination. Manual investigation required.", d.SessionName)
+				if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
+					s.logger.Error("failed to store failure diagnosis for gone session", "dispatch_id", d.ID, "error", err)
+				}
 			case "exited":
 				if sessExit != 0 {
 					status = "failed"
 					exitCode = sessExit
+					finalStage = "failed"
 				}
 			}
 			if sessStatus != "gone" {
@@ -414,6 +444,16 @@ func (s *Scheduler) checkRunningDispatches() {
 
 		if err := s.store.UpdateDispatchStatus(d.ID, status, exitCode, duration); err != nil {
 			s.logger.Error("failed to update dispatch status", "id", d.ID, "error", err)
+		} else {
+			if status == "completed" {
+				if err := s.store.UpdateDispatchStage(d.ID, "completed"); err != nil {
+					s.logger.Warn("failed to update dispatch stage", "dispatch_id", d.ID, "stage", "completed", "error", err)
+				}
+			} else {
+				if err := s.store.UpdateDispatchStage(d.ID, finalStage); err != nil {
+					s.logger.Warn("failed to update dispatch stage", "dispatch_id", d.ID, "stage", finalStage, "error", err)
+				}
+			}
 		}
 
 		// Run failure diagnostics on captured output
