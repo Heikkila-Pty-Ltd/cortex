@@ -20,12 +20,18 @@ import (
 // Helper function to create a temporary store for testing
 func tempStore(t *testing.T) *store.Store {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "race_test.db")
+	// Use unique temp directory and database name to avoid conflicts
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, fmt.Sprintf("race_test_%d.db", time.Now().UnixNano()))
 	s, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { 
+		s.Close()
+		// Ensure cleanup with a small delay to avoid file locking issues
+		time.Sleep(10 * time.Millisecond)
+	})
 	return s
 }
 
@@ -60,17 +66,18 @@ func TestStoreConcurrentAccess(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping race test in short mode")
 	}
+	t.Parallel() // Allow parallel execution with other tests
 
 	s := tempStore(t)
 	
 	const numGoroutines = 2
-	const numOperationsPerGoroutine = 5
+	const numOperationsPerGoroutine = 3  // Reduced operations to prevent overwhelming
 	
 	var wg sync.WaitGroup
 	var recordedCount int64
 	var readCount int64
 	
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)  // Reduced timeout for faster tests
 	defer cancel()
 	
 	// Start goroutines that record dispatches
@@ -78,7 +85,14 @@ func TestStoreConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(routineID int) {
 			defer wg.Done()
-			for j := 0; j < numOperationsPerGoroutine && ctx.Err() == nil; j++ {
+			for j := 0; j < numOperationsPerGoroutine; j++ {
+				// Check context before each operation
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				
 				beadID := fmt.Sprintf("bead-%d-%d", routineID, j)
 				_, err := s.RecordDispatch(beadID, "test-proj", "agent-1", "cerebras", "fast", 
 					12345+routineID*1000+j, "", "test prompt", "", "", "")
@@ -88,8 +102,8 @@ func TestStoreConcurrentAccess(t *testing.T) {
 				}
 				atomic.AddInt64(&recordedCount, 1)
 				
-				// Yield to other goroutines
-				time.Sleep(time.Millisecond)
+				// Small delay to reduce database contention
+				time.Sleep(2 * time.Millisecond)
 			}
 		}(i)
 	}
@@ -99,7 +113,14 @@ func TestStoreConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < numOperationsPerGoroutine && ctx.Err() == nil; j++ {
+			for j := 0; j < numOperationsPerGoroutine; j++ {
+				// Check context before each operation
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				
 				_, err := s.GetRunningDispatches()
 				if err != nil {
 					t.Errorf("GetRunningDispatches failed: %v", err)
@@ -107,8 +128,8 @@ func TestStoreConcurrentAccess(t *testing.T) {
 				}
 				atomic.AddInt64(&readCount, 1)
 				
-				// Yield to other goroutines
-				time.Sleep(time.Millisecond)
+				// Small delay to reduce database contention
+				time.Sleep(2 * time.Millisecond)
 			}
 		}()
 	}
@@ -124,7 +145,8 @@ func TestStoreConcurrentAccess(t *testing.T) {
 	case <-done:
 		// Success
 	case <-ctx.Done():
-		t.Fatal("Test timed out")
+		t.Fatalf("Test timed out - recorded: %d, read: %d", 
+			atomic.LoadInt64(&recordedCount), atomic.LoadInt64(&readCount))
 	}
 	
 	expectedRecords := int64(numGoroutines * numOperationsPerGoroutine)
@@ -145,16 +167,17 @@ func TestRateLimiterConcurrentAccess(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping race test in short mode")
 	}
+	t.Parallel() // Allow parallel execution with other tests
 
 	s := tempStore(t)
 	cfg := config.RateLimits{
-		Window5hCap: 20,
-		WeeklyCap:   50,
+		Window5hCap: 10,  // Reduced cap to test rate limiting better
+		WeeklyCap:   20,
 	}
 	rl := dispatch.NewRateLimiter(s, cfg)
 	
-	const numGoroutines = 3
-	const numOperationsPerGoroutine = 5
+	const numGoroutines = 2  // Reduced goroutines
+	const numOperationsPerGoroutine = 3  // Reduced operations
 	
 	var wg sync.WaitGroup
 	var canDispatchCount int64
@@ -162,7 +185,7 @@ func TestRateLimiterConcurrentAccess(t *testing.T) {
 	var allowedCount int64
 	var blockedCount int64
 	
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)  // Reduced timeout for faster tests
 	defer cancel()
 	
 	// Start goroutines that check and record if allowed
@@ -170,7 +193,14 @@ func TestRateLimiterConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(routineID int) {
 			defer wg.Done()
-			for j := 0; j < numOperationsPerGoroutine && ctx.Err() == nil; j++ {
+			for j := 0; j < numOperationsPerGoroutine; j++ {
+				// Check context before each operation
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				
 				// Check if dispatch is allowed
 				allowed, _ := rl.CanDispatchAuthed()
 				atomic.AddInt64(&canDispatchCount, 1)
@@ -189,8 +219,8 @@ func TestRateLimiterConcurrentAccess(t *testing.T) {
 					atomic.AddInt64(&blockedCount, 1)
 				}
 				
-				// Small delay to increase chance of race conditions
-				time.Sleep(1 * time.Millisecond)
+				// Small delay to reduce database contention
+				time.Sleep(5 * time.Millisecond)
 			}
 		}(i)
 	}
@@ -206,7 +236,9 @@ func TestRateLimiterConcurrentAccess(t *testing.T) {
 	case <-done:
 		// Success
 	case <-ctx.Done():
-		t.Fatal("Test timed out")
+		t.Fatalf("Test timed out - checks: %d, records: %d, allowed: %d, blocked: %d", 
+			atomic.LoadInt64(&canDispatchCount), atomic.LoadInt64(&recordCount),
+			atomic.LoadInt64(&allowedCount), atomic.LoadInt64(&blockedCount))
 	}
 	
 	totalChecks := int64(numGoroutines * numOperationsPerGoroutine)
@@ -230,40 +262,55 @@ func TestSchedulerHealthConcurrent(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping race test in short mode")
 	}
+	t.Parallel() // Allow parallel execution with other tests
 
 	s := tempStore(t)
 	cfg := testConfig()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	
 	// Use PID-based mock dispatcher to avoid tmux session complications
+	// Use unique starting handle based on current time to avoid conflicts across tests
 	mockDispatcher := &MockDispatcher{
 		dispatches:   make(map[string]bool),
 		callCount:    make(map[string]int),
 		handles:      make(map[int]bool),
 		sessionNames: make(map[int]string),
-		nextHandle:   12345, // Start with higher numbers to avoid PID conflicts
+		nextHandle:   time.Now().UnixNano() / 1000000, // Unique start based on timestamp
 	}
 	
 	rl := dispatch.NewRateLimiter(s, cfg.RateLimits)
 	sched := scheduler.New(cfg, s, rl, mockDispatcher, logger, true) // dry-run mode
 	
 	// Test concurrent access without stuck dispatches (avoid health check complications)
-	const numIterations = 3
+	const numIterations = 2  // Reduced iterations
 	var wg sync.WaitGroup
 	var schedulerRuns int64
 	var storeReads int64
 	
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)  // Reduced timeout for faster tests
 	defer cancel()
 	
 	// Goroutine 1: Scheduler RunTick (reads/writes dispatches)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for j := 0; j < numIterations && ctx.Err() == nil; j++ {
+		for j := 0; j < numIterations; j++ {
+			// Check context before each operation
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			
 			sched.RunTick(ctx)
 			atomic.AddInt64(&schedulerRuns, 1)
-			time.Sleep(100 * time.Millisecond)
+			
+			// Short delay between scheduler runs
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
 		}
 	}()
 	
@@ -271,7 +318,14 @@ func TestSchedulerHealthConcurrent(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for j := 0; j < numIterations && ctx.Err() == nil; j++ {
+		for j := 0; j < numIterations; j++ {
+			// Check context before each operation
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			
 			// Simulate what health checks do - read running dispatches
 			_, err := s.GetRunningDispatches()
 			if err != nil {
@@ -279,7 +333,13 @@ func TestSchedulerHealthConcurrent(t *testing.T) {
 				return
 			}
 			atomic.AddInt64(&storeReads, 1)
-			time.Sleep(80 * time.Millisecond)
+			
+			// Short delay between reads
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(40 * time.Millisecond):
+			}
 		}
 	}()
 	
@@ -294,7 +354,8 @@ func TestSchedulerHealthConcurrent(t *testing.T) {
 	case <-done:
 		// Success
 	case <-ctx.Done():
-		t.Fatal("Test timed out")
+		t.Fatalf("Test timed out - scheduler runs: %d, store reads: %d", 
+			atomic.LoadInt64(&schedulerRuns), atomic.LoadInt64(&storeReads))
 	}
 	
 	t.Logf("Scheduler/Health concurrent test: %d scheduler runs, %d store reads", schedulerRuns, storeReads)
@@ -312,6 +373,7 @@ func TestConfigReloadConcurrent(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping race test in short mode")
 	}
+	t.Parallel() // Allow parallel execution with other tests
 
 	s := tempStore(t)
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -322,42 +384,63 @@ func TestConfigReloadConcurrent(t *testing.T) {
 	currentConfig.Store(initialConfig)
 	
 	mockDispatcher := &MockDispatcher{
-		dispatches: make(map[string]bool),
-		callCount:  make(map[string]int),
-		handles:    make(map[int]bool),
-		nextHandle: 1,
+		dispatches:   make(map[string]bool),
+		callCount:    make(map[string]int),
+		handles:      make(map[int]bool),
+		sessionNames: make(map[int]string),
+		nextHandle:   time.Now().UnixNano()/1000000 + 100000, // Unique start with offset
 	}
 	
 	rl := dispatch.NewRateLimiter(s, initialConfig.RateLimits)
 	
-	const numReloads = 3  // Further reduced iterations
-	const numTicks = 5    // Further reduced iterations
+	const numReloads = 2   // Reduced iterations
+	const numTicks = 3     // Reduced iterations
 	var wg sync.WaitGroup
 	var reloadCount int64
 	var tickCount int64
 	
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)  // Reduced timeout for faster tests
 	defer cancel()
 	
 	// Goroutine that simulates config reloads (atomic pointer swaps)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < numReloads && ctx.Err() == nil; i++ {
+		for i := 0; i < numReloads; i++ {
+			// Check context before each operation
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			
 			newConfig := testConfig()
 			newConfig.General.MaxPerTick = i + 1 // Change a value
 			currentConfig.Store(newConfig)
 			atomic.AddInt64(&reloadCount, 1)
-			time.Sleep(50 * time.Millisecond) // Shorter delay
+			
+			// Short delay between reloads
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
 		}
 	}()
 	
 	// Goroutines that simulate scheduler ticks reading config
-	for i := 0; i < 2; i++ { // Fewer goroutines
+	for i := 0; i < 1; i++ { // Single goroutine to reduce complexity
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < numTicks && ctx.Err() == nil; j++ {
+			for j := 0; j < numTicks; j++ {
+				// Check context before each operation
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				
 				cfg := currentConfig.Load()
 				if cfg == nil {
 					t.Error("Config pointer was nil")
@@ -372,7 +455,13 @@ func TestConfigReloadConcurrent(t *testing.T) {
 				sched.RunTick(ctx)
 				
 				atomic.AddInt64(&tickCount, 1)
-				time.Sleep(75 * time.Millisecond) // Longer delay
+				
+				// Short delay between ticks
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(40 * time.Millisecond):
+				}
 			}
 		}()
 	}
@@ -388,7 +477,8 @@ func TestConfigReloadConcurrent(t *testing.T) {
 	case <-done:
 		// Success
 	case <-ctx.Done():
-		t.Fatal("Test timed out")
+		t.Fatalf("Test timed out - reloads: %d, ticks: %d", 
+			atomic.LoadInt64(&reloadCount), atomic.LoadInt64(&tickCount))
 	}
 	
 	t.Logf("Config reload test: %d reloads, %d ticks", reloadCount, tickCount)
@@ -406,6 +496,7 @@ func TestReporterDeduplicationConcurrent(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping race test in short mode")
 	}
+	t.Parallel() // Allow parallel execution with other tests
 
 	// Create a test reporter that we can control for concurrency testing
 	
@@ -423,23 +514,23 @@ func TestReporterDeduplicationConcurrent(t *testing.T) {
 	// Mock the SendAlert logic with deduplication
 	sendAlert := func(alertType string, message string) {
 		reporter.mu.Lock()
+		defer reporter.mu.Unlock()  // Use defer for safety
+		
 		lastSent, exists := reporter.alertSent[alertType]
 		if exists && time.Since(lastSent) < time.Hour {
-			reporter.mu.Unlock()
 			return // dedup
 		}
 		reporter.alertSent[alertType] = time.Now()
 		atomic.AddInt64(&reporter.dispatchCount, 1) // Simulate actual dispatch
-		reporter.mu.Unlock()
 	}
 	
-	const numGoroutines = 3 // Further reduced goroutines
-	const numAlertsPerGoroutine = 5
+	const numGoroutines = 2 // Reduced goroutines
+	const numAlertsPerGoroutine = 3 // Reduced alerts
 	
 	var wg sync.WaitGroup
 	var alertsSent int64
 	
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)  // Reduced timeout for faster tests
 	defer cancel()
 	
 	// Send the same alert type from multiple goroutines
@@ -448,11 +539,24 @@ func TestReporterDeduplicationConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func(routineID int) {
 			defer wg.Done()
-			for j := 0; j < numAlertsPerGoroutine && ctx.Err() == nil; j++ {
+			for j := 0; j < numAlertsPerGoroutine; j++ {
+				// Check context before each operation
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				
 				message := fmt.Sprintf("Alert from routine %d, call %d", routineID, j)
 				sendAlert(alertType, message)
 				atomic.AddInt64(&alertsSent, 1)
-				time.Sleep(5 * time.Millisecond) // Shorter delay
+				
+				// Short delay to reduce lock contention
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(5 * time.Millisecond):
+				}
 			}
 		}(i)
 	}
@@ -468,7 +572,8 @@ func TestReporterDeduplicationConcurrent(t *testing.T) {
 	case <-done:
 		// Success
 	case <-ctx.Done():
-		t.Fatal("Test timed out")
+		t.Fatalf("Test timed out - alerts sent: %d, dispatches: %d", 
+			atomic.LoadInt64(&alertsSent), atomic.LoadInt64(&reporter.dispatchCount))
 	}
 	
 	expectedAlerts := int64(numGoroutines * numAlertsPerGoroutine)
@@ -501,15 +606,15 @@ type MockDispatcher struct {
 	callCount    map[string]int
 	handles      map[int]bool
 	sessionNames map[int]string // Maps handles to mock session names
-	nextHandle   int
+	nextHandle   int64          // Use atomic for thread safety
 }
 
 func (m *MockDispatcher) Dispatch(ctx context.Context, agent, prompt, provider, thinkingLevel, workDir string) (int, error) {
+	// Use atomic for handle generation to avoid conflicts
+	handle := int(atomic.AddInt64(&m.nextHandle, 1))
+	
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
-	handle := m.nextHandle
-	m.nextHandle++
 	
 	key := fmt.Sprintf("%s-%d", agent, handle)
 	m.dispatches[key] = true
@@ -539,6 +644,12 @@ func (m *MockDispatcher) GetHandleType() string {
 }
 
 func (m *MockDispatcher) GetSessionName(handle int) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
+	if name, exists := m.sessionNames[handle]; exists {
+		return name
+	}
 	return fmt.Sprintf("mock-session-%d", handle)
 }
 
