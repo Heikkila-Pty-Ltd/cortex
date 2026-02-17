@@ -176,3 +176,110 @@ func TestDurationUnmarshalInvalid(t *testing.T) {
 		t.Error("expected error for invalid duration")
 	}
 }
+
+func TestLoadWithWorkflows(t *testing.T) {
+	cfg := validConfig + `
+
+[workflows.dev]
+match_labels = ["code", "backend"]
+match_types = ["task", "bug"]
+
+[[workflows.dev.stages]]
+name = "implement"
+role = "coder"
+
+[[workflows.dev.stages]]
+name = "review"
+role = "reviewer"
+`
+	path := writeTestConfig(t, cfg)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	wf, ok := loaded.Workflows["dev"]
+	if !ok {
+		t.Fatal("expected workflows.dev to parse")
+	}
+	if len(wf.Stages) != 2 {
+		t.Fatalf("expected 2 stages, got %d", len(wf.Stages))
+	}
+	if wf.Stages[0].Name != "implement" || wf.Stages[0].Role != "coder" {
+		t.Fatalf("unexpected first stage: %+v", wf.Stages[0])
+	}
+}
+
+func TestLoadWorkflowValidationDuplicateStageName(t *testing.T) {
+	cfg := validConfig + `
+
+[workflows.dev]
+
+[[workflows.dev.stages]]
+name = "implement"
+role = "coder"
+
+[[workflows.dev.stages]]
+name = "implement"
+role = "reviewer"
+`
+	path := writeTestConfig(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected duplicate stage name validation error")
+	}
+}
+
+func TestLoadWorkflowValidationUnknownRole(t *testing.T) {
+	cfg := validConfig + `
+
+[workflows.dev]
+
+[[workflows.dev.stages]]
+name = "implement"
+role = "astronaut"
+`
+	path := writeTestConfig(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected unknown role validation error")
+	}
+}
+
+func TestLoadWorkflowValidationMissingStageNameOrRole(t *testing.T) {
+	cfgMissingName := validConfig + `
+
+[workflows.dev]
+
+[[workflows.dev.stages]]
+role = "coder"
+`
+	path := writeTestConfig(t, cfgMissingName)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected missing stage name validation error")
+	}
+
+	cfgMissingRole := validConfig + `
+
+[workflows.dev]
+
+[[workflows.dev.stages]]
+name = "implement"
+`
+	path = writeTestConfig(t, cfgMissingRole)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected missing stage role validation error")
+	}
+}
+
+func TestLoadWorkflowValidationEmptyWorkflowsSection(t *testing.T) {
+	cfg := validConfig + `
+
+[workflows]
+`
+	path := writeTestConfig(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected empty workflows section validation error")
+	}
+}
+

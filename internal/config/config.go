@@ -29,15 +29,16 @@ func (d Duration) MarshalText() ([]byte, error) {
 }
 
 type Config struct {
-	General    General             `toml:"general"`
-	Projects   map[string]Project  `toml:"projects"`
-	RateLimits RateLimits          `toml:"rate_limits"`
-	Providers  map[string]Provider `toml:"providers"`
-	Tiers      Tiers               `toml:"tiers"`
-	Health     Health              `toml:"health"`
-	Reporter   Reporter            `toml:"reporter"`
-	API        API                 `toml:"api"`
-	Dispatch   Dispatch            `toml:"dispatch"`
+	General    General                    `toml:"general"`
+	Projects   map[string]Project         `toml:"projects"`
+	RateLimits RateLimits                 `toml:"rate_limits"`
+	Providers  map[string]Provider        `toml:"providers"`
+	Tiers      Tiers                      `toml:"tiers"`
+	Workflows  map[string]WorkflowConfig  `toml:"workflows"`
+	Health     Health                     `toml:"health"`
+	Reporter   Reporter                   `toml:"reporter"`
+	API        API                        `toml:"api"`
+	Dispatch   Dispatch                   `toml:"dispatch"`
 }
 
 type General struct {
@@ -81,6 +82,17 @@ type Tiers struct {
 	Fast     []string `toml:"fast"`
 	Balanced []string `toml:"balanced"`
 	Premium  []string `toml:"premium"`
+}
+
+type WorkflowConfig struct {
+	MatchLabels []string      `toml:"match_labels"`
+	MatchTypes  []string      `toml:"match_types"`
+	Stages      []StageConfig `toml:"stages"`
+}
+
+type StageConfig struct {
+	Name string `toml:"name"`
+	Role string `toml:"role"`
 }
 
 type Health struct {
@@ -258,6 +270,14 @@ func applyDefaults(cfg *Config) {
 }
 
 func validate(cfg *Config) error {
+	knownRoles := map[string]struct{}{
+		"scrum":    {},
+		"planner":  {},
+		"coder":    {},
+		"reviewer": {},
+		"ops":      {},
+	}
+
 	allTierNames := make([]string, 0, len(cfg.Tiers.Fast)+len(cfg.Tiers.Balanced)+len(cfg.Tiers.Premium))
 	allTierNames = append(allTierNames, cfg.Tiers.Fast...)
 	allTierNames = append(allTierNames, cfg.Tiers.Balanced...)
@@ -278,6 +298,33 @@ func validate(cfg *Config) error {
 	}
 	if !hasEnabled {
 		return fmt.Errorf("at least one project must be enabled")
+	}
+
+	if cfg.Workflows != nil {
+		if len(cfg.Workflows) == 0 {
+			return fmt.Errorf("workflows section exists but defines no workflows")
+		}
+		for workflowName, wf := range cfg.Workflows {
+			if len(wf.Stages) == 0 {
+				return fmt.Errorf("workflow %q must define at least one stage", workflowName)
+			}
+			seenStageNames := make(map[string]struct{}, len(wf.Stages))
+			for i, stage := range wf.Stages {
+				if stage.Name == "" {
+					return fmt.Errorf("workflow %q stage %d missing name", workflowName, i)
+				}
+				if stage.Role == "" {
+					return fmt.Errorf("workflow %q stage %q missing role", workflowName, stage.Name)
+				}
+				if _, ok := seenStageNames[stage.Name]; ok {
+					return fmt.Errorf("workflow %q has duplicate stage name %q", workflowName, stage.Name)
+				}
+				seenStageNames[stage.Name] = struct{}{}
+				if _, ok := knownRoles[stage.Role]; !ok {
+					return fmt.Errorf("workflow %q stage %q references unknown role %q", workflowName, stage.Name, stage.Role)
+				}
+			}
+		}
 	}
 
 	if cfg.General.StateDB != "" {
