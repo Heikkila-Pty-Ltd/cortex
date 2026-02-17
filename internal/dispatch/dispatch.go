@@ -21,17 +21,23 @@ agent_file="$2"
 thinking_file="$3"
 provider_file="$4"
 
-# Safely read parameters from files
-msg=$(cat "$msg_file")
-agent=$(cat "$agent_file")
-thinking=$(cat "$thinking_file")
-provider=$(cat "$provider_file")
+# Validate that all required temp files exist
+if [ ! -f "$msg_file" ] || [ ! -f "$agent_file" ] || [ ! -f "$thinking_file" ] || [ ! -f "$provider_file" ]; then
+  echo "Error: Missing required parameter files" >&2
+  exit 1
+fi
 
 session_id="ctx-$$-$(date +%s)"
 err_file=$(mktemp)
 
-# Execute openclaw with all parameters safely passed
-openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$err_file"
+# Execute openclaw with all parameters safely passed via file arguments
+# Using exec style to avoid shell interpretation of content
+openclaw agent \
+  --agent "$(cat "$agent_file")" \
+  --session-id "$session_id" \
+  --message "$(cat "$msg_file")" \
+  --thinking "$(cat "$thinking_file")" \
+  2>"$err_file"
 status=$?
 
 if [ $status -eq 0 ]; then
@@ -59,14 +65,27 @@ fi
 
 if [ "$should_fallback" -eq 1 ]; then
   fallback_err=$(mktemp)
-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
+  # Try stdin fallback first
+  cat "$msg_file" | openclaw agent \
+    --agent "$(cat "$agent_file")" \
+    --session-id "$session_id" \
+    --thinking "$(cat "$thinking_file")" \
+    2>"$fallback_err"
   status=$?
+  
+  # If that fails, try with explicit --message flag again
   if [ "$status" -ne 0 ]; then
     if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
-      openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"
+      openclaw agent \
+        --agent "$(cat "$agent_file")" \
+        --session-id "$session_id" \
+        --message "$(cat "$msg_file")" \
+        --thinking "$(cat "$thinking_file")" \
+        2>"$fallback_err"
       status=$?
     fi
   fi
+  
   if [ "$status" -ne 0 ]; then
     cat "$fallback_err" >&2
   fi
@@ -86,12 +105,12 @@ func writeToTempFile(content string, prefix string) (string, error) {
 		return "", err
 	}
 	defer tmpFile.Close()
-	
+
 	if _, err := tmpFile.WriteString(content); err != nil {
 		os.Remove(tmpFile.Name())
 		return "", err
 	}
-	
+
 	return tmpFile.Name(), nil
 }
 
@@ -103,23 +122,23 @@ func openclawCommandArgs(msgPath, agent, thinking, provider string) ([]string, [
 	if err != nil {
 		return nil, nil, fmt.Errorf("create agent temp file: %w", err)
 	}
-	
+
 	thinkingPath, err := writeToTempFile(thinking, "cortex-thinking-*.txt")
 	if err != nil {
 		os.Remove(agentPath)
 		return nil, nil, fmt.Errorf("create thinking temp file: %w", err)
 	}
-	
+
 	providerPath, err := writeToTempFile(provider, "cortex-provider-*.txt")
 	if err != nil {
 		os.Remove(agentPath)
 		os.Remove(thinkingPath)
 		return nil, nil, fmt.Errorf("create provider temp file: %w", err)
 	}
-	
+
 	args := []string{"-c", openclawShellScript(), "_", msgPath, agentPath, thinkingPath, providerPath}
 	tempFiles := []string{agentPath, thinkingPath, providerPath}
-	
+
 	return args, tempFiles, nil
 }
 
@@ -301,7 +320,7 @@ func (d *Dispatcher) monitorProcess(pid int) {
 		os.Remove(info.tmpPath)
 		info.tmpPath = ""
 	}
-	
+
 	// Clean up additional temp files
 	for _, tf := range info.tempFiles {
 		os.Remove(tf)

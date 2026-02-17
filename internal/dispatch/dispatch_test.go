@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -88,6 +89,110 @@ func TestNewDispatcher(t *testing.T) {
 	}
 }
 
+func writeFakeOpenclawBinary(t *testing.T, binDir string) (capturePath, statePath string) {
+	t.Helper()
+
+	capturePath = filepath.Join(binDir, "captured-message.txt")
+	statePath = filepath.Join(binDir, "fallback-state.txt")
+	openclawPath := filepath.Join(binDir, "openclaw")
+
+	script := `#!/bin/sh
+set -eu
+
+capture="${OPENCLAW_CAPTURE_PATH:?}"
+state="${OPENCLAW_STATE_PATH:?}"
+mode="${OPENCLAW_TEST_MODE:-}"
+
+if [ "${1:-}" != "agent" ]; then
+  echo "unexpected subcommand: ${1:-}" >&2
+  exit 2
+fi
+shift
+
+msg=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --agent|--session-id|--thinking)
+      [ "$#" -ge 2 ] || { echo "missing value for $1" >&2; exit 2; }
+      shift 2
+      ;;
+    --message)
+      [ "$#" -ge 2 ] || { echo "missing value for --message" >&2; exit 2; }
+      msg="$2"
+      shift 2
+      ;;
+    *)
+      echo "error: unknown option '$1'" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [ "$mode" = "fallback_once" ] && [ ! -f "$state" ]; then
+  : > "$state"
+  echo "Gateway agent failed; falling back to embedded: Error: Message (--message) is required" >&2
+  exit 1
+fi
+
+if [ -z "$msg" ]; then
+  msg="$(cat)"
+fi
+
+printf '%s' "$msg" > "$capture"
+`
+
+	if err := os.WriteFile(openclawPath, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write fake openclaw binary: %v", err)
+	}
+
+	return capturePath, statePath
+}
+
+func runOpenclawShellScriptWithStub(t *testing.T, prompt string, mode string) (captured string, combinedOutput string, fallbackTriggered bool) {
+	t.Helper()
+
+	binDir := t.TempDir()
+	capturePath, statePath := writeFakeOpenclawBinary(t, binDir)
+
+	promptPath, err := writeToTempFile(prompt, "test-prompt-runtime-*.txt")
+	if err != nil {
+		t.Fatalf("failed to create prompt temp file: %v", err)
+	}
+	defer os.Remove(promptPath)
+
+	args, tempFiles, err := openclawCommandArgs(promptPath, "test-agent", "low", "test-provider")
+	if err != nil {
+		t.Fatalf("openclawCommandArgs failed: %v", err)
+	}
+	defer func() {
+		for _, tf := range tempFiles {
+			os.Remove(tf)
+		}
+	}()
+
+	cmd := exec.Command("sh", args...)
+	cmd.Env = append(
+		os.Environ(),
+		"PATH="+binDir+":"+os.Getenv("PATH"),
+		"OPENCLAW_CAPTURE_PATH="+capturePath,
+		"OPENCLAW_STATE_PATH="+statePath,
+		"OPENCLAW_TEST_MODE="+mode,
+	)
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("openclaw shell script execution failed: %v\noutput:\n%s", err, string(out))
+	}
+
+	capturedBytes, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("failed to read captured message: %v", err)
+	}
+
+	_, statErr := os.Stat(statePath)
+	return string(capturedBytes), string(out), statErr == nil
+}
+
 func TestOpenclawShellScript_UsesExplicitSessionID(t *testing.T) {
 	script := openclawShellScript()
 	checks := []string{
@@ -109,14 +214,14 @@ func TestOpenclawCommandArgs_PassesSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openclawCommandArgs failed: %v", err)
 	}
-	
+
 	// Clean up temp files
 	defer func() {
 		for _, tf := range tempFiles {
 			os.Remove(tf)
 		}
 	}()
-	
+
 	if len(args) != 7 {
 		t.Fatalf("expected 7 args, got %d", len(args))
 	}
@@ -129,7 +234,7 @@ func TestOpenclawCommandArgs_PassesSessionID(t *testing.T) {
 	if args[3] != "/tmp/prompt.txt" {
 		t.Fatalf("expected prompt arg at position 3, got %q", args[3])
 	}
-	
+
 	// Verify temp file paths exist and contain expected content
 	agentContent, err := os.ReadFile(args[4])
 	if err != nil {
@@ -138,7 +243,7 @@ func TestOpenclawCommandArgs_PassesSessionID(t *testing.T) {
 	if string(agentContent) != "cortex-coder" {
 		t.Fatalf("expected agent file to contain 'cortex-coder', got %q", string(agentContent))
 	}
-	
+
 	thinkingContent, err := os.ReadFile(args[5])
 	if err != nil {
 		t.Fatalf("failed to read thinking temp file: %v", err)
@@ -146,7 +251,7 @@ func TestOpenclawCommandArgs_PassesSessionID(t *testing.T) {
 	if string(thinkingContent) != "low" {
 		t.Fatalf("expected thinking file to contain 'low', got %q", string(thinkingContent))
 	}
-	
+
 	providerContent, err := os.ReadFile(args[6])
 	if err != nil {
 		t.Fatalf("failed to read provider temp file: %v", err)
@@ -168,6 +273,46 @@ func TestOpenclawShellScript_RetriesMessageAfterFallbackRequiredOption(t *testin
 		if !strings.Contains(script, check) {
 			t.Fatalf("shell script missing %q", check)
 		}
+	}
+}
+
+func TestOpenclawShellScript_RuntimeComplexPrompts(t *testing.T) {
+	prompts := []string{
+		`Fix this bug: if (condition) { ... }`,
+		`Shell: echo $HOME && cd /tmp`,
+		`SQL: SELECT * FROM table WHERE name='test';`,
+		`Prompt text that includes --model gpt-4 should stay message text`,
+		`Redirect 2>&1 and keep "(parentheses)" + quotes`,
+	}
+
+	for i, prompt := range prompts {
+		t.Run(fmt.Sprintf("runtime_prompt_%d", i), func(t *testing.T) {
+			captured, output, fallbackTriggered := runOpenclawShellScriptWithStub(t, prompt, "")
+			if fallbackTriggered {
+				t.Fatalf("did not expect fallback path for prompt %d", i)
+			}
+			if captured != prompt {
+				t.Fatalf("captured prompt mismatch: got %q want %q", captured, prompt)
+			}
+			if strings.Contains(output, "Syntax error") {
+				t.Fatalf("unexpected shell parsing error in output: %s", output)
+			}
+		})
+	}
+}
+
+func TestOpenclawShellScript_RuntimeFallbackHandlesComplexPrompt(t *testing.T) {
+	prompt := `Fallback prompt with --model gpt-4, (paren), and 2>&1 should not break parsing`
+
+	captured, output, fallbackTriggered := runOpenclawShellScriptWithStub(t, prompt, "fallback_once")
+	if !fallbackTriggered {
+		t.Fatal("expected fallback path to be triggered")
+	}
+	if captured != prompt {
+		t.Fatalf("captured prompt mismatch after fallback: got %q want %q", captured, prompt)
+	}
+	if strings.Contains(output, "Syntax error") || strings.Contains(output, "unknown option '--model'") {
+		t.Fatalf("unexpected parsing/flag failure in output: %s", output)
 	}
 }
 
@@ -238,7 +383,7 @@ func TestOpenclawCommandArgsComplexPrompts(t *testing.T) {
 // Test that shell script properly validates input files
 func TestOpenclawShellScript_FileValidation(t *testing.T) {
 	script := openclawShellScript()
-	
+
 	// Should contain file validation logic
 	requiredChecks := []string{
 		`if [ ! -f "$msg_file" ]`,
@@ -248,7 +393,7 @@ func TestOpenclawShellScript_FileValidation(t *testing.T) {
 		`echo "Error: Missing required parameter files" >&2`,
 		`exit 1`,
 	}
-	
+
 	for _, check := range requiredChecks {
 		if !strings.Contains(script, check) {
 			t.Errorf("shell script should contain validation: %q", check)
@@ -259,20 +404,20 @@ func TestOpenclawShellScript_FileValidation(t *testing.T) {
 // Test command construction uses safe parameter passing
 func TestOpenclawShellScript_SafeParameterPassing(t *testing.T) {
 	script := openclawShellScript()
-	
+
 	// Should use command substitution with cat to read files safely
 	safePatterns := []string{
 		`--agent "$(cat "$agent_file")"`,
 		`--message "$(cat "$msg_file")"`,
 		`--thinking "$(cat "$thinking_file")"`,
 	}
-	
+
 	for _, pattern := range safePatterns {
 		if !strings.Contains(script, pattern) {
 			t.Errorf("shell script should use safe parameter passing: %q", pattern)
 		}
 	}
-	
+
 	// Should NOT use unsafe variable interpolation in command context
 	unsafePatterns := []string{
 		`--agent $agent`,
@@ -280,7 +425,7 @@ func TestOpenclawShellScript_SafeParameterPassing(t *testing.T) {
 		`--agent "$agent"`, // This would be variable interpolation, not file reading
 		`--message "$msg"`, // This would be variable interpolation, not file reading
 	}
-	
+
 	for _, pattern := range unsafePatterns {
 		if strings.Contains(script, pattern) {
 			t.Errorf("shell script should not use unsafe parameter passing: %q", pattern)

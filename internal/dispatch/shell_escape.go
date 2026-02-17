@@ -75,3 +75,31 @@ func BuildShellCommand(program string, args ...string) string {
 	}
 	return strings.Join(parts, " ")
 }
+
+// isValidEnvVarName validates that a string is a valid environment variable name
+// to prevent injection attacks via malformed variable names
+func isValidEnvVarName(name string) bool {
+	if len(name) == 0 {
+		return false
+	}
+	
+	// Must start with letter or underscore
+	if !((name[0] >= 'A' && name[0] <= 'Z') || 
+		 (name[0] >= 'a' && name[0] <= 'z') || 
+		 name[0] == '_') {
+		return false
+	}
+	
+	// Rest can be letters, digits, or underscores
+	for i := 1; i < len(name); i++ {
+		c := name[i]
+		if !((c >= 'A' && c <= 'Z') || 
+			 (c >= 'a' && c <= 'z') || 
+			 (c >= '0' && c <= '9') || 
+			 c == '_') {
+			return false
+		}
+	}
+	
+	return true
+}
