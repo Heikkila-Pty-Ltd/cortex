@@ -19,8 +19,10 @@ func DetectComplexity(bead beads.Bead) string {
 		return "fast"
 	}
 
-	// Time-based detection
+	// Time-based detection (0 = no estimate, default to balanced)
 	switch {
+	case bead.EstimateMinutes == 0:
+		return "balanced"
 	case bead.EstimateMinutes <= 30:
 		return "fast"
 	case bead.EstimateMinutes <= 90:

@@ -11,21 +11,29 @@ import (
 	"time"
 )
 
+// BeadDependency represents a dependency relationship from bd list --json.
+type BeadDependency struct {
+	IssueID     string `json:"issue_id"`
+	DependsOnID string `json:"depends_on_id"`
+	Type        string `json:"type"`
+}
+
 // Bead represents a single work item tracked by the bd CLI.
 type Bead struct {
-	ID              string    `json:"id"`
-	Title           string    `json:"title"`
-	Description     string    `json:"description"`
-	Status          string    `json:"status"`
-	Priority        int       `json:"priority"`
-	Type            string    `json:"type"`
-	Labels          []string  `json:"labels"`
-	EstimateMinutes int       `json:"estimate_minutes"`
-	ParentID        string    `json:"parent_id"`
-	DependsOn       []string  `json:"depends_on"`
-	Acceptance      string    `json:"acceptance"`
-	Design          string    `json:"design"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID              string           `json:"id"`
+	Title           string           `json:"title"`
+	Description     string           `json:"description"`
+	Status          string           `json:"status"`
+	Priority        int              `json:"priority"`
+	Type            string           `json:"issue_type"`
+	Labels          []string         `json:"labels"`
+	EstimateMinutes int              `json:"estimate_minutes"`
+	ParentID        string           `json:"parent_id"`
+	DependsOn       []string         `json:"depends_on"`
+	Dependencies    []BeadDependency `json:"dependencies"`
+	Acceptance      string           `json:"acceptance"`
+	Design          string           `json:"design"`
+	CreatedAt       time.Time        `json:"created_at"`
 }
 
 // BeadDetail holds the full output of bd show --json.
@@ -93,6 +101,7 @@ func ListBeadsCtx(ctx context.Context, beadsDir string) ([]Bead, error) {
 	if err := json.Unmarshal(out, &beads); err != nil {
 		return nil, fmt.Errorf("parsing bd list output: %w", err)
 	}
+	resolveDependencies(beads)
 	return beads, nil
 }
 
@@ -179,10 +188,41 @@ func FilterUnblockedOpen(beads []Bead, graph *DepGraph) []Bead {
 		if result[i].Priority != result[j].Priority {
 			return result[i].Priority < result[j].Priority
 		}
+		// Stage-labeled beads get dispatched before non-stage beads
+		iStage := hasStageLabel(result[i])
+		jStage := hasStageLabel(result[j])
+		if iStage != jStage {
+			return iStage
+		}
 		return result[i].EstimateMinutes < result[j].EstimateMinutes
 	})
 
 	return result
+}
+
+// resolveDependencies populates DependsOn from the Dependencies array
+// returned by bd list --json. Only "blocks" type dependencies are treated
+// as blocking; "parent-child" is informational.
+func resolveDependencies(beads []Bead) {
+	for i := range beads {
+		if len(beads[i].DependsOn) > 0 {
+			continue // already populated (e.g. from a flat depends_on field)
+		}
+		for _, dep := range beads[i].Dependencies {
+			if dep.Type == "blocks" {
+				beads[i].DependsOn = append(beads[i].DependsOn, dep.DependsOnID)
+			}
+		}
+	}
+}
+
+func hasStageLabel(b Bead) bool {
+	for _, label := range b.Labels {
+		if len(label) > 6 && label[:6] == "stage:" {
+			return true
+		}
+	}
+	return false
 }
 
 func isBlocked(b Bead, graph *DepGraph) bool {

@@ -17,21 +17,39 @@ var stageRoles = map[string]string{
 	"stage:done":     "skip",
 }
 
+// stageOrder defines the progression order (higher = more advanced).
+var stageOrder = map[string]int{
+	"stage:backlog":  0,
+	"stage:planning": 1,
+	"stage:ready":    2,
+	"stage:coding":   3,
+	"stage:review":   4,
+	"stage:qa":       5,
+	"stage:done":     6,
+}
+
 // AllRoles is the ordered set of roles used for team creation.
 var AllRoles = []string{"scrum", "planner", "coder", "reviewer", "ops"}
 
 // InferRole maps bead labels/type to an agent role.
 // Stage labels take precedence over keyword heuristics.
+// When multiple stage labels exist, the most advanced stage wins.
 func InferRole(bead beads.Bead) string {
 	if bead.Type == "epic" {
 		return "skip"
 	}
 
-	// Stage labels take precedence
+	// Stage labels take precedence — pick the most advanced if multiple exist
+	bestStage := ""
+	bestOrder := -1
 	for _, label := range bead.Labels {
-		if role, ok := stageRoles[label]; ok {
-			return role
+		if order, ok := stageOrder[label]; ok && order > bestOrder {
+			bestStage = label
+			bestOrder = order
 		}
+	}
+	if bestStage != "" {
+		return stageRoles[bestStage]
 	}
 
 	// Fallback: keyword-based heuristics

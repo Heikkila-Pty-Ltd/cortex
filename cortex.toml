@@ -8,6 +8,12 @@ max_retries = 2
 log_level = "info"
 state_db = "~/.local/share/cortex/cortex.db"
 
+[projects.cortex]
+enabled = true
+beads_dir = "~/projects/cortex/.beads"
+workspace = "~/projects/cortex"
+priority = 0
+
 [projects.hg-website]
 enabled = true
 beads_dir = "~/projects/hg-website/.beads"

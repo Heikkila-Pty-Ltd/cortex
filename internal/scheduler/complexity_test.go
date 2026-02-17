@@ -21,7 +21,7 @@ func TestDetectComplexity(t *testing.T) {
 		{"architecture label", beads.Bead{EstimateMinutes: 10, Labels: []string{"architecture"}}, "premium"},
 		{"trivial label override", beads.Bead{EstimateMinutes: 120, Labels: []string{"trivial"}}, "fast"},
 		{"chore label", beads.Bead{EstimateMinutes: 60, Labels: []string{"chore"}}, "fast"},
-		{"zero estimate", beads.Bead{EstimateMinutes: 0}, "fast"},
+		{"zero estimate", beads.Bead{EstimateMinutes: 0}, "balanced"},
 	}
 
 	for _, tt := range tests {
