@@ -7,9 +7,11 @@ import (
 	"hash/fnv"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -76,8 +78,67 @@ func SessionName(project, beadID string) string {
 	return fmt.Sprintf("%s%s-%s-%d", SessionPrefix, sanitize(project), sanitize(beadID), ts)
 }
 
+// clearStaleLocks removes openclaw session lock files whose owning PID is dead.
+// This prevents dispatches from failing repeatedly when a previous agent crashed
+// without releasing its lock.
+func clearStaleLocks(agent string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	sessDir := filepath.Join(home, ".openclaw", "agents", agent, "sessions")
+	entries, err := os.ReadDir(sessDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".lock") {
+			continue
+		}
+		lockPath := filepath.Join(sessDir, e.Name())
+		data, err := os.ReadFile(lockPath)
+		if err != nil {
+			continue
+		}
+		// Lock files contain JSON with a "pid" field.
+		// Quick parse: find "pid": <number>
+		pidStr := ""
+		if idx := strings.Index(string(data), `"pid"`); idx >= 0 {
+			rest := string(data)[idx+5:]
+			rest = strings.TrimLeft(rest, ": ")
+			for _, c := range rest {
+				if c >= '0' && c <= '9' {
+					pidStr += string(c)
+				} else if pidStr != "" {
+					break
+				}
+			}
+		}
+		if pidStr == "" {
+			continue
+		}
+		pid, err := strconv.Atoi(pidStr)
+		if err != nil || pid <= 0 {
+			continue
+		}
+		// Check if PID is alive
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			os.Remove(lockPath)
+			continue
+		}
+		// On Unix, Signal(0) checks if process exists
+		if err := proc.Signal(syscall.Signal(0)); err != nil {
+			os.Remove(lockPath)
+		}
+	}
+}
+
 // Dispatch implements DispatcherInterface for tmux-based dispatching.
 func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt string, provider string, thinkingLevel string, workDir string) (int, error) {
+	// Clear stale openclaw session locks before dispatching
+	clearStaleLocks(agent)
+
 	thinking := ThinkingLevel(thinkingLevel)
 
 	// Write prompt to temp file to avoid shell escaping issues.
