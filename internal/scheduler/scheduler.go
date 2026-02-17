@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,12 +32,23 @@ type Scheduler struct {
 	mu          sync.Mutex
 	paused      bool
 	quarantine  map[string]time.Time
+	churnBlock  map[string]time.Time
+	epicBreakup map[string]time.Time
 }
 
 const (
 	failureQuarantineThreshold   = 3
 	failureQuarantineWindow      = 45 * time.Minute
 	failureQuarantineLogInterval = 10 * time.Minute
+
+	churnDispatchThreshold = 6
+	churnWindow            = 60 * time.Minute
+	churnBlockInterval     = 20 * time.Minute
+
+	epicBreakdownInterval = 6 * time.Hour
+
+	nightModeStartHour = 22
+	nightModeEndHour   = 7
 )
 
 // New creates a new Scheduler with all dependencies.
@@ -49,6 +61,8 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 		logger:      logger,
 		dryRun:      dryRun,
 		quarantine:  make(map[string]time.Time),
+		churnBlock:  make(map[string]time.Time),
+		epicBreakup: make(map[string]time.Time),
 	}
 }
 
@@ -196,6 +210,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			s.logger.Error("failed to list beads", "project", np.name, "error", err)
 			continue
 		}
+		s.ensureEpicBreakdowns(ctx, beadsDir, beadList, np.name)
 
 		graph := beads.BuildDepGraph(beadList)
 		ready := beads.FilterUnblockedOpen(beadList, graph)
@@ -231,6 +246,12 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			break
 		}
 
+		itemBeadsDir := config.ExpandHome(item.project.BeadsDir)
+		if s.isNightMode() && !isNightEligibleIssueType(item.bead.Type) {
+			s.logger.Debug("night mode skipping non bug/task bead", "bead", item.bead.ID, "type", item.bead.Type)
+			continue
+		}
+
 		// Skip if already dispatched
 		already, err := s.store.IsBeadDispatched(item.bead.ID)
 		if err != nil {
@@ -238,6 +259,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			continue
 		}
 		if already {
+			continue
+		}
+		if s.isChurnBlocked(ctx, item.bead, item.name, itemBeadsDir) {
 			continue
 		}
 
@@ -320,7 +344,6 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 
 		// Fetch PR diff if this is a reviewer dispatch
 		workspace := config.ExpandHome(item.project.Workspace)
-		beadsDir := config.ExpandHome(item.project.BeadsDir)
 		var prDiff string
 		if role == "reviewer" && item.project.UseBranches {
 			// Try to get PR number from last dispatch
@@ -358,7 +381,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			continue
 		}
 
-		if err := beads.ClaimBeadOwnershipCtx(ctx, beadsDir, item.bead.ID); err != nil {
+		if err := beads.ClaimBeadOwnershipCtx(ctx, itemBeadsDir, item.bead.ID); err != nil {
 			if beads.IsAlreadyClaimed(err) {
 				s.logger.Debug("bead ownership lock unavailable, skipping", "bead", item.bead.ID)
 			} else {
@@ -371,7 +394,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			if !lockHeld {
 				return
 			}
-			if err := beads.ReleaseBeadOwnershipCtx(ctx, beadsDir, item.bead.ID); err != nil {
+			if err := beads.ReleaseBeadOwnershipCtx(ctx, itemBeadsDir, item.bead.ID); err != nil {
 				s.logger.Warn("failed to release bead ownership lock",
 					"bead", item.bead.ID,
 					"reason", reason,
@@ -564,19 +587,29 @@ func (s *Scheduler) checkRunningDispatches() {
 					if err := s.store.CaptureOutput(d.ID, output); err != nil {
 						s.logger.Error("failed to store output", "dispatch_id", d.ID, "error", err)
 					}
+					if status == "completed" {
+						if category, summary, flagged := detectTerminalOutputFailure(output); flagged {
+							status = "failed"
+							exitCode = -1
+							finalStage = "failed"
+							if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
+								s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
+							}
+						}
+					}
 				}
 			}
 		} else {
 			// For PID dispatches, use the dispatcher's process state tracking
 			processState := s.dispatcher.GetProcessState(d.PID)
-			
+
 			switch processState.State {
 			case "running":
 				// This shouldn't happen since IsAlive returned false, but handle it
-				s.logger.Warn("process state inconsistency: IsAlive=false but GetProcessState=running", 
+				s.logger.Warn("process state inconsistency: IsAlive=false but GetProcessState=running",
 					"bead", d.BeadID, "pid", d.PID)
 				continue // Skip this dispatch, will be processed next tick
-				
+
 			case "exited":
 				if processState.ExitCode == 0 {
 					status = "completed"
@@ -587,7 +620,7 @@ func (s *Scheduler) checkRunningDispatches() {
 					exitCode = processState.ExitCode
 					finalStage = "failed"
 				}
-				
+
 				// Capture output if available
 				if processState.OutputPath != "" {
 					if outputBytes, err := os.ReadFile(processState.OutputPath); err != nil {
@@ -597,15 +630,25 @@ func (s *Scheduler) checkRunningDispatches() {
 						if err := s.store.CaptureOutput(d.ID, output); err != nil {
 							s.logger.Error("failed to store process output", "dispatch_id", d.ID, "error", err)
 						}
+						if status == "completed" {
+							if category, summary, flagged := detectTerminalOutputFailure(output); flagged {
+								status = "failed"
+								exitCode = -1
+								finalStage = "failed"
+								if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
+									s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
+								}
+							}
+						}
 					}
 				}
-				
+
 			case "unknown":
 				// Process died but we couldn't determine exit status - treat as failure
 				status = "failed"
 				exitCode = -1
 				finalStage = "failed_needs_check"
-				
+
 				s.logger.Error("dispatch process state unknown - exit status unavailable",
 					"bead", d.BeadID,
 					"pid", d.PID,
@@ -625,7 +668,7 @@ func (s *Scheduler) checkRunningDispatches() {
 					s.logger.Error("failed to store failure diagnosis for unknown exit", "dispatch_id", d.ID, "error", err)
 				}
 			}
-			
+
 			// Clean up process tracking info after we've extracted what we need
 			if pidDispatcher, ok := s.dispatcher.(*dispatch.Dispatcher); ok {
 				pidDispatcher.CleanupProcess(d.PID)
@@ -693,6 +736,81 @@ func (s *Scheduler) checkRunningDispatches() {
 	}
 }
 
+func detectTerminalOutputFailure(output string) (category string, summary string, flagged bool) {
+	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return "", "", false
+	}
+
+	lower := strings.ToLower(trimmed)
+	if strings.Contains(lower, "llm request rejected") {
+		line := firstLineContaining(trimmed, "llm request rejected")
+		if line == "" {
+			line = "LLM request rejected"
+		}
+		category = "llm_request_rejected"
+		if strings.Contains(lower, "context limit") {
+			category = "context_limit_rejected"
+		}
+		return category, line, true
+	}
+
+	return "", "", false
+}
+
+func firstLineContaining(output, needle string) string {
+	if output == "" || needle == "" {
+		return ""
+	}
+	needle = strings.ToLower(needle)
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(trimmed), needle) {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func hasActiveChurnEscalation(issueList []beads.Bead, beadID string) bool {
+	if beadID == "" {
+		return false
+	}
+	titlePrefix := fmt.Sprintf("Auto: churn guard blocked bead %s ", beadID)
+	for _, issue := range issueList {
+		if normalizeIssueType(issue.Type) != "bug" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(issue.Status), "closed") {
+			continue
+		}
+		if !strings.HasPrefix(issue.Title, titlePrefix) {
+			continue
+		}
+		if hasDiscoveredFromDependency(issue, beadID) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDiscoveredFromDependency(issue beads.Bead, beadID string) bool {
+	for _, dep := range issue.Dependencies {
+		if dep.DependsOnID == beadID && dep.Type == "discovered-from" {
+			return true
+		}
+	}
+	for _, depID := range issue.DependsOn {
+		if depID == beadID {
+			return true
+		}
+	}
+	return false
+}
+
 // isDispatchAlive checks if a dispatch is still running using the best available method.
 // For tmux dispatches, it uses the stored session name (crash-resilient).
 // For PID dispatches, it falls back to the dispatcher's in-memory tracking.
@@ -702,6 +820,137 @@ func (s *Scheduler) isDispatchAlive(d store.Dispatch) bool {
 		return status == "running"
 	}
 	return s.dispatcher.IsAlive(d.PID)
+}
+
+func normalizeIssueType(t string) string {
+	t = strings.TrimSpace(strings.ToLower(t))
+	if t == "" {
+		return "task"
+	}
+	return t
+}
+
+func isNightEligibleIssueType(t string) bool {
+	switch normalizeIssueType(t) {
+	case "bug", "task":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Scheduler) isNightMode() bool {
+	hour := time.Now().Hour()
+	return hour >= nightModeStartHour || hour < nightModeEndHour
+}
+
+func (s *Scheduler) ensureEpicBreakdowns(ctx context.Context, beadsDir string, beadList []beads.Bead, projectName string) {
+	now := time.Now()
+	for _, b := range beadList {
+		if b.Status != "open" || normalizeIssueType(b.Type) != "epic" {
+			continue
+		}
+
+		key := projectName + ":" + b.ID
+		if last, ok := s.epicBreakup[key]; ok && now.Sub(last) < epicBreakdownInterval {
+			continue
+		}
+
+		title := fmt.Sprintf("Auto: break down epic %s into executable bug/task beads", b.ID)
+		description := fmt.Sprintf(
+			"Epic `%s` is still open in project `%s`.\n\nPolicy: epics should not be assigned directly to coders. Break this epic into concrete `bug`/`task` beads with acceptance criteria so overnight automation can execute them.\n\nEpic title: %s",
+			b.ID, projectName, b.Title,
+		)
+		deps := []string{fmt.Sprintf("discovered-from:%s", b.ID)}
+		issueID, err := beads.CreateIssueCtx(ctx, beadsDir, title, "task", 1, description, deps)
+		if err != nil {
+			s.logger.Warn("failed to create epic breakdown task", "project", projectName, "epic", b.ID, "error", err)
+			continue
+		}
+
+		s.epicBreakup[key] = now
+		s.logger.Warn("epic auto-breakdown task created", "project", projectName, "epic", b.ID, "created_issue", issueID)
+		_ = s.store.RecordHealthEventWithDispatch("epic_breakdown_requested",
+			fmt.Sprintf("project %s epic %s queued for breakdown via %s", projectName, b.ID, issueID),
+			0, b.ID)
+	}
+}
+
+func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, projectName string, beadsDir string) bool {
+	history, err := s.store.GetDispatchesByBead(bead.ID)
+	if err != nil {
+		s.logger.Error("failed to evaluate churn guard", "bead", bead.ID, "error", err)
+		return false
+	}
+
+	now := time.Now()
+	cutoff := now.Add(-churnWindow)
+	recent := 0
+	for _, d := range history {
+		if d.DispatchedAt.Before(cutoff) {
+			continue
+		}
+		switch d.Status {
+		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
+			recent++
+		}
+	}
+
+	key := projectName + ":" + bead.ID
+	if recent < churnDispatchThreshold {
+		delete(s.churnBlock, key)
+		return false
+	}
+
+	last, seen := s.churnBlock[key]
+	if seen && now.Sub(last) < churnBlockInterval {
+		s.logger.Warn("bead blocked by churn guard",
+			"project", projectName,
+			"bead", bead.ID,
+			"type", bead.Type,
+			"dispatches_in_window", recent,
+			"window", churnWindow.String())
+		return true
+	}
+
+	issueList, listErr := beads.ListBeadsCtx(ctx, beadsDir)
+	if listErr != nil {
+		s.logger.Warn("failed to list beads for churn escalation dedupe",
+			"project", projectName,
+			"bead", bead.ID,
+			"error", listErr)
+	}
+
+	if hasActiveChurnEscalation(issueList, bead.ID) {
+		s.logger.Warn("bead blocked by churn guard (existing escalation open)",
+			"project", projectName,
+			"bead", bead.ID,
+			"type", bead.Type,
+			"dispatches_in_window", recent,
+			"window", churnWindow.String())
+	} else {
+		title := fmt.Sprintf("Auto: churn guard blocked bead %s (%d dispatches/%s)", bead.ID, recent, churnWindow)
+		description := fmt.Sprintf(
+			"Bead `%s` in project `%s` exceeded churn threshold (%d dispatches in %s) and was blocked from further overnight dispatch.\n\nPlease investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.\n\nBead title: %s\nBead type: %s",
+			bead.ID, projectName, recent, churnWindow, bead.Title, bead.Type,
+		)
+		deps := []string{fmt.Sprintf("discovered-from:%s", bead.ID)}
+		if issueID, err := beads.CreateIssueCtx(ctx, beadsDir, title, "bug", 1, description, deps); err != nil {
+			s.logger.Warn("failed to create churn escalation bead", "project", projectName, "bead", bead.ID, "error", err)
+		} else {
+			s.logger.Warn("churn escalation bead created",
+				"project", projectName,
+				"bead", bead.ID,
+				"issue", issueID,
+				"dispatches_in_window", recent)
+		}
+	}
+
+	_ = s.store.RecordHealthEventWithDispatch("bead_churn_blocked",
+		fmt.Sprintf("project %s bead %s blocked after %d dispatches in %s", projectName, bead.ID, recent, churnWindow),
+		0, bead.ID)
+	s.churnBlock[key] = now
+	return true
 }
 
 func (s *Scheduler) isFailureQuarantined(beadID string) bool {
