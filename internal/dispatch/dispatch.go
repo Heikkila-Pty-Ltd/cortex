@@ -9,7 +9,15 @@ import (
 	"time"
 )
 
-// Dispatcher launches and manages openclaw agent processes.
+// DispatcherInterface defines the common interface for dispatching agents.
+type DispatcherInterface interface {
+	Dispatch(ctx context.Context, agent string, prompt string, provider string, thinkingLevel string, workDir string) (int, error)
+	IsAlive(handle int) bool
+	Kill(handle int) error
+	GetHandleType() string // "pid" or "session"
+}
+
+// Dispatcher launches and manages openclaw agent processes using PIDs.
 type Dispatcher struct{}
 
 // NewDispatcher returns a ready-to-use Dispatcher.
@@ -79,6 +87,21 @@ func (d *Dispatcher) Dispatch(ctx context.Context, agent string, prompt string, 
 func IsProcessAlive(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil
+}
+
+// IsAlive implements DispatcherInterface for PID-based dispatching.
+func (d *Dispatcher) IsAlive(handle int) bool {
+	return IsProcessAlive(handle)
+}
+
+// Kill implements DispatcherInterface for PID-based dispatching.
+func (d *Dispatcher) Kill(handle int) error {
+	return KillProcess(handle)
+}
+
+// GetHandleType implements DispatcherInterface.
+func (d *Dispatcher) GetHandleType() string {
+	return "pid"
 }
 
 // KillProcess sends SIGTERM, waits 5s, then SIGKILL if still alive.

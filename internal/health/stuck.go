@@ -19,7 +19,7 @@ type StuckAction struct {
 }
 
 // CheckStuckDispatches finds and handles dispatches that have been running too long.
-func CheckStuckDispatches(s *store.Store, timeout time.Duration, maxRetries int, logger *slog.Logger) []StuckAction {
+func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterface, timeout time.Duration, maxRetries int, logger *slog.Logger) []StuckAction {
 	stuck, err := s.GetStuckDispatches(timeout)
 	if err != nil {
 		logger.Error("failed to get stuck dispatches", "error", err)
@@ -28,14 +28,14 @@ func CheckStuckDispatches(s *store.Store, timeout time.Duration, maxRetries int,
 
 	var actions []StuckAction
 	for _, d := range stuck {
-		alive := dispatch.IsProcessAlive(d.PID)
+		alive := dispatcher.IsAlive(d.PID)
 
 		if !alive {
 			// Process already dead - mark as failed
 			duration := time.Since(d.DispatchedAt).Seconds()
 			s.UpdateDispatchStatus(d.ID, "failed", -1, duration)
-			s.RecordHealthEvent("stuck_dead", fmt.Sprintf("bead %s pid %d already dead", d.BeadID, d.PID))
-			logger.Warn("stuck dispatch already dead", "bead", d.BeadID, "pid", d.PID)
+			s.RecordHealthEvent("stuck_dead", fmt.Sprintf("bead %s handle %d (%s) already dead", d.BeadID, d.PID, dispatcher.GetHandleType()))
+			logger.Warn("stuck dispatch already dead", "bead", d.BeadID, "handle", d.PID, "handle_type", dispatcher.GetHandleType())
 			actions = append(actions, StuckAction{
 				BeadID: d.BeadID,
 				Action: "killed",
@@ -44,14 +44,14 @@ func CheckStuckDispatches(s *store.Store, timeout time.Duration, maxRetries int,
 		}
 
 		// Still alive but past timeout - kill it
-		logger.Warn("killing stuck dispatch", "bead", d.BeadID, "pid", d.PID)
-		if err := dispatch.KillProcess(d.PID); err != nil {
-			logger.Error("failed to kill stuck process", "pid", d.PID, "error", err)
+		logger.Warn("killing stuck dispatch", "bead", d.BeadID, "handle", d.PID, "handle_type", dispatcher.GetHandleType())
+		if err := dispatcher.Kill(d.PID); err != nil {
+			logger.Error("failed to kill stuck process", "handle", d.PID, "error", err)
 		}
 
 		duration := time.Since(d.DispatchedAt).Seconds()
 		s.UpdateDispatchStatus(d.ID, "failed", -1, duration)
-		s.RecordHealthEvent("stuck_killed", fmt.Sprintf("bead %s pid %d killed after %ds", d.BeadID, d.PID, int(duration)))
+		s.RecordHealthEvent("stuck_killed", fmt.Sprintf("bead %s handle %d (%s) killed after %ds", d.BeadID, d.PID, dispatcher.GetHandleType(), int(duration)))
 
 		// Check retries
 		if d.Retries < maxRetries {

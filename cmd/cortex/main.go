@@ -75,7 +75,17 @@ func main() {
 
 	// Create components
 	rl := dispatch.NewRateLimiter(st, cfg.RateLimits)
-	d := dispatch.NewDispatcher()
+	
+	// Choose dispatcher based on tmux availability
+	var d dispatch.DispatcherInterface
+	if dispatch.IsTmuxAvailable() {
+		logger.Info("tmux available, using TmuxDispatcher")
+		d = dispatch.NewTmuxDispatcher()
+	} else {
+		logger.Info("tmux not available, using PID-based Dispatcher")
+		d = dispatch.NewDispatcher()
+	}
+	
 	sched := scheduler.New(cfg, st, rl, d, logger.With("component", "scheduler"))
 
 	ctx, cancel := context.WithCancel(context.Background())

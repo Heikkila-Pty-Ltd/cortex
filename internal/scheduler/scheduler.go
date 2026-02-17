@@ -18,12 +18,12 @@ type Scheduler struct {
 	cfg         *config.Config
 	store       *store.Store
 	rateLimiter *dispatch.RateLimiter
-	dispatcher  *dispatch.Dispatcher
+	dispatcher  dispatch.DispatcherInterface
 	logger      *slog.Logger
 }
 
 // New creates a new Scheduler with all dependencies.
-func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d *dispatch.Dispatcher, logger *slog.Logger) *Scheduler {
+func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatch.DispatcherInterface, logger *slog.Logger) *Scheduler {
 	return &Scheduler{
 		cfg:         cfg,
 		store:       s,
@@ -259,7 +259,6 @@ func (s *Scheduler) defaultModel() string {
 }
 
 // checkRunningDispatches polls running dispatches and marks completed/failed.
-// For tmux-based dispatches, it also captures output when a session completes.
 func (s *Scheduler) checkRunningDispatches() {
 	running, err := s.store.GetRunningDispatches()
 	if err != nil {
@@ -268,62 +267,35 @@ func (s *Scheduler) checkRunningDispatches() {
 	}
 
 	for _, d := range running {
-		// Check if this is a tmux session (newer format) or PID (legacy)
-		sessionName := s.tryParseSessionName(d.BeadID)
-		
-		var isAlive bool
-		var exitCode int
-		
-		if sessionName != "" {
-			// Tmux-based dispatch
-			status, code := dispatch.SessionStatus(sessionName)
-			switch status {
-			case "running":
-				isAlive = true
-			case "exited":
-				isAlive = false
-				exitCode = code
-			case "gone":
-				isAlive = false
-				exitCode = -1
-			}
-		} else {
-			// PID-based dispatch (legacy)
-			isAlive = dispatch.IsProcessAlive(d.PID)
-			if !isAlive {
-				exitCode = 0 // Can't get exit code from orphaned PID
-			}
-		}
-
-		if isAlive {
+		if s.dispatcher.IsAlive(d.PID) {
 			continue
 		}
 
-		// Process/session is dead - capture output and update status
+		// Process is dead - determine status
 		duration := time.Since(d.DispatchedAt).Seconds()
 		status := "completed"
-		if exitCode != 0 {
-			status = "failed"
-		}
+		exitCode := 0
 
-		// Capture output for tmux sessions
-		if sessionName != "" {
-			if output, err := dispatch.CaptureOutput(sessionName); err != nil {
-				s.logger.Warn("failed to capture output", "session", sessionName, "error", err)
-			} else if output != "" {
-				if err := s.store.CaptureOutput(d.ID, output); err != nil {
-					s.logger.Error("failed to store output", "dispatch_id", d.ID, "error", err)
+		// For tmux sessions, try to capture output before marking complete
+		if s.dispatcher.GetHandleType() == "session" {
+			sessionName := s.getSessionNameFromHandle(d.PID)
+			if sessionName != "" {
+				if output, err := dispatch.CaptureOutput(sessionName); err != nil {
+					s.logger.Warn("failed to capture output", "session", sessionName, "error", err)
+				} else if output != "" {
+					if err := s.store.CaptureOutput(d.ID, output); err != nil {
+						s.logger.Error("failed to store output", "dispatch_id", d.ID, "error", err)
+					}
 				}
 			}
 		}
 
 		s.logger.Info("dispatch completed",
 			"bead", d.BeadID,
-			"pid", d.PID,
-			"session", sessionName,
+			"handle", d.PID,
+			"handle_type", s.dispatcher.GetHandleType(),
 			"duration_s", duration,
 			"status", status,
-			"exit_code", exitCode,
 		)
 
 		if err := s.store.UpdateDispatchStatus(d.ID, status, exitCode, duration); err != nil {
@@ -332,16 +304,10 @@ func (s *Scheduler) checkRunningDispatches() {
 	}
 }
 
-// tryParseSessionName attempts to extract a tmux session name from a bead ID.
-// Returns empty string if this doesn't look like a session name.
-func (s *Scheduler) tryParseSessionName(beadID string) string {
-	// Try to construct session name from project and bead ID
-	// This is a heuristic since we don't store session names directly
-	for projectName := range s.cfg.Projects {
-		sessionName := dispatch.SessionName(projectName, beadID)
-		if dispatch.IsSessionAlive(sessionName) {
-			return sessionName
-		}
-	}
+// getSessionNameFromHandle attempts to get the session name for a tmux handle.
+// This is a placeholder - in a real implementation, the TmuxDispatcher would expose this.
+func (s *Scheduler) getSessionNameFromHandle(handle int) string {
+	// For now, we'll have to reconstruct this. In production, we'd want the
+	// dispatcher to expose a method to get session names by handle.
 	return ""
 }

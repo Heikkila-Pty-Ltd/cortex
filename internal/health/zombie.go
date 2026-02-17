@@ -14,7 +14,26 @@ import (
 
 // CleanZombies finds orphaned openclaw agent processes and kills them.
 // Returns the count of killed processes.
-func CleanZombies(s *store.Store, logger *slog.Logger) int {
+func CleanZombies(s *store.Store, dispatcher dispatch.DispatcherInterface, logger *slog.Logger) int {
+	var killed int
+
+	if dispatcher.GetHandleType() == "session" {
+		// For tmux-based dispatching, clean up orphaned sessions
+		killed = cleanZombieSessions(s, logger)
+	} else {
+		// For PID-based dispatching, use the original logic
+		killed = cleanZombiePIDs(s, logger)
+	}
+
+	if killed > 0 {
+		logger.Info("zombie cleanup complete", "killed", killed)
+	}
+
+	return killed
+}
+
+// cleanZombiePIDs cleans orphaned PID-based dispatches.
+func cleanZombiePIDs(s *store.Store, logger *slog.Logger) int {
 	// Get all PIDs running openclaw agent
 	allPIDs, err := getOpenclawPIDs()
 	if err != nil {
@@ -51,8 +70,33 @@ func CleanZombies(s *store.Store, logger *slog.Logger) int {
 		killed++
 	}
 
-	if killed > 0 {
-		logger.Info("zombie cleanup complete", "killed", killed)
+	return killed
+}
+
+// cleanZombieSessions cleans orphaned tmux sessions.
+func cleanZombieSessions(s *store.Store, logger *slog.Logger) int {
+	// Get all cortex tmux sessions
+	allSessions, err := dispatch.ListCortexSessions()
+	if err != nil {
+		logger.Debug("no cortex sessions found", "error", err)
+		return 0
+	}
+
+	// For session-based dispatching, we need a way to map handles back to session names
+	// This is a limitation of the current design - we'd need to enhance the interface
+	// For now, clean sessions that have exited
+	killed := 0
+	for _, sessionName := range allSessions {
+		status, _ := dispatch.SessionStatus(sessionName)
+		if status == "exited" {
+			logger.Warn("cleaning dead tmux session", "session", sessionName)
+			if err := dispatch.KillSession(sessionName); err != nil {
+				logger.Error("failed to kill dead session", "session", sessionName, "error", err)
+				continue
+			}
+			s.RecordHealthEvent("zombie_killed", fmt.Sprintf("dead session %s", sessionName))
+			killed++
+		}
 	}
 
 	return killed
