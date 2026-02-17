@@ -1,2 +1,8 @@
 # bv (beads viewer) local config and caches
 .bv/
+
+# Built binary
+/cortex
+
+# Lock files
+.beads/.bv.lock

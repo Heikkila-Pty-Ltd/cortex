@@ -1,0 +1,104 @@
+package health
+
+import (
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/antigravity-dev/cortex/internal/dispatch"
+	"github.com/antigravity-dev/cortex/internal/store"
+)
+
+// StuckAction describes an action taken on a stuck dispatch.
+type StuckAction struct {
+	BeadID    string
+	Action    string // killed, retried, failed_permanently
+	OldTier   string
+	NewTier   string
+	Retries   int
+}
+
+// CheckStuckDispatches finds and handles dispatches that have been running too long.
+func CheckStuckDispatches(s *store.Store, timeout time.Duration, maxRetries int, logger *slog.Logger) []StuckAction {
+	stuck, err := s.GetStuckDispatches(timeout)
+	if err != nil {
+		logger.Error("failed to get stuck dispatches", "error", err)
+		return nil
+	}
+
+	var actions []StuckAction
+	for _, d := range stuck {
+		alive := dispatch.IsProcessAlive(d.PID)
+
+		if !alive {
+			// Process already dead - mark as failed
+			duration := time.Since(d.DispatchedAt).Seconds()
+			s.UpdateDispatchStatus(d.ID, "failed", -1, duration)
+			s.RecordHealthEvent("stuck_dead", fmt.Sprintf("bead %s pid %d already dead", d.BeadID, d.PID))
+			logger.Warn("stuck dispatch already dead", "bead", d.BeadID, "pid", d.PID)
+			actions = append(actions, StuckAction{
+				BeadID: d.BeadID,
+				Action: "killed",
+			})
+			continue
+		}
+
+		// Still alive but past timeout - kill it
+		logger.Warn("killing stuck dispatch", "bead", d.BeadID, "pid", d.PID)
+		if err := dispatch.KillProcess(d.PID); err != nil {
+			logger.Error("failed to kill stuck process", "pid", d.PID, "error", err)
+		}
+
+		duration := time.Since(d.DispatchedAt).Seconds()
+		s.UpdateDispatchStatus(d.ID, "failed", -1, duration)
+		s.RecordHealthEvent("stuck_killed", fmt.Sprintf("bead %s pid %d killed after %ds", d.BeadID, d.PID, int(duration)))
+
+		// Check retries
+		if d.Retries < maxRetries {
+			// Escalate tier
+			newTier := dispatch.DowngradeTier(d.Tier)
+			if newTier == "" {
+				newTier = d.Tier // can't downgrade further from fast, try same tier
+			}
+			// Actually we escalate UP for retries: fast -> balanced -> premium
+			newTier = escalateTier(d.Tier)
+
+			logger.Info("retrying with escalated tier",
+				"bead", d.BeadID,
+				"from_tier", d.Tier,
+				"to_tier", newTier,
+				"retry", d.Retries+1,
+			)
+
+			actions = append(actions, StuckAction{
+				BeadID:  d.BeadID,
+				Action:  "retried",
+				OldTier: d.Tier,
+				NewTier: newTier,
+				Retries: d.Retries + 1,
+			})
+		} else {
+			logger.Error("max retries exceeded", "bead", d.BeadID, "retries", d.Retries)
+			s.RecordHealthEvent("max_retries", fmt.Sprintf("bead %s failed after %d retries", d.BeadID, d.Retries))
+			actions = append(actions, StuckAction{
+				BeadID:  d.BeadID,
+				Action:  "failed_permanently",
+				Retries: d.Retries,
+			})
+		}
+	}
+
+	return actions
+}
+
+// escalateTier returns the next higher tier for retry escalation.
+func escalateTier(tier string) string {
+	switch tier {
+	case "fast":
+		return "balanced"
+	case "balanced":
+		return "premium"
+	default:
+		return "premium"
+	}
+}
