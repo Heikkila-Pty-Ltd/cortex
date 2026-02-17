@@ -31,7 +31,7 @@ collect_security_evidence() {
     local evidence=()
     
     # Authentication/Authorization implementation
-    if [[ -f "docs/api-security.md" ]]; then
+    if [[ -f "$WORKSPACE_ROOT/docs/api-security.md" ]]; then
         evidence+=("docs/api-security.md")
         echo "  ✓ Found API security documentation"
     else
@@ -41,15 +41,19 @@ collect_security_evidence() {
     
     # Look for auth implementation files
     while IFS= read -r -d '' file; do
-        evidence+=("$file")
+        # Convert to relative path
+        rel_file="${file#$WORKSPACE_ROOT/}"
+        evidence+=("$rel_file")
         echo "  ✓ Found auth implementation: $(basename "$file")"
-    done < <(find . -name "*.go" -o -name "*.js" -o -name "*.py" | xargs grep -l "auth\|Auth" | head -5 | tr '\n' '\0')
+    done < <(find "$WORKSPACE_ROOT" -name "*.go" -o -name "*.js" -o -name "*.py" | xargs grep -l "auth\|Auth" | head -5 | tr '\n' '\0')
     
     # Audit logging implementation
     while IFS= read -r -d '' file; do
-        evidence+=("$file")
+        # Convert to relative path
+        rel_file="${file#$WORKSPACE_ROOT/}"
+        evidence+=("$rel_file")
         echo "  ✓ Found audit logging: $(basename "$file")"
-    done < <(find . -name "*.go" -o -name "*.js" -o -name "*.py" | xargs grep -l "audit\|log" | head -5 | tr '\n' '\0')
+    done < <(find "$WORKSPACE_ROOT" -name "*.go" -o -name "*.js" -o -name "*.py" | xargs grep -l "audit\|log" | head -5 | tr '\n' '\0')
     
     # Security scan results
     if [[ -f "security/scan-results.json" ]]; then
@@ -75,8 +79,12 @@ collect_reliability_evidence() {
     local evidence=()
     
     # Burn-in results
-    local burnin_files=($(find artifacts/launch/burnin -name "*.json" -o -name "*.md" 2>/dev/null || true))
+    local burnin_files=($(find "$WORKSPACE_ROOT/artifacts/launch/burnin" -name "*.json" -o -name "*.md" 2>/dev/null || true))
     if [[ ${#burnin_files[@]} -gt 0 ]]; then
+        # Convert to relative paths
+        for i in "${!burnin_files[@]}"; do
+            burnin_files[$i]="${burnin_files[$i]#$WORKSPACE_ROOT/}"
+        done
         evidence+=("${burnin_files[@]}")
         echo "  ✓ Found ${#burnin_files[@]} burn-in result files"
     else
@@ -304,9 +312,10 @@ validate_evidence_accessibility() {
     while read -r gate; do
         echo "  Validating $gate gate evidence..."
         while read -r file; do
-            if [[ -f "$file" ]]; then
-                local size=$(stat -c%s "$file" 2>/dev/null || echo "0")
-                local mtime=$(stat -c%Y "$file" 2>/dev/null || echo "0")
+            local full_path="$WORKSPACE_ROOT/$file"
+            if [[ -f "$full_path" ]]; then
+                local size=$(stat -c%s "$full_path" 2>/dev/null || echo "0")
+                local mtime=$(stat -c%Y "$full_path" 2>/dev/null || echo "0")
                 validation_results+=("\"$file\": {\"accessible\": true, \"size\": $size, \"mtime\": $mtime}")
                 echo "    ✓ $file ($size bytes)"
             else

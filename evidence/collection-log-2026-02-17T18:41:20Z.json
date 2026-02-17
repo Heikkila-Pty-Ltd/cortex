@@ -1,0 +1,84 @@
+{
+  "collection_timestamp": "2026-02-17T18:41:20Z",
+  "workspace_root": "/home/ubuntu/projects/cortex",
+  "gates": {
+    "security": {
+      "status": "collected",
+      "evidence_count": 1,
+      "evidence_files": [
+        ""
+      ],
+      "collection_timestamp": "2026-02-17T18:41:20Z"
+    },
+    "reliability": {
+      "status": "collected",
+      "evidence_count": 1,
+      "evidence_files": [
+        ""
+      ],
+      "collection_timestamp": "2026-02-17T18:41:20Z"
+    },
+    "operations": {
+      "status": "collected",
+      "evidence_count": 1,
+      "evidence_files": [
+        ""
+      ],
+      "collection_timestamp": "2026-02-17T18:41:20Z"
+    },
+    "data": {
+      "status": "collected",
+      "evidence_count": 1,
+      "evidence_files": [
+        ""
+      ],
+      "collection_timestamp": "2026-02-17T18:41:20Z"
+    },
+    "release": {
+      "status": "collected",
+      "evidence_count": 1,
+      "evidence_files": [
+        ""
+      ],
+      "collection_timestamp": "2026-02-17T18:41:20Z"
+    },
+    "safety": {
+      "status": "collected",
+      "evidence_count": 1,
+      "evidence_files": [
+        ""
+      ],
+      "collection_timestamp": "2026-02-17T18:41:20Z"
+    }
+  },
+  "validation_errors": [
+    "Missing docs/api-security.md",
+    "Missing security/scan-results.json",
+    "Missing burn-in results in artifacts/launch/burnin",
+    "Missing slo/scoring-results.json",
+    "Missing runbooks in artifacts/launch/runbooks",
+    "Missing ops/readiness-checklist.md",
+    "Missing monitoring/setup.md",
+    "Missing data/backup-restore-validation.md",
+    "Missing data/protection-measures.md",
+    "Missing release/process-definition.md",
+    "Missing release/dry-run-results.json",
+    "Missing release/rollback-procedures.md",
+    "Missing safety/llm-operator-trial-results.json",
+    "Missing safety/compliance-documentation.md",
+    "Missing safety/safety-review-results.json"
+  ],
+  "collection_summary": {
+    "total_gates": 6,
+    "total_evidence_files": 6,
+    "total_validation_errors": 15,
+    "collection_complete": true
+  },
+  "evidence_validation": {
+    "": {
+      "accessible": false,
+      "size": 0,
+      "mtime": 0
+    }
+  }
+}
