@@ -618,4 +618,160 @@ func TestDoDResult_String(t *testing.T) {
 	if check.Duration != time.Second {
 		t.Errorf("expected duration=1s, got %v", check.Duration)
 	}
+	
+	// Test String method
+	str := result.String()
+	if !strings.Contains(str, "DoD FAILED") {
+		t.Errorf("expected 'DoD FAILED' in string representation, got: %s", str)
+	}
+	if !strings.Contains(str, "2 failures") {
+		t.Errorf("expected '2 failures' in string representation, got: %s", str)
+	}
+}
+
+func TestDoDResult_Summary(t *testing.T) {
+	result := &DoDResult{
+		Passed: false,
+		Checks: []CheckResult{
+			{
+				Command:  "go test ./...",
+				ExitCode: 1,
+				Output:   "FAIL: TestExample\n    example_test.go:10: test failed\nFAIL\texit status 1",
+				Passed:   false,
+				Duration: 2 * time.Second,
+			},
+			{
+				Command:  "go vet ./...",
+				ExitCode: 0,
+				Output:   "",
+				Passed:   true,
+				Duration: 500 * time.Millisecond,
+			},
+		},
+		Failures: []string{"Command failed: go test ./... (exit 1)"},
+	}
+	
+	summary := result.Summary()
+	
+	// Should show failure status
+	if !strings.Contains(summary, "❌ DoD FAILED") {
+		t.Errorf("expected failure indicator in summary, got: %s", summary)
+	}
+	
+	// Should show both checks with their status
+	if !strings.Contains(summary, "❌ Check 1: go test") {
+		t.Errorf("expected failed test check in summary, got: %s", summary)
+	}
+	if !strings.Contains(summary, "✅ Check 2: go vet") {
+		t.Errorf("expected passed vet check in summary, got: %s", summary)
+	}
+	
+	// Should show timing
+	if !strings.Contains(summary, "2s)") {
+		t.Errorf("expected test duration in summary, got: %s", summary)
+	}
+}
+
+func TestDoDResult_HasTimedOutChecks(t *testing.T) {
+	result := &DoDResult{
+		Checks: []CheckResult{
+			{Command: "fast", Duration: 100 * time.Millisecond},
+			{Command: "slow", Duration: 5 * time.Second},
+		},
+	}
+	
+	if !result.HasTimedOutChecks(1 * time.Second) {
+		t.Error("expected to find timed out checks with 1s timeout")
+	}
+	
+	if result.HasTimedOutChecks(10 * time.Second) {
+		t.Error("expected no timed out checks with 10s timeout")
+	}
+}
+
+func TestDoDResult_TotalDuration(t *testing.T) {
+	result := &DoDResult{
+		Checks: []CheckResult{
+			{Command: "check1", Duration: 100 * time.Millisecond},
+			{Command: "check2", Duration: 200 * time.Millisecond},
+			{Command: "check3", Duration: 300 * time.Millisecond},
+		},
+	}
+	
+	expected := 600 * time.Millisecond
+	if result.TotalDuration() != expected {
+		t.Errorf("expected total duration %v, got %v", expected, result.TotalDuration())
+	}
+}
+
+func TestDoDChecker_ValidateConfiguration(t *testing.T) {
+	tests := []struct {
+		name        string
+		checker     *DoDChecker
+		wantError   bool
+		errorString string
+	}{
+		{
+			name:    "valid configuration",
+			checker: NewDoDChecker([]string{"go test ./...", "go vet ./..."}, 80, true, true),
+			wantError: false,
+		},
+		{
+			name:        "empty command",
+			checker:     NewDoDChecker([]string{""}, 80, true, true),
+			wantError:   true,
+			errorString: "empty command",
+		},
+		{
+			name:        "dangerous rm command",
+			checker:     NewDoDChecker([]string{"rm -rf /"}, 80, true, true),
+			wantError:   true,
+			errorString: "potentially dangerous command",
+		},
+		{
+			name:        "dangerous sudo command",
+			checker:     NewDoDChecker([]string{"sudo systemctl stop"}, 80, true, true),
+			wantError:   true,
+			errorString: "potentially dangerous command",
+		},
+		{
+			name:        "invalid coverage minimum negative",
+			checker:     NewDoDChecker([]string{"go test"}, -1, true, true),
+			wantError:   true,
+			errorString: "coverage minimum must be between 0-100",
+		},
+		{
+			name:        "invalid coverage minimum too high",
+			checker:     NewDoDChecker([]string{"go test"}, 150, true, true),
+			wantError:   true,
+			errorString: "coverage minimum must be between 0-100",
+		},
+		{
+			name:    "valid coverage boundary values",
+			checker: NewDoDChecker([]string{"go test"}, 0, true, true),
+			wantError: false,
+		},
+		{
+			name:    "valid coverage boundary values max",
+			checker: NewDoDChecker([]string{"go test"}, 100, true, true),
+			wantError: false,
+		},
+	}
+	
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.checker.ValidateConfiguration()
+			if tt.wantError {
+				if err == nil {
+					t.Error("expected error but got none")
+				} else if !strings.Contains(err.Error(), tt.errorString) {
+					t.Errorf("expected error containing %q, got: %v", tt.errorString, err)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("expected no error but got: %v", err)
+				}
+			}
+		})
+	}
 }

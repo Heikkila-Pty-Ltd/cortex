@@ -296,3 +296,98 @@ func (d *DoDChecker) parseCoverage(output string) (float64, error) {
 	}
 	return sum / float64(len(coverages)), nil
 }
+
+// String returns a human-readable summary of the DoD result.
+func (r *DoDResult) String() string {
+	if r.Passed {
+		return fmt.Sprintf("DoD PASSED (%d checks)", len(r.Checks))
+	}
+	return fmt.Sprintf("DoD FAILED (%d failures): %s", len(r.Failures), strings.Join(r.Failures, "; "))
+}
+
+// Summary returns a detailed summary including timing and output information.
+func (r *DoDResult) Summary() string {
+	var summary strings.Builder
+	
+	if r.Passed {
+		summary.WriteString(fmt.Sprintf("✅ DoD PASSED (%d checks completed)\n", len(r.Checks)))
+	} else {
+		summary.WriteString(fmt.Sprintf("❌ DoD FAILED (%d failures)\n", len(r.Failures)))
+		for i, failure := range r.Failures {
+			summary.WriteString(fmt.Sprintf("  %d. %s\n", i+1, failure))
+		}
+	}
+	
+	if len(r.Checks) > 0 {
+		summary.WriteString("\nCheck Details:\n")
+		for i, check := range r.Checks {
+			status := "✅"
+			if !check.Passed {
+				status = "❌"
+			}
+			summary.WriteString(fmt.Sprintf("  %s Check %d: %s (exit %d, %v)\n", 
+				status, i+1, check.Command, check.ExitCode, check.Duration))
+			
+			if check.Output != "" && !check.Passed {
+				// Only show output for failed checks to avoid clutter
+				lines := strings.Split(check.Output, "\n")
+				for j, line := range lines {
+					if j >= 3 { // Limit output to first 3 lines
+						summary.WriteString(fmt.Sprintf("      ... [%d more lines]\n", len(lines)-3))
+						break
+					}
+					if strings.TrimSpace(line) != "" {
+						summary.WriteString(fmt.Sprintf("      %s\n", line))
+					}
+				}
+			}
+		}
+	}
+	
+	return summary.String()
+}
+
+// HasTimedOutChecks returns true if any checks took longer than the specified duration.
+func (r *DoDResult) HasTimedOutChecks(timeout time.Duration) bool {
+	for _, check := range r.Checks {
+		if check.Duration > timeout {
+			return true
+		}
+	}
+	return false
+}
+
+// TotalDuration returns the sum of all check durations.
+func (r *DoDResult) TotalDuration() time.Duration {
+	var total time.Duration
+	for _, check := range r.Checks {
+		total += check.Duration
+	}
+	return total
+}
+
+// ValidateConfiguration validates that the DoD checker configuration is reasonable.
+func (d *DoDChecker) ValidateConfiguration() error {
+	// Check for obviously invalid commands
+	for _, check := range d.checks {
+		check = strings.TrimSpace(check)
+		if check == "" {
+			return fmt.Errorf("empty command in DoD checks")
+		}
+		
+		// Warn about potentially dangerous commands
+		dangerousCommands := []string{"rm", "sudo", "chmod", "mv /", "dd", "mkfs"}
+		for _, dangerous := range dangerousCommands {
+			if strings.Contains(strings.ToLower(check), dangerous) {
+				return fmt.Errorf("potentially dangerous command in DoD checks: %q contains %q", check, dangerous)
+			}
+		}
+	}
+	
+	// Validate coverage range
+	if d.coverageMin < 0 || d.coverageMin > 100 {
+		return fmt.Errorf("coverage minimum must be between 0-100, got %d", d.coverageMin)
+	}
+	
+	return nil
+}
