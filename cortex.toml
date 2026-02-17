@@ -133,3 +133,9 @@ max_concurrent_per_project = 3
 [dispatch.tmux]
 history_limit = 50000
 session_prefix = "cortex-"
+
+[chief]
+enabled = true
+matrix_room = "#cortex-coordination"
+model = "claude-sonnet-4-20250514"
+agent_id = "cortex-chief-scrum"

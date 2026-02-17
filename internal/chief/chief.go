@@ -1,0 +1,247 @@
+// Package chief implements the Chief Scrum Master for multi-team sprint planning ceremonies.
+package chief
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/antigravity-dev/cortex/internal/beads"
+	"github.com/antigravity-dev/cortex/internal/config"
+	"github.com/antigravity-dev/cortex/internal/dispatch"
+	"github.com/antigravity-dev/cortex/internal/store"
+)
+
+// Chief handles multi-team sprint planning ceremonies
+type Chief struct {
+	cfg        *config.Config
+	store      *store.Store
+	dispatcher dispatch.DispatcherInterface
+	logger     *slog.Logger
+}
+
+// CeremonyType represents different types of ceremonies
+type CeremonyType string
+
+const (
+	CeremonyMultiTeamPlanning CeremonyType = "multi_team_planning"
+)
+
+// CeremonySchedule defines when ceremonies should run
+type CeremonySchedule struct {
+	Type        CeremonyType
+	Cadence     time.Duration // How often to check (e.g., daily)
+	DayOfWeek   time.Weekday  // Which day of week to run
+	TimeOfDay   time.Time     // What time to run (date ignored, only hour:minute used)
+	LastChecked time.Time     // When we last checked if ceremony should run
+	LastRan     time.Time     // When ceremony last ran successfully
+}
+
+// New creates a new Chief instance
+func New(cfg *config.Config, store *store.Store, dispatcher dispatch.DispatcherInterface, logger *slog.Logger) *Chief {
+	return &Chief{
+		cfg:        cfg,
+		store:      store,
+		dispatcher: dispatcher,
+		logger:     logger,
+	}
+}
+
+// ShouldRunCeremony checks if a ceremony should run based on its schedule
+func (c *Chief) ShouldRunCeremony(ctx context.Context, schedule CeremonySchedule) bool {
+	if !c.cfg.Chief.Enabled {
+		c.logger.Debug("chief sm disabled, skipping ceremony check")
+		return false
+	}
+
+	now := time.Now()
+	
+	// Check if we've already checked recently (within last hour to avoid spam)
+	if now.Sub(schedule.LastChecked) < time.Hour {
+		return false
+	}
+
+	// Check if today is the right day of week
+	if now.Weekday() != schedule.DayOfWeek {
+		return false
+	}
+
+	// Check if we're past the target time today
+	targetTime := time.Date(now.Year(), now.Month(), now.Day(), 
+		schedule.TimeOfDay.Hour(), schedule.TimeOfDay.Minute(), 0, 0, now.Location())
+	if now.Before(targetTime) {
+		return false
+	}
+
+	// Check if we already ran today
+	if schedule.LastRan.Year() == now.Year() && 
+		schedule.LastRan.YearDay() == now.YearDay() {
+		return false
+	}
+
+	c.logger.Info("ceremony should run", 
+		"type", schedule.Type,
+		"target_time", targetTime.Format("15:04"),
+		"current_time", now.Format("15:04"))
+	
+	return true
+}
+
+// RunMultiTeamPlanning executes the multi-team sprint planning ceremony
+func (c *Chief) RunMultiTeamPlanning(ctx context.Context) error {
+	if !c.cfg.Chief.Enabled {
+		return fmt.Errorf("chief sm not enabled")
+	}
+
+	c.logger.Info("starting multi-team sprint planning ceremony")
+
+	// Create a ceremony dispatch bead to track this work
+	ceremonyBead := c.createCeremonyBead("Multi-team sprint planning ceremony")
+	
+	// Dispatch the Chief SM with portfolio context
+	dispatchID, err := c.dispatchChiefSM(ctx, ceremonyBead, "sprint_planning_multi")
+	if err != nil {
+		return fmt.Errorf("failed to dispatch chief sm: %w", err)
+	}
+
+	c.logger.Info("multi-team planning ceremony dispatched", 
+		"dispatch_id", dispatchID,
+		"bead_id", ceremonyBead.ID)
+
+	return nil
+}
+
+// createCeremonyBead creates a synthetic bead to track ceremony work
+func (c *Chief) createCeremonyBead(title string) beads.Bead {
+	now := time.Now()
+	return beads.Bead{
+		ID:          fmt.Sprintf("ceremony-%d", now.Unix()),
+		Title:       title,
+		Description: "Synthetic bead for tracking Chief SM ceremony dispatch",
+		Type:        "task",
+		Status:      "open",
+		Priority:    1, // High priority for ceremonies
+		CreatedAt:   now,
+	}
+}
+
+// dispatchChiefSM dispatches the Chief SM for a ceremony
+func (c *Chief) dispatchChiefSM(ctx context.Context, bead beads.Bead, promptTemplate string) (int64, error) {
+	// Use premium tier provider for Chief SM (as specified in requirements)
+	provider := ""
+	if len(c.cfg.Tiers.Premium) > 0 {
+		provider = c.cfg.Tiers.Premium[0]
+	}
+	if provider == "" {
+		// Fallback to balanced tier
+		if len(c.cfg.Tiers.Balanced) > 0 {
+			provider = c.cfg.Tiers.Balanced[0]
+		}
+	}
+	if provider == "" {
+		return 0, fmt.Errorf("no available providers for Chief SM dispatch")
+	}
+
+	agentID := c.cfg.Chief.AgentID
+	if agentID == "" {
+		agentID = "cortex-chief-scrum"
+	}
+
+	workspace := c.cfg.Projects["cortex"].Workspace
+	if workspace == "" {
+		workspace = "~/projects/cortex" // fallback
+	}
+
+	prompt := c.buildCeremonyPrompt(ctx, promptTemplate)
+
+	// Record the dispatch in the store first
+	dispatchID, err := c.store.RecordDispatch(
+		bead.ID,
+		"cortex", // project name
+		agentID,
+		provider,
+		"premium", // tier
+		-1,        // handle (will be set by dispatcher)
+		"",        // session name (will be set by dispatcher)
+		prompt,
+		"",        // log path (will be set by dispatcher)
+		"",        // branch (not used for ceremonies)
+		"tmux",    // backend
+	)
+	if err != nil {
+		return 0, fmt.Errorf("failed to record ceremony dispatch: %w", err)
+	}
+
+	// Trigger the actual dispatch
+	handle, err := c.dispatcher.Dispatch(ctx, agentID, prompt, provider, "low", workspace)
+	if err != nil {
+		c.store.UpdateDispatchStatus(dispatchID, "failed", 1, 0)
+		return 0, fmt.Errorf("failed to dispatch ceremony: %w", err)
+	}
+
+	c.logger.Info("ceremony dispatch successful", 
+		"dispatch_id", dispatchID,
+		"handle", handle,
+		"provider", provider)
+
+	return dispatchID, nil
+}
+
+// buildCeremonyPrompt constructs the prompt for ceremony dispatches
+func (c *Chief) buildCeremonyPrompt(ctx context.Context, template string) string {
+	switch template {
+	case "sprint_planning_multi":
+		return c.buildMultiTeamPlanningPrompt(ctx)
+	default:
+		return fmt.Sprintf("Execute Chief SM ceremony: %s", template)
+	}
+}
+
+// buildMultiTeamPlanningPrompt creates the multi-team sprint planning prompt
+func (c *Chief) buildMultiTeamPlanningPrompt(ctx context.Context) string {
+	return `# Multi-Team Sprint Planning Ceremony
+
+You are the **Chief Scrum Master** conducting a unified sprint planning across all projects.
+
+## Your Mission
+
+1. **Gather Portfolio Context** (code before LLM dispatch):
+   - Collect backlogs from all active projects
+   - Build cross-project dependency graph  
+   - Calculate per-project capacity budgets from rate_limits.budget
+   - Review provider performance profiles
+   - Check existing per-project sprint plans (if any)
+
+2. **Strategic Allocation** (your LLM reasoning):
+   - Review cross-project dependencies: "Project B needs endpoint from Project A — prioritize A's endpoint bead"
+   - Allocate capacity: "Project A gets 60% this sprint (critical deadline), B gets 40%"  
+   - Identify conflicts: "Both projects want premium tier — stagger them"
+   - Balance technical debt vs features across portfolio
+
+3. **Deliver Unified Plan**:
+   - Record allocations in store
+   - Update rate limit budgets if rebalancing needed
+   - Send coordination summary to Matrix room (if configured)
+   - Ensure this runs BEFORE individual project sprint planning
+
+## Context
+- **Timing**: Sprint start, before per-project scrum master planning
+- **Priority**: Use premium/Opus tier reasoning for strategic decisions
+- **Output**: Unified sprint plan with capacity allocations and dependency prioritization
+
+Execute the full ceremony workflow now.`
+}
+
+// GetMultiTeamPlanningSchedule returns the default schedule for multi-team planning
+func (c *Chief) GetMultiTeamPlanningSchedule() CeremonySchedule {
+	// Default: Monday at 9:00 AM (before per-project planning)
+	targetTime := time.Date(0, 1, 1, 9, 0, 0, 0, time.UTC)
+	
+	return CeremonySchedule{
+		Type:      CeremonyMultiTeamPlanning,
+		Cadence:   24 * time.Hour, // Check daily
+		DayOfWeek: time.Monday,
+		TimeOfDay: targetTime,
+	}
+}

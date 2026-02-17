@@ -23,17 +23,18 @@ import (
 
 // Scheduler is the core orchestration loop.
 type Scheduler struct {
-	cfg         *config.Config
-	store       *store.Store
-	rateLimiter *dispatch.RateLimiter
-	dispatcher  dispatch.DispatcherInterface
-	logger      *slog.Logger
-	dryRun      bool
-	mu          sync.Mutex
-	paused      bool
-	quarantine  map[string]time.Time
-	churnBlock  map[string]time.Time
-	epicBreakup map[string]time.Time
+	cfg               *config.Config
+	store             *store.Store
+	rateLimiter       *dispatch.RateLimiter
+	dispatcher        dispatch.DispatcherInterface
+	logger            *slog.Logger
+	dryRun            bool
+	mu                sync.Mutex
+	paused            bool
+	quarantine        map[string]time.Time
+	churnBlock        map[string]time.Time
+	epicBreakup       map[string]time.Time
+	ceremonyScheduler *CeremonyScheduler
 }
 
 const (
@@ -55,7 +56,7 @@ const (
 
 // New creates a new Scheduler with all dependencies.
 func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatch.DispatcherInterface, logger *slog.Logger, dryRun bool) *Scheduler {
-	return &Scheduler{
+	scheduler := &Scheduler{
 		cfg:         cfg,
 		store:       s,
 		rateLimiter: rl,
@@ -66,6 +67,11 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 		churnBlock:  make(map[string]time.Time),
 		epicBreakup: make(map[string]time.Time),
 	}
+	
+	// Initialize ceremony scheduler
+	scheduler.ceremonyScheduler = NewCeremonyScheduler(cfg, s, d, logger)
+	
+	return scheduler
 }
 
 // Start runs the scheduler tick loop until the context is cancelled.
@@ -487,7 +493,17 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		dispatched++
 	}
 
+	// Check and trigger ceremonies (runs after regular dispatches but within same tick)
+	s.checkCeremonies(ctx)
+
 	s.logger.Info("tick complete", "dispatched", dispatched, "ready", len(allReady))
+}
+
+// checkCeremonies evaluates ceremony schedules and triggers them if due
+func (s *Scheduler) checkCeremonies(ctx context.Context) {
+	if s.ceremonyScheduler != nil {
+		s.ceremonyScheduler.CheckCeremonies(ctx)
+	}
 }
 
 // defaultModel returns the model from the first balanced provider, or falls back to any provider.
