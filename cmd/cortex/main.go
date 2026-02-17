@@ -78,15 +78,22 @@ func main() {
 	// Create components
 	rl := dispatch.NewRateLimiter(st, cfg.RateLimits)
 
-	// Choose dispatcher based on tmux availability
-	var d dispatch.DispatcherInterface
-	if dispatch.IsTmuxAvailable() {
-		logger.Info("tmux available, using TmuxDispatcher")
-		d = dispatch.NewTmuxDispatcher()
-	} else {
-		logger.Info("tmux not available, using PID-based Dispatcher")
-		d = dispatch.NewDispatcher()
+	// Create dispatcher using config-driven resolver
+	resolver := scheduler.NewDispatcherResolver(cfg)
+	
+	// Validate dispatcher configuration before proceeding
+	if err := resolver.ValidateConfiguration(); err != nil {
+		logger.Error("dispatcher configuration validation failed", "error", err)
+		os.Exit(1)
 	}
+	
+	d, err := resolver.CreateDispatcher()
+	if err != nil {
+		logger.Error("failed to create dispatcher", "error", err)
+		os.Exit(1)
+	}
+	
+	logger.Info("dispatcher created", "type", d.GetHandleType())
 
 	sched := scheduler.New(cfg, st, rl, d, logger.With("component", "scheduler"), *dryRun)
 

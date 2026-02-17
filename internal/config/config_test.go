@@ -512,3 +512,213 @@ func TestLoadChiefConfigOptional(t *testing.T) {
 	}
 }
 
+func TestLoadDispatchValidConfig(t *testing.T) {
+	cfg := validConfig + `
+
+[dispatch.cli.claude]
+cmd = "claude"
+prompt_mode = "stdin"
+args = ["--print"]
+model_flag = "--model"
+approval_flags = ["--dangerously-skip-permissions"]
+
+[dispatch.cli.codex]
+cmd = "codex"
+prompt_mode = "file"
+args = ["exec", "--full-auto"]
+model_flag = "-m"
+approval_flags = []
+
+[dispatch.routing]
+fast_backend = "headless_cli"
+balanced_backend = "tmux"
+premium_backend = "tmux"
+`
+	path := writeTestConfig(t, cfg)
+	config, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected valid dispatch config to load: %v", err)
+	}
+
+	// Verify CLI configs were parsed
+	if len(config.Dispatch.CLI) != 2 {
+		t.Errorf("expected 2 CLI configs, got %d", len(config.Dispatch.CLI))
+	}
+
+	claude := config.Dispatch.CLI["claude"]
+	if claude.Cmd != "claude" {
+		t.Errorf("expected claude cmd, got %q", claude.Cmd)
+	}
+	if claude.ModelFlag != "--model" {
+		t.Errorf("expected --model flag, got %q", claude.ModelFlag)
+	}
+}
+
+func TestLoadDispatchInvalidBackend(t *testing.T) {
+	cfg := validConfig + `
+
+[dispatch.routing]
+fast_backend = "invalid_backend"
+balanced_backend = "tmux"
+`
+	path := writeTestConfig(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for invalid backend type")
+	}
+	
+	if !strings.Contains(err.Error(), "invalid backend type") {
+		t.Errorf("expected invalid backend error, got: %v", err)
+	}
+}
+
+func TestLoadDispatchMissingCLIConfig(t *testing.T) {
+	cfg := validConfig + `
+
+[providers.test-provider]
+tier = "fast"
+authed = true
+model = "test-model"
+cli = "nonexistent"
+
+[dispatch.routing]
+fast_backend = "headless_cli"
+`
+	path := writeTestConfig(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for missing CLI config")
+	}
+	
+	if !strings.Contains(err.Error(), "references undefined CLI config") {
+		t.Errorf("expected undefined CLI config error, got: %v", err)
+	}
+}
+
+func TestLoadDispatchInvalidCLIConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		config string
+		error  string
+	}{
+		{
+			name: "missing cmd",
+			config: `
+[dispatch.cli.test]
+prompt_mode = "stdin"
+`,
+			error: "cmd is required",
+		},
+		{
+			name: "invalid prompt_mode",
+			config: `
+[dispatch.cli.test]
+cmd = "test"
+prompt_mode = "invalid"
+`,
+			error: "invalid prompt_mode",
+		},
+		{
+			name: "invalid model_flag format",
+			config: `
+[dispatch.cli.test]
+cmd = "test"
+model_flag = "model"
+`,
+			error: "must start with '-'",
+		},
+		{
+			name: "invalid approval_flag format",
+			config: `
+[dispatch.cli.test]
+cmd = "test"
+approval_flags = ["skip-perms"]
+`,
+			error: "must start with '-'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig + tt.config
+			path := writeTestConfig(t, cfg)
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			
+			if !strings.Contains(err.Error(), tt.error) {
+				t.Errorf("expected error containing %q, got: %v", tt.error, err)
+			}
+		})
+	}
+}
+
+func TestLoadDispatchValidCLIConfigs(t *testing.T) {
+	cfg := validConfig + `
+
+[dispatch.cli.claude]
+cmd = "claude"
+prompt_mode = "stdin"
+model_flag = "--model"
+approval_flags = ["--dangerously-skip-permissions", "--yes"]
+
+[dispatch.cli.codex]
+cmd = "codex"
+prompt_mode = "file"
+model_flag = "-m"
+approval_flags = []
+
+[dispatch.cli.aider]
+cmd = "aider"
+prompt_mode = "arg"
+model_flag = "--model"
+
+[dispatch.routing]
+fast_backend = "headless_cli"
+`
+	path := writeTestConfig(t, cfg)
+	config, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected valid CLI configs to load: %v", err)
+	}
+
+	if len(config.Dispatch.CLI) != 3 {
+		t.Errorf("expected 3 CLI configs, got %d", len(config.Dispatch.CLI))
+	}
+
+	// Test each CLI config
+	claude := config.Dispatch.CLI["claude"]
+	if claude.PromptMode != "stdin" {
+		t.Errorf("expected stdin prompt_mode, got %q", claude.PromptMode)
+	}
+	if len(claude.ApprovalFlags) != 2 {
+		t.Errorf("expected 2 approval flags, got %d", len(claude.ApprovalFlags))
+	}
+
+	aider := config.Dispatch.CLI["aider"]
+	if aider.PromptMode != "arg" {
+		t.Errorf("expected arg prompt_mode, got %q", aider.PromptMode)
+	}
+	if len(aider.ApprovalFlags) != 0 {
+		t.Errorf("expected 0 approval flags, got %d", len(aider.ApprovalFlags))
+	}
+}
+
+func TestValidateDispatchConfigNilCLI(t *testing.T) {
+	// Test config with no CLI section
+	cfg := &Config{
+		Dispatch: Dispatch{
+			Routing: DispatchRouting{
+				FastBackend: "headless_cli",
+			},
+		},
+		Providers: make(map[string]Provider),
+	}
+
+	err := ValidateDispatchConfig(cfg)
+	if err != nil {
+		t.Errorf("expected nil CLI config to be valid, got: %v", err)
+	}
+}
+

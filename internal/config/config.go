@@ -445,6 +445,11 @@ func validate(cfg *Config) error {
 		}
 	}
 
+	// Validate dispatch CLI configuration
+	if err := ValidateDispatchConfig(cfg); err != nil {
+		return fmt.Errorf("dispatch configuration: %w", err)
+	}
+
 	return nil
 }
 
@@ -470,4 +475,82 @@ func (rl *RateLimits) GetProjectBudget(project string) int {
 		return 0
 	}
 	return rl.Budget[project]
+}
+
+// ValidateDispatchConfig validates the dispatch configuration at startup.
+// This prevents runtime command failures due to config/CLI drift.
+func ValidateDispatchConfig(cfg *Config) error {
+	// Validate backend names match known types
+	knownBackends := map[string]bool{
+		"tmux":        true,
+		"headless_cli": true,
+	}
+
+	routing := cfg.Dispatch.Routing
+	backends := map[string]string{
+		"fast":     routing.FastBackend,
+		"balanced": routing.BalancedBackend,
+		"premium":  routing.PremiumBackend,
+		"comms":    routing.CommsBackend,
+		"retry":    routing.RetryBackend,
+	}
+
+	// Check that all configured backends are known types
+	for tier, backend := range backends {
+		if backend != "" && !knownBackends[backend] {
+			return fmt.Errorf("invalid backend type %q for %s tier (valid: tmux, headless_cli)", backend, tier)
+		}
+	}
+
+	// Validate CLI configurations
+	for cliName, cliConfig := range cfg.Dispatch.CLI {
+		if err := validateCLIConfig(cliName, cliConfig); err != nil {
+			return fmt.Errorf("CLI config %q: %w", cliName, err)
+		}
+	}
+
+	// Validate provider->CLI bindings
+	for providerName, provider := range cfg.Providers {
+		if provider.CLI != "" {
+			if _, exists := cfg.Dispatch.CLI[provider.CLI]; !exists {
+				return fmt.Errorf("provider %q references undefined CLI config %q", providerName, provider.CLI)
+			}
+		}
+	}
+
+	return nil
+}
+
+// validateCLIConfig validates an individual CLI configuration.
+func validateCLIConfig(name string, config CLIConfig) error {
+	// Validate command is specified
+	if config.Cmd == "" {
+		return fmt.Errorf("cmd is required")
+	}
+
+	// Validate prompt_mode
+	validPromptModes := map[string]bool{
+		"stdin": true,
+		"file":  true,
+		"arg":   true,
+	}
+	if config.PromptMode != "" && !validPromptModes[config.PromptMode] {
+		return fmt.Errorf("invalid prompt_mode %q (valid: stdin, file, arg)", config.PromptMode)
+	}
+
+	// Validate model_flag format if specified
+	if config.ModelFlag != "" {
+		if !strings.HasPrefix(config.ModelFlag, "-") {
+			return fmt.Errorf("model_flag %q must start with '-' (e.g., '--model', '-m')", config.ModelFlag)
+		}
+	}
+
+	// Validate approval_flags format if specified
+	for i, flag := range config.ApprovalFlags {
+		if !strings.HasPrefix(flag, "-") {
+			return fmt.Errorf("approval_flags[%d] %q must start with '-'", i, flag)
+		}
+	}
+
+	return nil
 }
