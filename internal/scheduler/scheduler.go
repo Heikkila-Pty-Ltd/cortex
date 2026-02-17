@@ -88,7 +88,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 	})
 
 	for _, np := range projects {
-		beadList, err := beads.ListBeads(np.proj.BeadsDir)
+		beadList, err := beads.ListBeads(config.ExpandHome(np.proj.BeadsDir))
 		if err != nil {
 			s.logger.Error("failed to list beads", "project", np.name, "error", err)
 			continue
