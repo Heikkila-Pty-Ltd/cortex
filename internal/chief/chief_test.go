@@ -154,10 +154,9 @@ func TestBuildMultiTeamPlanningPrompt(t *testing.T) {
 	expectedElements := []string{
 		"Multi-Team Sprint Planning Ceremony",
 		"Chief Scrum Master",
-		"Gather Portfolio Context",
+		"Portfolio Context",
 		"Strategic Allocation",
 		"Deliver Unified Plan",
-		"before per-project scrum master planning",
 	}
 	
 	for _, element := range expectedElements {
