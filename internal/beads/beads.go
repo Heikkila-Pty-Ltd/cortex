@@ -204,6 +204,16 @@ func CloseBeadCtx(ctx context.Context, beadsDir, beadID string) error {
 	return nil
 }
 
+// CloseBeadWithReasonCtx closes a bead with a specific reason.
+func CloseBeadWithReasonCtx(ctx context.Context, beadsDir, beadID, reason string) error {
+	root := projectRoot(beadsDir)
+	_, err := runBD(ctx, root, "close", beadID, "--reason", reason)
+	if err != nil {
+		return fmt.Errorf("closing bead %s with reason: %w", beadID, err)
+	}
+	return nil
+}
+
 // ClaimBeadOwnership atomically claims a bead as an ownership lock while preserving status=open.
 func ClaimBeadOwnership(beadsDir, beadID string) error {
 	return ClaimBeadOwnershipCtx(context.Background(), beadsDir, beadID)

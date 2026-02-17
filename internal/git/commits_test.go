@@ -1,0 +1,182 @@
+package git
+
+import (
+	"reflect"
+	"testing"
+	"time"
+)
+
+func TestExtractBeadIDs(t *testing.T) {
+	tests := []struct {
+		name     string
+		message  string
+		expected []string
+	}{
+		{
+			name:     "simple bead ID",
+			message:  "fix(cortex-abc): implement new feature",
+			expected: []string{"cortex-abc"},
+		},
+		{
+			name:     "bead ID with number suffix",
+			message:  "feat(cortex-abc.1): add tests for feature",
+			expected: []string{"cortex-abc.1"},
+		},
+		{
+			name:     "multiple bead IDs",
+			message:  "fix cortex-abc and cortex-def.2 issues",
+			expected: []string{"cortex-abc", "cortex-def.2"},
+		},
+		{
+			name:     "bead ID in middle of message",
+			message:  "Updated implementation for cortex-xyz according to requirements",
+			expected: []string{"cortex-xyz"},
+		},
+		{
+			name:     "no bead IDs",
+			message:  "general refactoring and cleanup",
+			expected: []string{},
+		},
+		{
+			name:     "false positives filtered out",
+			message:  "built-in function and non-zero values with utf-8 encoding",
+			expected: []string{},
+		},
+		{
+			name:     "edge case short IDs filtered",
+			message:  "fix a-b issue",
+			expected: []string{},
+		},
+		{
+			name:     "project with numbers",
+			message:  "implement hg-website-123.5 feature",
+			expected: []string{"hg-website-123.5"},
+		},
+		{
+			name:     "conventional commit format",
+			message:  "feat(project-abc): closes project-abc with implementation",
+			expected: []string{"project-abc"},
+		},
+		{
+			name:     "duplicate bead IDs deduplicated",
+			message:  "fix cortex-xyz issue and update cortex-xyz tests for cortex-xyz",
+			expected: []string{"cortex-xyz"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ExtractBeadIDs(tt.message)
+			if !reflect.DeepEqual(result, tt.expected) {
+				t.Errorf("ExtractBeadIDs() = %v, expected %v", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsLikelyBeadID(t *testing.T) {
+	tests := []struct {
+		name      string
+		candidate string
+		expected  bool
+	}{
+		{
+			name:      "valid bead ID",
+			candidate: "cortex-abc",
+			expected:  true,
+		},
+		{
+			name:      "valid bead ID with numbers",
+			candidate: "project-123",
+			expected:  true,
+		},
+		{
+			name:      "valid bead ID with suffix",
+			candidate: "cortex-abc.1",
+			expected:  true,
+		},
+		{
+			name:      "too short",
+			candidate: "a-b",
+			expected:  false,
+		},
+		{
+			name:      "false positive - built-in",
+			candidate: "built-in",
+			expected:  false,
+		},
+		{
+			name:      "false positive - utf-8",
+			candidate: "utf-8",
+			expected:  false,
+		},
+		{
+			name:      "false positive - non-zero",
+			candidate: "non-zero",
+			expected:  false,
+		},
+		{
+			name:      "no dash",
+			candidate: "cortex",
+			expected:  false,
+		},
+		{
+			name:      "first part too short",
+			candidate: "a-cortex",
+			expected:  false,
+		},
+		{
+			name:      "second part too short",
+			candidate: "cortex-a",
+			expected:  false,
+		},
+		{
+			name:      "case insensitive false positive",
+			candidate: "BUILT-IN",
+			expected:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isLikelyBeadID(tt.candidate)
+			if result != tt.expected {
+				t.Errorf("isLikelyBeadID(%q) = %v, expected %v", tt.candidate, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCommit_BeadIDs(t *testing.T) {
+	// Test that Commit struct properly extracts bead IDs
+	commit := Commit{
+		Hash:    "abc123",
+		Message: "feat(cortex-xyz): implement feature for cortex-abc.1",
+		Author:  "test@example.com",
+		Date:    time.Now(),
+	}
+	
+	commit.BeadIDs = ExtractBeadIDs(commit.Message)
+	
+	expected := []string{"cortex-xyz", "cortex-abc.1"}
+	if !reflect.DeepEqual(commit.BeadIDs, expected) {
+		t.Errorf("Commit.BeadIDs = %v, expected %v", commit.BeadIDs, expected)
+	}
+}
+
+// Mock test for commit parsing - would need git repo setup for real testing
+func TestParseCommitLine(t *testing.T) {
+	// This would be used to test the commit parsing logic
+	// For real testing, we'd need to set up a git repo with test commits
+	parts := []string{"abc123def456", "feat(cortex-xyz): implement feature", "John Doe", "2024-01-15 10:30:00 -0500"}
+	
+	if len(parts) != 4 {
+		t.Errorf("Expected 4 parts in commit line, got %d", len(parts))
+	}
+	
+	beadIDs := ExtractBeadIDs(parts[1])
+	expected := []string{"cortex-xyz"}
+	if !reflect.DeepEqual(beadIDs, expected) {
+		t.Errorf("BeadIDs = %v, expected %v", beadIDs, expected)
+	}
+}

@@ -26,18 +26,20 @@ import (
 
 // Scheduler is the core orchestration loop.
 type Scheduler struct {
-	cfg               *config.Config
-	store             *store.Store
-	rateLimiter       *dispatch.RateLimiter
-	dispatcher        dispatch.DispatcherInterface
-	logger            *slog.Logger
-	dryRun            bool
-	mu                sync.Mutex
-	paused            bool
-	quarantine        map[string]time.Time
-	churnBlock        map[string]time.Time
-	epicBreakup       map[string]time.Time
-	ceremonyScheduler *CeremonyScheduler
+	cfg                   *config.Config
+	store                 *store.Store
+	rateLimiter           *dispatch.RateLimiter
+	dispatcher            dispatch.DispatcherInterface
+	logger                *slog.Logger
+	dryRun                bool
+	mu                    sync.Mutex
+	paused                bool
+	quarantine            map[string]time.Time
+	churnBlock            map[string]time.Time
+	epicBreakup           map[string]time.Time
+	ceremonyScheduler     *CeremonyScheduler
+	completionVerifier    *CompletionVerifier
+	lastCompletionCheck   time.Time
 }
 
 const (
@@ -52,6 +54,10 @@ const (
 	epicBreakdownInterval   = 6 * time.Hour
 	epicBreakdownTitleStart = "Auto: break down epic "
 	epicBreakdownTitleEnd   = " into executable bug/task beads"
+
+	// Completion verification settings
+	completionCheckInterval = 2 * time.Hour // Check for completed beads every 2 hours
+	completionLookbackDays  = 7             // Look back 7 days in git commits
 
 	nightModeStartHour = 22
 	nightModeEndHour   = 7
@@ -73,6 +79,10 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 	
 	// Initialize ceremony scheduler
 	scheduler.ceremonyScheduler = NewCeremonyScheduler(cfg, s, d, logger)
+	
+	// Initialize completion verifier
+	scheduler.completionVerifier = NewCompletionVerifier(s, logger.With("component", "completion_verifier"))
+	scheduler.completionVerifier.SetProjects(cfg.Projects)
 	
 	return scheduler
 }
@@ -501,6 +511,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 
 	// Check for beads in DoD stage and process them
 	s.processDoDStage(ctx)
+
+	// Run completion verification check (periodically)
+	s.runCompletionVerification(ctx)
 
 	s.logger.Info("tick complete", "dispatched", dispatched, "ready", len(allReady))
 }
@@ -1519,5 +1532,89 @@ func (s *Scheduler) runHealthChecks() {
 	killed := health.CleanZombies(s.store, s.dispatcher, s.logger.With("scope", "zombie"))
 	if killed > 0 {
 		s.logger.Info("zombie cleanup complete", "killed", killed)
+	}
+}
+
+// runCompletionVerification checks for beads that should be auto-closed based on git commits
+func (s *Scheduler) runCompletionVerification(ctx context.Context) {
+	now := time.Now()
+	
+	// Only run completion verification periodically
+	if !s.lastCompletionCheck.IsZero() && now.Sub(s.lastCompletionCheck) < completionCheckInterval {
+		return
+	}
+	
+	s.lastCompletionCheck = now
+	s.logger.Debug("running completion verification check")
+	
+	// Update projects in the verifier in case config changed
+	s.completionVerifier.SetProjects(s.cfg.Projects)
+	
+	// Run verification
+	results, err := s.completionVerifier.VerifyCompletion(ctx, s.cfg.Projects, completionLookbackDays)
+	if err != nil {
+		s.logger.Error("completion verification failed", "error", err)
+		return
+	}
+	
+	// Count and log summary
+	var totalCompleted, totalOrphaned, totalErrors int
+	for _, result := range results {
+		totalCompleted += len(result.CompletedBeads)
+		totalOrphaned += len(result.OrphanedCommits)
+		totalErrors += len(result.VerificationErrors)
+		
+		// Log details for projects with issues
+		if len(result.CompletedBeads) > 0 {
+			s.logger.Info("found beads that should be auto-closed",
+				"project", result.Project,
+				"count", len(result.CompletedBeads))
+				
+			for _, completed := range result.CompletedBeads {
+				s.logger.Info("bead should be closed",
+					"project", result.Project,
+					"bead", completed.BeadID,
+					"title", completed.Title,
+					"commits", len(completed.Commits),
+					"last_commit", completed.LastCommitAt.Format("2006-01-02 15:04:05"))
+			}
+		}
+		
+		if len(result.OrphanedCommits) > 0 {
+			s.logger.Warn("found orphaned commits referencing non-existent beads",
+				"project", result.Project,
+				"count", len(result.OrphanedCommits))
+				
+			for _, orphaned := range result.OrphanedCommits {
+				s.logger.Warn("orphaned commit",
+					"project", result.Project,
+					"bead", orphaned.BeadID,
+					"commit", orphaned.Commit.Hash[:8],
+					"message", orphaned.Commit.Message)
+			}
+		}
+		
+		if len(result.VerificationErrors) > 0 {
+			for _, verErr := range result.VerificationErrors {
+				s.logger.Error("completion verification error",
+					"project", result.Project,
+					"bead", verErr.BeadID,
+					"error", verErr.Error)
+			}
+		}
+	}
+	
+	if totalCompleted > 0 || totalOrphaned > 0 || totalErrors > 0 {
+		s.logger.Info("completion verification summary",
+			"completed_beads", totalCompleted,
+			"orphaned_commits", totalOrphaned,
+			"errors", totalErrors)
+	}
+	
+	// Auto-close completed beads if not in dry-run mode
+	if totalCompleted > 0 {
+		if err := s.completionVerifier.AutoCloseCompletedBeads(ctx, results, s.dryRun); err != nil {
+			s.logger.Error("failed to auto-close completed beads", "error", err)
+		}
 	}
 }
