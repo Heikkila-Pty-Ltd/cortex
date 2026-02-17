@@ -12,10 +12,10 @@ import (
 func TestSessionName_Uniqueness(t *testing.T) {
 	// Generate multiple session names quickly to test collision resistance
 	names := make(map[string]bool)
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 10000; i++ {
 		name := SessionName("test", "agent1")
 		if names[name] {
-			t.Errorf("Collision detected: session name %q generated twice", name)
+			t.Errorf("Collision detected: session name %q generated twice after %d iterations", name, i)
 		}
 		names[name] = true
 	}

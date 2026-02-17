@@ -77,11 +77,11 @@ func SessionName(project, beadID string) string {
 	}
 	
 	// Generate unique identifiers to prevent collisions
-	ts := time.Now().UnixNano() / 1000000 // millisecond precision
+	ts := time.Now().UnixNano()
 	pid := os.Getpid()
 	
 	// Add 4 bytes of randomness for additional collision resistance
-	randBytes := make([]byte, 2)
+	randBytes := make([]byte, 4)
 	rand.Read(randBytes)
 	randHex := fmt.Sprintf("%x", randBytes)
 	
@@ -212,8 +212,16 @@ func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt stri
 	shellScript := `msg=$(cat "$1") && exec openclaw agent --agent "$2" --message "$msg" --thinking "$3"`
 	agentCmd := fmt.Sprintf(`sh -c '%s' _ '%s' '%s' '%s'`, shellScript, tmpPath, agent, thinking)
 
-	// Generate unique session name
-	sessionName := SessionName("cortex", agent)
+	// Generate unique session name with collision detection
+	var sessionName string
+	for i := 0; i < 5; i++ {
+		sessionName = SessionName("cortex", agent)
+		if !IsSessionAlive(sessionName) {
+			break
+		}
+		// Brief sleep if we somehow collided
+		time.Sleep(10 * time.Millisecond)
+	}
 	
 	// Prepare clean session environment
 	if err := prepareSessionForAgent(agent, sessionName); err != nil {
