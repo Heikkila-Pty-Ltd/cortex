@@ -37,6 +37,9 @@ type Scheduler struct {
 	quarantine          map[string]time.Time
 	churnBlock          map[string]time.Time
 	epicBreakup         map[string]time.Time
+	claimAnomaly        map[string]time.Time
+	gatewayCircuitUntil time.Time
+	gatewayCircuitLogAt time.Time
 	ceremonyScheduler   *CeremonyScheduler
 	completionVerifier  *CompletionVerifier
 	lastCompletionCheck time.Time
@@ -61,20 +64,30 @@ const (
 
 	nightModeStartHour = 22
 	nightModeEndHour   = 7
+
+	claimLeaseTTL         = 3 * time.Minute
+	claimLeaseGrace       = 1 * time.Minute
+	terminalClaimGrace    = 2 * time.Minute
+	claimAnomalyLogWindow = 10 * time.Minute
+
+	gatewayFailureWindow    = 2 * time.Minute
+	gatewayFailureThreshold = 5
+	gatewayCircuitDuration  = 10 * time.Minute
 )
 
 // New creates a new Scheduler with all dependencies.
 func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatch.DispatcherInterface, logger *slog.Logger, dryRun bool) *Scheduler {
 	scheduler := &Scheduler{
-		cfg:         cfg,
-		store:       s,
-		rateLimiter: rl,
-		dispatcher:  d,
-		logger:      logger,
-		dryRun:      dryRun,
-		quarantine:  make(map[string]time.Time),
-		churnBlock:  make(map[string]time.Time),
-		epicBreakup: make(map[string]time.Time),
+		cfg:          cfg,
+		store:        s,
+		rateLimiter:  rl,
+		dispatcher:   d,
+		logger:       logger,
+		dryRun:       dryRun,
+		quarantine:   make(map[string]time.Time),
+		churnBlock:   make(map[string]time.Time),
+		epicBreakup:  make(map[string]time.Time),
+		claimAnomaly: make(map[string]time.Time),
 	}
 
 	// Initialize ceremony scheduler
@@ -163,6 +176,9 @@ func (s *Scheduler) CancelDispatch(id int64) error {
 	if err := s.store.UpdateDispatchStage(id, "cancelled"); err != nil {
 		s.logger.Warn("failed to update dispatch stage", "dispatch_id", id, "stage", "cancelled", "error", err)
 	}
+	if err := s.reconcileDispatchClaimOnTerminal(context.Background(), *d, "cancelled"); err != nil {
+		s.logger.Warn("failed to reconcile dispatch claim after cancel", "dispatch_id", id, "bead", d.BeadID, "error", err)
+	}
 
 	s.logger.Info("dispatch cancelled", "id", id, "bead", d.BeadID, "handle", d.PID)
 	return nil
@@ -186,6 +202,10 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 
 	// Run health checks - stuck dispatch detection and zombie cleanup
 	s.runHealthChecks()
+
+	// Reconcile stale ownership locks and evaluate gateway breaker before new dispatches.
+	s.reconcileExpiredClaimLeases(ctx)
+	gatewayCircuitOpen := s.evaluateGatewayCircuit(ctx)
 
 	// Collect all ready beads across enabled projects
 	var allReady []struct {
@@ -231,6 +251,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			s.logger.Error("failed to list beads", "project", np.name, "error", err)
 			continue
 		}
+		s.reconcileProjectClaimHealth(ctx, np.name, np.proj, beadList)
 		s.ensureEpicBreakdowns(ctx, beadsDir, beadList, np.name)
 		s.reconcileCompletedEpicBreakdowns(ctx, beadsDir, beadList, np.name)
 
@@ -264,6 +285,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 	// Dispatch up to maxPerTick
 	dispatched := 0
 	for _, item := range allReady {
+		if gatewayCircuitOpen {
+			break
+		}
 		if dispatched >= s.cfg.General.MaxPerTick {
 			break
 		}
@@ -411,11 +435,19 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			}
 			continue
 		}
+		if err := s.store.UpsertClaimLease(item.bead.ID, item.name, itemBeadsDir, agent); err != nil {
+			s.logger.Warn("failed to persist claim lease", "bead", item.bead.ID, "project", item.name, "error", err)
+			if releaseErr := beads.ReleaseBeadOwnershipCtx(ctx, itemBeadsDir, item.bead.ID); releaseErr != nil {
+				s.logger.Warn("failed to release bead ownership after claim lease persistence failure", "bead", item.bead.ID, "error", releaseErr)
+			}
+			continue
+		}
 		lockHeld := true
 		releaseLock := func(reason string) {
 			if !lockHeld {
 				return
 			}
+			released := false
 			if err := beads.ReleaseBeadOwnershipCtx(ctx, itemBeadsDir, item.bead.ID); err != nil {
 				s.logger.Warn("failed to release bead ownership lock",
 					"bead", item.bead.ID,
@@ -424,6 +456,12 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 				)
 			} else {
 				s.logger.Debug("released bead ownership lock", "bead", item.bead.ID, "reason", reason)
+				released = true
+			}
+			if released {
+				if err := s.store.DeleteClaimLease(item.bead.ID); err != nil {
+					s.logger.Warn("failed to delete claim lease", "bead", item.bead.ID, "reason", reason, "error", err)
+				}
 			}
 			lockHeld = false
 		}
@@ -485,6 +523,11 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		}
 		if err := s.store.UpdateDispatchStage(dispatchID, "running"); err != nil {
 			s.logger.Warn("failed to set dispatch stage", "dispatch_id", dispatchID, "stage", "running", "error", err)
+		}
+		if err := s.store.AttachDispatchToClaimLease(item.bead.ID, dispatchID); err != nil {
+			s.logger.Warn("failed to attach dispatch to claim lease", "bead", item.bead.ID, "dispatch_id", dispatchID, "error", err)
+		} else if err := s.store.HeartbeatClaimLease(item.bead.ID); err != nil {
+			s.logger.Debug("failed to heartbeat claim lease after dispatch attach", "bead", item.bead.ID, "dispatch_id", dispatchID, "error", err)
 		}
 
 		// Record authed usage
@@ -776,6 +819,9 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 	for _, d := range running {
 		alive := s.isDispatchAlive(d)
 		if alive {
+			if err := s.store.HeartbeatClaimLease(d.BeadID); err != nil {
+				s.logger.Debug("failed to heartbeat claim lease for running dispatch", "bead", d.BeadID, "dispatch_id", d.ID, "error", err)
+			}
 			if d.Stage != "running" {
 				if err := s.store.UpdateDispatchStage(d.ID, "running"); err != nil {
 					s.logger.Warn("failed to update running dispatch stage", "dispatch_id", d.ID, "error", err)
@@ -789,6 +835,7 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 		status := "completed"
 		exitCode := 0
 		finalStage := "completed"
+		retryPending := false
 
 		// For tmux sessions, capture output and get exit code from the session
 		if d.SessionName != "" {
@@ -830,14 +877,18 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 					if err := s.store.CaptureOutput(d.ID, output); err != nil {
 						s.logger.Error("failed to store output", "dispatch_id", d.ID, "error", err)
 					}
-					if status == "completed" {
-						if category, summary, flagged := detectTerminalOutputFailure(output); flagged {
+					if category, summary, flagged := detectTerminalOutputFailure(output); flagged {
+						if status == "completed" {
 							status = "failed"
 							exitCode = -1
 							finalStage = "failed"
-							if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
-								s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
-							}
+						}
+						if category == "gateway_closed" {
+							retryPending = true
+							finalStage = "pending_retry"
+						}
+						if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
+							s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
 						}
 					}
 				}
@@ -873,14 +924,18 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 						if err := s.store.CaptureOutput(d.ID, output); err != nil {
 							s.logger.Error("failed to store process output", "dispatch_id", d.ID, "error", err)
 						}
-						if status == "completed" {
-							if category, summary, flagged := detectTerminalOutputFailure(output); flagged {
+						if category, summary, flagged := detectTerminalOutputFailure(output); flagged {
+							if status == "completed" {
 								status = "failed"
 								exitCode = -1
 								finalStage = "failed"
-								if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
-									s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
-								}
+							}
+							if category == "gateway_closed" {
+								retryPending = true
+								finalStage = "pending_retry"
+							}
+							if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
+								s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
 							}
 						}
 					}
@@ -930,6 +985,26 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 		if err := s.store.UpdateDispatchStatus(d.ID, status, exitCode, duration); err != nil {
 			s.logger.Error("failed to update dispatch status", "id", d.ID, "error", err)
 		} else {
+			if status == "failed" && retryPending {
+				nextTier := d.Tier
+				if nextTier == "" {
+					nextTier = "balanced"
+				}
+				if err := s.store.MarkDispatchPendingRetry(d.ID, nextTier); err != nil {
+					s.logger.Warn("failed to queue gateway retry; leaving dispatch failed", "dispatch_id", d.ID, "bead", d.BeadID, "error", err)
+					finalStage = "failed_needs_check"
+				} else {
+					status = "pending_retry"
+					finalStage = "pending_retry"
+					_ = s.store.RecordHealthEventWithDispatch(
+						"dispatch_retry_queued_gateway",
+						fmt.Sprintf("bead %s dispatch %d queued for retry due to transient gateway closure", d.BeadID, d.ID),
+						d.ID,
+						d.BeadID,
+					)
+				}
+			}
+
 			if status == "completed" {
 				// Calculate and record cost for completed dispatches
 				output, _ := s.store.GetOutput(d.ID)
@@ -959,6 +1034,16 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 			} else {
 				if err := s.store.UpdateDispatchStage(d.ID, finalStage); err != nil {
 					s.logger.Warn("failed to update dispatch stage", "dispatch_id", d.ID, "stage", finalStage, "error", err)
+				}
+			}
+
+			if status == "completed" || status == "failed" || status == "cancelled" || status == "interrupted" {
+				if err := s.reconcileDispatchClaimOnTerminal(ctx, d, status); err != nil {
+					s.logger.Warn("failed to reconcile claim after terminal dispatch", "dispatch_id", d.ID, "bead", d.BeadID, "status", status, "error", err)
+				}
+			} else if status == "pending_retry" {
+				if err := s.store.HeartbeatClaimLease(d.BeadID); err != nil {
+					s.logger.Debug("failed to heartbeat claim lease after retry queue", "dispatch_id", d.ID, "bead", d.BeadID, "error", err)
 				}
 			}
 		}
@@ -999,6 +1084,16 @@ func detectTerminalOutputFailure(output string) (category string, summary string
 			category = "context_limit_rejected"
 		}
 		return category, line, true
+	}
+	if strings.Contains(lower, "gateway connect failed") || strings.Contains(lower, "gateway closed (1000)") {
+		line := firstLineContaining(trimmed, "gateway connect failed")
+		if line == "" {
+			line = firstLineContaining(trimmed, "gateway closed (1000)")
+		}
+		if line == "" {
+			line = "gateway connect failed: gateway closed (1000)"
+		}
+		return "gateway_closed", line, true
 	}
 
 	return "", "", false
@@ -1429,6 +1524,10 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 	s.logger.Debug("processing pending retries", "count", len(retries))
 
 	for _, retry := range retries {
+		if err := s.store.HeartbeatClaimLease(retry.BeadID); err != nil {
+			s.logger.Debug("failed to heartbeat claim lease for pending retry", "bead", retry.BeadID, "dispatch_id", retry.ID, "error", err)
+		}
+
 		// Check if enough time has passed for retry using backoff logic
 		if !dispatch.ShouldRetry(retry.CompletedAt.Time, retry.Retries,
 			s.cfg.General.RetryBackoffBase.Duration, s.cfg.General.RetryMaxDelay.Duration) {
@@ -1451,6 +1550,9 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 				s.logger.Error("failed to update over-retry dispatch", "id", retry.ID, "error", err)
 			} else if err := s.store.UpdateDispatchStage(retry.ID, "failed"); err != nil {
 				s.logger.Warn("failed to update over-retry dispatch stage", "id", retry.ID, "error", err)
+			}
+			if err := s.reconcileDispatchClaimOnTerminal(ctx, retry, "failed"); err != nil {
+				s.logger.Warn("failed to release claim for over-retry dispatch", "dispatch_id", retry.ID, "bead", retry.BeadID, "error", err)
 			}
 			continue
 		}
@@ -1489,6 +1591,9 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			} else if err := s.store.UpdateDispatchStage(retry.ID, "failed"); err != nil {
 				s.logger.Warn("failed to update retry dispatch stage", "id", retry.ID, "error", err)
 			}
+			if err := s.reconcileDispatchClaimOnTerminal(ctx, retry, "failed"); err != nil {
+				s.logger.Warn("failed to release claim after retry project failure", "dispatch_id", retry.ID, "bead", retry.BeadID, "error", err)
+			}
 			continue
 		}
 
@@ -1520,6 +1625,9 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			} else if err := s.store.UpdateDispatchStage(retry.ID, "failed"); err != nil {
 				s.logger.Warn("failed to update failed retry stage", "id", retry.ID, "error", err)
 			}
+			if err := s.reconcileDispatchClaimOnTerminal(ctx, retry, "failed"); err != nil {
+				s.logger.Warn("failed to release claim after retry dispatch launch failure", "dispatch_id", retry.ID, "bead", retry.BeadID, "error", err)
+			}
 			continue
 		}
 
@@ -1536,6 +1644,11 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 		}
 		if err := s.store.UpdateDispatchStage(newDispatchID, "running"); err != nil {
 			s.logger.Warn("failed to set retry dispatch stage", "dispatch_id", newDispatchID, "error", err)
+		}
+		if err := s.store.AttachDispatchToClaimLease(retry.BeadID, newDispatchID); err != nil {
+			s.logger.Warn("failed to attach retry dispatch to claim lease", "bead", retry.BeadID, "dispatch_id", newDispatchID, "error", err)
+		} else if err := s.store.HeartbeatClaimLease(retry.BeadID); err != nil {
+			s.logger.Debug("failed to heartbeat claim lease after retry dispatch", "bead", retry.BeadID, "dispatch_id", newDispatchID, "error", err)
 		}
 
 		// Mark the original dispatch as retried (superseded by the new one)
@@ -1660,5 +1773,303 @@ func (s *Scheduler) runCompletionVerification(ctx context.Context) {
 		if err := s.completionVerifier.AutoCloseCompletedBeads(ctx, results, s.dryRun); err != nil {
 			s.logger.Error("failed to auto-close completed beads", "error", err)
 		}
+	}
+}
+
+func (s *Scheduler) evaluateGatewayCircuit(ctx context.Context) bool {
+	now := time.Now()
+	wasOpen := !s.gatewayCircuitUntil.IsZero() && now.Before(s.gatewayCircuitUntil)
+
+	if wasOpen {
+		if s.gatewayCircuitLogAt.IsZero() || now.Sub(s.gatewayCircuitLogAt) >= time.Minute {
+			s.gatewayCircuitLogAt = now
+			s.logger.Warn("gateway failure circuit open; suppressing new dispatches",
+				"until", s.gatewayCircuitUntil.Format(time.RFC3339))
+		}
+		return true
+	}
+
+	count, err := s.store.CountRecentDispatchesByFailureCategory("gateway_closed", gatewayFailureWindow)
+	if err != nil {
+		s.logger.Warn("failed to evaluate gateway failure circuit", "error", err)
+		return false
+	}
+	if count < gatewayFailureThreshold {
+		return false
+	}
+
+	s.gatewayCircuitUntil = now.Add(gatewayCircuitDuration)
+	s.gatewayCircuitLogAt = now
+	s.logger.Error("gateway failure circuit opened",
+		"count", count,
+		"window", gatewayFailureWindow.String(),
+		"until", s.gatewayCircuitUntil.Format(time.RFC3339))
+	_ = s.store.RecordHealthEvent("gateway_failure_circuit_open",
+		fmt.Sprintf("gateway circuit opened after %d gateway_closed failures in %s", count, gatewayFailureWindow))
+
+	s.createGatewayCircuitIssue(ctx, count)
+	return true
+}
+
+func (s *Scheduler) createGatewayCircuitIssue(ctx context.Context, count int) {
+	if s.dryRun {
+		return
+	}
+
+	for projectName, project := range s.cfg.Projects {
+		if !project.Enabled {
+			continue
+		}
+		beadsDir := config.ExpandHome(project.BeadsDir)
+		issues, err := beads.ListBeadsCtx(ctx, beadsDir)
+		if err != nil {
+			s.logger.Warn("failed to list beads for gateway circuit escalation dedupe", "project", projectName, "error", err)
+			return
+		}
+		titlePrefix := "Auto: gateway circuit opened"
+		for _, issue := range issues {
+			if strings.EqualFold(strings.TrimSpace(issue.Status), "closed") {
+				continue
+			}
+			if strings.HasPrefix(issue.Title, titlePrefix) {
+				return
+			}
+		}
+
+		title := fmt.Sprintf("Auto: gateway circuit opened (%d failures/%s)", count, gatewayFailureWindow)
+		description := fmt.Sprintf(
+			"Cortex opened the gateway failure circuit after observing %d dispatch failures with signature `gateway_closed` in %s.\n\nNew dispatches are temporarily suppressed for %s to avoid churn and repeated stale claims.\n\nPlease investigate gateway health, provider connectivity, and retry policy hardening.",
+			count, gatewayFailureWindow, gatewayCircuitDuration,
+		)
+		issueID, err := beads.CreateIssueCtx(ctx, beadsDir, title, "bug", 1, description, nil)
+		if err != nil {
+			s.logger.Warn("failed to create gateway circuit escalation issue", "project", projectName, "error", err)
+		} else {
+			s.logger.Warn("gateway circuit escalation issue created", "project", projectName, "issue", issueID)
+			_ = s.store.RecordHealthEvent("gateway_failure_circuit_issue_created",
+				fmt.Sprintf("project %s gateway circuit escalation issue %s created", projectName, issueID))
+		}
+		return
+	}
+}
+
+func (s *Scheduler) reconcileExpiredClaimLeases(ctx context.Context) {
+	expired, err := s.store.GetExpiredClaimLeases(claimLeaseTTL + claimLeaseGrace)
+	if err != nil {
+		s.logger.Warn("failed to query expired claim leases", "error", err)
+		return
+	}
+	for _, lease := range expired {
+		running, err := s.store.IsBeadDispatched(lease.BeadID)
+		if err != nil {
+			s.logger.Warn("failed to check running status for expired lease", "bead", lease.BeadID, "error", err)
+			continue
+		}
+		if running {
+			_ = s.store.HeartbeatClaimLease(lease.BeadID)
+			continue
+		}
+
+		beadsDir := strings.TrimSpace(lease.BeadsDir)
+		if beadsDir == "" {
+			if project, ok := s.cfg.Projects[lease.Project]; ok {
+				beadsDir = config.ExpandHome(project.BeadsDir)
+			}
+		}
+		if beadsDir == "" {
+			s.logClaimAnomalyOnce(
+				"expired_lease_missing_beads_dir:"+lease.BeadID,
+				"claim_reconcile_missing_project",
+				fmt.Sprintf("expired claim lease for bead %s could not be reconciled because beads_dir/project mapping is missing", lease.BeadID),
+				lease.DispatchID,
+				lease.BeadID,
+			)
+			continue
+		}
+
+		if err := beads.ReleaseBeadOwnershipCtx(ctx, beadsDir, lease.BeadID); err != nil {
+			s.logClaimAnomalyOnce(
+				"expired_lease_release_failed:"+lease.BeadID,
+				"claim_reconcile_release_failed",
+				fmt.Sprintf("failed to release expired claim lease for bead %s: %v", lease.BeadID, err),
+				lease.DispatchID,
+				lease.BeadID,
+			)
+			continue
+		}
+		if err := s.store.DeleteClaimLease(lease.BeadID); err != nil {
+			s.logger.Warn("failed to delete expired claim lease after release", "bead", lease.BeadID, "error", err)
+		}
+		_ = s.store.RecordHealthEventWithDispatch(
+			"stale_claim_released",
+			fmt.Sprintf("released stale claim lease for bead %s after heartbeat timeout", lease.BeadID),
+			lease.DispatchID,
+			lease.BeadID,
+		)
+	}
+}
+
+func (s *Scheduler) reconcileProjectClaimHealth(ctx context.Context, projectName string, project config.Project, beadList []beads.Bead) {
+	beadsDir := config.ExpandHome(project.BeadsDir)
+	now := time.Now()
+
+	for _, bead := range beadList {
+		if !strings.EqualFold(strings.TrimSpace(bead.Status), "open") {
+			continue
+		}
+		if strings.TrimSpace(bead.Assignee) == "" {
+			continue
+		}
+
+		running, err := s.store.IsBeadDispatched(bead.ID)
+		if err != nil {
+			s.logger.Warn("failed to evaluate claimed bead dispatch status", "project", projectName, "bead", bead.ID, "error", err)
+			continue
+		}
+		if running {
+			_ = s.store.HeartbeatClaimLease(bead.ID)
+			continue
+		}
+
+		lease, err := s.store.GetClaimLease(bead.ID)
+		if err != nil {
+			s.logger.Warn("failed to load claim lease for claimed bead", "project", projectName, "bead", bead.ID, "error", err)
+			continue
+		}
+		if lease != nil {
+			age := now.Sub(lease.HeartbeatAt)
+			if age < claimLeaseTTL+claimLeaseGrace {
+				continue
+			}
+			if err := beads.ReleaseBeadOwnershipCtx(ctx, beadsDir, bead.ID); err != nil {
+				s.logClaimAnomalyOnce(
+					"lease_claim_release_failed:"+bead.ID,
+					"claim_reconcile_release_failed",
+					fmt.Sprintf("failed to release stale claimed bead %s (lease-backed): %v", bead.ID, err),
+					lease.DispatchID,
+					bead.ID,
+				)
+				continue
+			}
+			if err := s.store.DeleteClaimLease(bead.ID); err != nil {
+				s.logger.Warn("failed to delete lease after stale claimed bead release", "project", projectName, "bead", bead.ID, "error", err)
+			}
+			_ = s.store.RecordHealthEventWithDispatch(
+				"stale_claim_released",
+				fmt.Sprintf("project %s released stale claimed bead %s using lease reconciliation", projectName, bead.ID),
+				lease.DispatchID,
+				bead.ID,
+			)
+			continue
+		}
+
+		latest, err := s.store.GetLatestDispatchForBead(bead.ID)
+		if err != nil {
+			s.logger.Warn("failed to load latest dispatch for claimed bead", "project", projectName, "bead", bead.ID, "error", err)
+			continue
+		}
+		if latest == nil {
+			s.logClaimAnomalyOnce(
+				"claimed_no_dispatch:"+projectName+":"+bead.ID,
+				"claimed_no_dispatch",
+				fmt.Sprintf("project %s bead %s is claimed with no dispatch history; manual review required", projectName, bead.ID),
+				0,
+				bead.ID,
+			)
+			continue
+		}
+
+		lastActivity := latest.DispatchedAt
+		if latest.CompletedAt.Valid {
+			lastActivity = latest.CompletedAt.Time
+		}
+		if !isTerminalDispatchStatus(latest.Status) || now.Sub(lastActivity) < terminalClaimGrace {
+			continue
+		}
+
+		if !strings.HasPrefix(strings.TrimSpace(latest.AgentID), projectName+"-") {
+			s.logClaimAnomalyOnce(
+				"claimed_terminal_manual_review:"+projectName+":"+bead.ID,
+				"claimed_terminal_manual_review",
+				fmt.Sprintf("project %s bead %s remains claimed after terminal dispatch %d by non-cortex agent %q", projectName, bead.ID, latest.ID, latest.AgentID),
+				latest.ID,
+				bead.ID,
+			)
+			continue
+		}
+
+		if err := beads.ReleaseBeadOwnershipCtx(ctx, beadsDir, bead.ID); err != nil {
+			s.logClaimAnomalyOnce(
+				"legacy_claim_release_failed:"+projectName+":"+bead.ID,
+				"claim_reconcile_release_failed",
+				fmt.Sprintf("failed to release legacy stale claim for project %s bead %s: %v", projectName, bead.ID, err),
+				latest.ID,
+				bead.ID,
+			)
+			continue
+		}
+		_ = s.store.RecordHealthEventWithDispatch(
+			"stale_claim_released",
+			fmt.Sprintf("project %s released legacy stale claim for bead %s after terminal dispatch %d", projectName, bead.ID, latest.ID),
+			latest.ID,
+			bead.ID,
+		)
+	}
+}
+
+func (s *Scheduler) reconcileDispatchClaimOnTerminal(ctx context.Context, d store.Dispatch, status string) error {
+	if !isTerminalDispatchStatus(status) || strings.TrimSpace(d.BeadID) == "" {
+		return nil
+	}
+
+	beadsDir := ""
+	lease, err := s.store.GetClaimLease(d.BeadID)
+	if err == nil && lease != nil && strings.TrimSpace(lease.BeadsDir) != "" {
+		beadsDir = strings.TrimSpace(lease.BeadsDir)
+	}
+	if beadsDir == "" {
+		if project, ok := s.cfg.Projects[d.Project]; ok {
+			beadsDir = config.ExpandHome(project.BeadsDir)
+		}
+	}
+
+	if beadsDir == "" {
+		if err := s.store.DeleteClaimLease(d.BeadID); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	if err := beads.ReleaseBeadOwnershipCtx(ctx, beadsDir, d.BeadID); err != nil {
+		return fmt.Errorf("release bead ownership: %w", err)
+	}
+	if err := s.store.DeleteClaimLease(d.BeadID); err != nil {
+		return err
+	}
+	_ = s.store.RecordHealthEventWithDispatch(
+		"terminal_claim_reconciled",
+		fmt.Sprintf("released claim for bead %s after terminal dispatch %d (%s)", d.BeadID, d.ID, status),
+		d.ID,
+		d.BeadID,
+	)
+	return nil
+}
+
+func (s *Scheduler) logClaimAnomalyOnce(key, eventType, details string, dispatchID int64, beadID string) {
+	now := time.Now()
+	if last, ok := s.claimAnomaly[key]; ok && now.Sub(last) < claimAnomalyLogWindow {
+		return
+	}
+	s.claimAnomaly[key] = now
+	s.logger.Warn("claim invariant violation", "event_type", eventType, "bead", beadID, "details", details)
+	_ = s.store.RecordHealthEventWithDispatch(eventType, details, dispatchID, beadID)
+}
+
+func isTerminalDispatchStatus(status string) bool {
+	switch strings.TrimSpace(strings.ToLower(status)) {
+	case "completed", "failed", "cancelled", "interrupted", "retried":
+		return true
+	default:
+		return false
 	}
 }

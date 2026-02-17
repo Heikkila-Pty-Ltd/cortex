@@ -28,7 +28,7 @@ type Dispatch struct {
 	DispatchedAt      time.Time
 	CompletedAt       sql.NullTime
 	Status            string // running, completed, failed
-	Stage             string // dispatched, running, completed, failed, cancelled, gone
+	Stage             string // dispatched, running, completed, failed, failed_needs_check, cancelled, pending_retry
 	PRURL             string
 	PRNumber          int
 	ExitCode          int
@@ -99,6 +99,17 @@ type BeadStage struct {
 	StageHistory []StageHistoryEntry
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+}
+
+// ClaimLease tracks ownership locks so stale claims can be reconciled safely.
+type ClaimLease struct {
+	BeadID      string
+	Project     string
+	BeadsDir    string
+	AgentID     string
+	DispatchID  int64
+	ClaimedAt   time.Time
+	HeartbeatAt time.Time
 }
 
 const schema = `
@@ -191,10 +202,22 @@ CREATE TABLE IF NOT EXISTS bead_stages (
 	updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS claim_leases (
+	bead_id TEXT PRIMARY KEY,
+	project TEXT NOT NULL,
+	beads_dir TEXT NOT NULL DEFAULT '',
+	agent_id TEXT NOT NULL DEFAULT '',
+	dispatch_id INTEGER NOT NULL DEFAULT 0,
+	claimed_at DATETIME NOT NULL DEFAULT (datetime('now')),
+	heartbeat_at DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bead_stages_project_bead ON bead_stages(project, bead_id);
 CREATE INDEX IF NOT EXISTS idx_bead_stages_project_stage ON bead_stages(project, current_stage);
 CREATE INDEX IF NOT EXISTS idx_dispatches_status ON dispatches(status);
 CREATE INDEX IF NOT EXISTS idx_dispatches_bead ON dispatches(bead_id);
+CREATE INDEX IF NOT EXISTS idx_claim_leases_project ON claim_leases(project);
+CREATE INDEX IF NOT EXISTS idx_claim_leases_heartbeat ON claim_leases(heartbeat_at);
 CREATE INDEX IF NOT EXISTS idx_usage_provider ON provider_usage(provider, dispatched_at);
 CREATE INDEX IF NOT EXISTS idx_dispatch_output_dispatch ON dispatch_output(dispatch_id);
 `
@@ -403,6 +426,25 @@ func migrate(db *sql.DB) error {
 		return fmt.Errorf("create health_events created_at index: %w", err)
 	}
 
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS claim_leases (
+			bead_id TEXT PRIMARY KEY,
+			project TEXT NOT NULL,
+			beads_dir TEXT NOT NULL DEFAULT '',
+			agent_id TEXT NOT NULL DEFAULT '',
+			dispatch_id INTEGER NOT NULL DEFAULT 0,
+			claimed_at DATETIME NOT NULL DEFAULT (datetime('now')),
+			heartbeat_at DATETIME NOT NULL DEFAULT (datetime('now'))
+		)`); err != nil {
+		return fmt.Errorf("create claim_leases table: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_claim_leases_project ON claim_leases(project)`); err != nil {
+		return fmt.Errorf("create claim_leases project index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_claim_leases_heartbeat ON claim_leases(heartbeat_at)`); err != nil {
+		return fmt.Errorf("create claim_leases heartbeat index: %w", err)
+	}
+
 	if err := migrateBeadStagesTable(db); err != nil {
 		return err
 	}
@@ -496,6 +538,8 @@ func (s *Store) MarkDispatchPendingRetry(id int64, nextTier string) error {
 	_, err := s.db.Exec(
 		`UPDATE dispatches
 		 SET status = 'pending_retry',
+		     stage = 'pending_retry',
+		     completed_at = COALESCE(completed_at, datetime('now')),
 		     retries = retries + 1,
 		     tier = ?,
 		     escalated_from_tier = CASE
@@ -536,6 +580,39 @@ func (s *Store) GetLastDispatchIDForBead(beadID string) (int64, error) {
 		return 0, fmt.Errorf("store: get last dispatch ID: %w", err)
 	}
 	return id, nil
+}
+
+// GetLatestDispatchForBead returns the most recent dispatch row for a bead.
+func (s *Store) GetLatestDispatchForBead(beadID string) (*Dispatch, error) {
+	dispatches, err := s.queryDispatches(`SELECT `+dispatchCols+` FROM dispatches WHERE bead_id = ? ORDER BY id DESC LIMIT 1`, beadID)
+	if err != nil {
+		return nil, err
+	}
+	if len(dispatches) == 0 {
+		return nil, nil
+	}
+	return &dispatches[0], nil
+}
+
+// CountRecentDispatchesByFailureCategory counts dispatches diagnosed with category within a window.
+func (s *Store) CountRecentDispatchesByFailureCategory(category string, window time.Duration) (int, error) {
+	category = strings.TrimSpace(category)
+	if category == "" {
+		return 0, nil
+	}
+	if window <= 0 {
+		window = time.Minute
+	}
+	cutoff := time.Now().Add(-window).UTC().Format(time.DateTime)
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM dispatches WHERE failure_category = ? AND completed_at IS NOT NULL AND completed_at >= ?`,
+		category, cutoff,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("store: count recent failures by category: %w", err)
+	}
+	return count, nil
 }
 
 const dispatchCols = `id, bead_id, project, agent_id, provider, tier, pid, session_name, prompt, dispatched_at, completed_at, status, stage, pr_url, pr_number, exit_code, duration_s, retries, escalated_from_tier, failure_category, failure_summary, log_path, branch, backend, input_tokens, output_tokens, cost_usd`
@@ -707,6 +784,126 @@ func (s *Store) GetRunningDispatchStageCounts() (map[string]int, error) {
 	return counts, rows.Err()
 }
 
+// UpsertClaimLease records or refreshes a claim lease for a bead ownership lock.
+func (s *Store) UpsertClaimLease(beadID, project, beadsDir, agentID string) error {
+	beadID = strings.TrimSpace(beadID)
+	if beadID == "" {
+		return fmt.Errorf("store: upsert claim lease: bead_id is required")
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO claim_leases (bead_id, project, beads_dir, agent_id, dispatch_id, claimed_at, heartbeat_at)
+		 VALUES (?, ?, ?, ?, 0, datetime('now'), datetime('now'))
+		 ON CONFLICT(bead_id) DO UPDATE SET
+		   project=excluded.project,
+		   beads_dir=excluded.beads_dir,
+		   agent_id=excluded.agent_id,
+		   heartbeat_at=datetime('now')`,
+		beadID, strings.TrimSpace(project), strings.TrimSpace(beadsDir), strings.TrimSpace(agentID),
+	)
+	if err != nil {
+		return fmt.Errorf("store: upsert claim lease: %w", err)
+	}
+	return nil
+}
+
+// AttachDispatchToClaimLease links a recorded dispatch to its claim lease and refreshes heartbeat.
+func (s *Store) AttachDispatchToClaimLease(beadID string, dispatchID int64) error {
+	beadID = strings.TrimSpace(beadID)
+	if beadID == "" {
+		return fmt.Errorf("store: attach dispatch to claim lease: bead_id is required")
+	}
+	_, err := s.db.Exec(
+		`UPDATE claim_leases SET dispatch_id = ?, heartbeat_at = datetime('now') WHERE bead_id = ?`,
+		dispatchID, beadID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: attach dispatch to claim lease: %w", err)
+	}
+	return nil
+}
+
+// HeartbeatClaimLease refreshes heartbeat for an existing lease.
+func (s *Store) HeartbeatClaimLease(beadID string) error {
+	beadID = strings.TrimSpace(beadID)
+	if beadID == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`UPDATE claim_leases SET heartbeat_at = datetime('now') WHERE bead_id = ?`, beadID)
+	if err != nil {
+		return fmt.Errorf("store: heartbeat claim lease: %w", err)
+	}
+	return nil
+}
+
+// DeleteClaimLease clears a lease record.
+func (s *Store) DeleteClaimLease(beadID string) error {
+	beadID = strings.TrimSpace(beadID)
+	if beadID == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`DELETE FROM claim_leases WHERE bead_id = ?`, beadID)
+	if err != nil {
+		return fmt.Errorf("store: delete claim lease: %w", err)
+	}
+	return nil
+}
+
+// GetClaimLease loads a lease by bead ID.
+func (s *Store) GetClaimLease(beadID string) (*ClaimLease, error) {
+	beadID = strings.TrimSpace(beadID)
+	if beadID == "" {
+		return nil, nil
+	}
+	rows, err := s.db.Query(
+		`SELECT bead_id, project, beads_dir, agent_id, dispatch_id, claimed_at, heartbeat_at FROM claim_leases WHERE bead_id = ?`,
+		beadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: get claim lease: %w", err)
+	}
+	defer rows.Close()
+
+	leases, err := scanClaimLeases(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(leases) == 0 {
+		return nil, nil
+	}
+	return &leases[0], nil
+}
+
+// ListClaimLeases returns all active claim leases.
+func (s *Store) ListClaimLeases() ([]ClaimLease, error) {
+	rows, err := s.db.Query(
+		`SELECT bead_id, project, beads_dir, agent_id, dispatch_id, claimed_at, heartbeat_at
+		 FROM claim_leases ORDER BY heartbeat_at ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list claim leases: %w", err)
+	}
+	defer rows.Close()
+	return scanClaimLeases(rows)
+}
+
+// GetExpiredClaimLeases returns leases whose heartbeat is older than now-ttl.
+func (s *Store) GetExpiredClaimLeases(ttl time.Duration) ([]ClaimLease, error) {
+	if ttl <= 0 {
+		return nil, nil
+	}
+	cutoff := time.Now().Add(-ttl).UTC().Format(time.DateTime)
+	rows, err := s.db.Query(
+		`SELECT bead_id, project, beads_dir, agent_id, dispatch_id, claimed_at, heartbeat_at
+		 FROM claim_leases WHERE heartbeat_at < ? ORDER BY heartbeat_at ASC`,
+		cutoff,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: get expired claim leases: %w", err)
+	}
+	defer rows.Close()
+	return scanClaimLeases(rows)
+}
+
 func (s *Store) queryDispatches(query string, args ...any) ([]Dispatch, error) {
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -728,6 +925,26 @@ func (s *Store) queryDispatches(query string, args ...any) ([]Dispatch, error) {
 		dispatches = append(dispatches, d)
 	}
 	return dispatches, rows.Err()
+}
+
+func scanClaimLeases(rows *sql.Rows) ([]ClaimLease, error) {
+	var leases []ClaimLease
+	for rows.Next() {
+		var lease ClaimLease
+		if err := rows.Scan(
+			&lease.BeadID,
+			&lease.Project,
+			&lease.BeadsDir,
+			&lease.AgentID,
+			&lease.DispatchID,
+			&lease.ClaimedAt,
+			&lease.HeartbeatAt,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan claim lease: %w", err)
+		}
+		leases = append(leases, lease)
+	}
+	return leases, rows.Err()
 }
 
 // UpdateFailureDiagnosis stores failure category and summary for a dispatch.
@@ -1021,7 +1238,7 @@ func (s *Store) SetDispatchTime(id int64, dispatchedAt time.Time) error {
 func (s *Store) GetBeadStage(project, beadID string) (*BeadStage, error) {
 	var stage BeadStage
 	var historyJSON string
-	
+
 	err := s.db.QueryRow(`
 		SELECT id, project, bead_id, workflow, current_stage, stage_index, 
 		       total_stages, stage_history, created_at, updated_at 
@@ -1029,31 +1246,31 @@ func (s *Store) GetBeadStage(project, beadID string) (*BeadStage, error) {
 		WHERE project = ? AND bead_id = ?`,
 		project, beadID,
 	).Scan(
-		&stage.ID, &stage.Project, &stage.BeadID, &stage.Workflow, 
-		&stage.CurrentStage, &stage.StageIndex, &stage.TotalStages, 
+		&stage.ID, &stage.Project, &stage.BeadID, &stage.Workflow,
+		&stage.CurrentStage, &stage.StageIndex, &stage.TotalStages,
 		&historyJSON, &stage.CreatedAt, &stage.UpdatedAt,
 	)
-	
+
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("store: bead stage not found for project=%s, bead=%s", project, beadID)
 		}
 		return nil, fmt.Errorf("store: get bead stage: %w", err)
 	}
-	
+
 	// Parse stage history JSON
 	if historyJSON != "" && historyJSON != "[]" {
 		// For simplicity, we'll store history as JSON string - proper JSON unmarshaling would be added in production
 		// This is a placeholder for the stage history parsing
 	}
-	
+
 	return &stage, nil
 }
 
 // UpsertBeadStage creates or updates a bead stage using composite project+bead_id key.
 func (s *Store) UpsertBeadStage(stage *BeadStage) error {
 	historyJSON := "[]" // Placeholder for stage history JSON serialization
-	
+
 	_, err := s.db.Exec(`
 		INSERT INTO bead_stages (project, bead_id, workflow, current_stage, stage_index, 
 		                        total_stages, stage_history, updated_at)
@@ -1068,11 +1285,11 @@ func (s *Store) UpsertBeadStage(stage *BeadStage) error {
 		stage.Project, stage.BeadID, stage.Workflow, stage.CurrentStage,
 		stage.StageIndex, stage.TotalStages, historyJSON,
 	)
-	
+
 	if err != nil {
 		return fmt.Errorf("store: upsert bead stage: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -1084,11 +1301,11 @@ func (s *Store) UpdateBeadStageProgress(project, beadID, newStage string, stageI
 		WHERE project = ? AND bead_id = ?`,
 		newStage, stageIndex, totalStages, project, beadID,
 	)
-	
+
 	if err != nil {
 		return fmt.Errorf("store: update bead stage progress: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -1106,28 +1323,28 @@ func (s *Store) ListBeadStagesForProject(project string) ([]*BeadStage, error) {
 		return nil, fmt.Errorf("store: list bead stages for project: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var stages []*BeadStage
 	for rows.Next() {
 		var stage BeadStage
 		var historyJSON string
-		
+
 		err := rows.Scan(
-			&stage.ID, &stage.Project, &stage.BeadID, &stage.Workflow, 
-			&stage.CurrentStage, &stage.StageIndex, &stage.TotalStages, 
+			&stage.ID, &stage.Project, &stage.BeadID, &stage.Workflow,
+			&stage.CurrentStage, &stage.StageIndex, &stage.TotalStages,
 			&historyJSON, &stage.CreatedAt, &stage.UpdatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("store: scan bead stage: %w", err)
 		}
-		
+
 		stages = append(stages, &stage)
 	}
-	
+
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: list bead stages rows: %w", err)
 	}
-	
+
 	return stages, nil
 }
 
@@ -1141,16 +1358,16 @@ func (s *Store) DeleteBeadStage(project, beadID string) error {
 	if err != nil {
 		return fmt.Errorf("store: delete bead stage: %w", err)
 	}
-	
+
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("store: get rows affected: %w", err)
 	}
-	
+
 	if rowsAffected == 0 {
 		return fmt.Errorf("store: bead stage not found for project=%s, bead=%s", project, beadID)
 	}
-	
+
 	return nil
 }
 
@@ -1168,31 +1385,31 @@ func (s *Store) GetBeadStagesByBeadIDOnly(beadID string) ([]*BeadStage, error) {
 		return nil, fmt.Errorf("store: get bead stages by bead_id: %w", err)
 	}
 	defer rows.Close()
-	
+
 	var stages []*BeadStage
 	projectsSeen := make(map[string]bool)
-	
+
 	for rows.Next() {
 		var stage BeadStage
 		var historyJSON string
-		
+
 		err := rows.Scan(
-			&stage.ID, &stage.Project, &stage.BeadID, &stage.Workflow, 
-			&stage.CurrentStage, &stage.StageIndex, &stage.TotalStages, 
+			&stage.ID, &stage.Project, &stage.BeadID, &stage.Workflow,
+			&stage.CurrentStage, &stage.StageIndex, &stage.TotalStages,
 			&historyJSON, &stage.CreatedAt, &stage.UpdatedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("store: scan bead stage: %w", err)
 		}
-		
+
 		projectsSeen[stage.Project] = true
 		stages = append(stages, &stage)
 	}
-	
+
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: get bead stages by bead_id rows: %w", err)
 	}
-	
+
 	// Check for cross-project ambiguity
 	if len(projectsSeen) > 1 {
 		projects := make([]string, 0, len(projectsSeen))
@@ -1201,6 +1418,6 @@ func (s *Store) GetBeadStagesByBeadIDOnly(beadID string) ([]*BeadStage, error) {
 		}
 		return nil, fmt.Errorf("store: ambiguous bead_id=%s found in multiple projects: %v. Use project-specific lookup to avoid collisions", beadID, projects)
 	}
-	
+
 	return stages, nil
 }

@@ -29,6 +29,7 @@ type Bead struct {
 	Status          string           `json:"status"`
 	Priority        int              `json:"priority"`
 	Type            string           `json:"issue_type"`
+	Assignee        string           `json:"assignee"`
 	Labels          []string         `json:"labels"`
 	EstimateMinutes int              `json:"estimated_minutes"`
 	ParentID        string           `json:"parent_id"`
@@ -236,7 +237,7 @@ func ClaimBeadOwnershipCtx(ctx context.Context, beadsDir, beadID string) error {
 	return nil
 }
 
-// ReleaseBeadOwnership clears assignee ownership lock and leaves bead status open.
+// ReleaseBeadOwnership clears assignee ownership lock without mutating status.
 func ReleaseBeadOwnership(beadsDir, beadID string) error {
 	return ReleaseBeadOwnershipCtx(context.Background(), beadsDir, beadID)
 }
@@ -244,7 +245,7 @@ func ReleaseBeadOwnership(beadsDir, beadID string) error {
 // ReleaseBeadOwnershipCtx is the context-aware version of ReleaseBeadOwnership.
 func ReleaseBeadOwnershipCtx(ctx context.Context, beadsDir, beadID string) error {
 	root := projectRoot(beadsDir)
-	_, err := runBD(ctx, root, "update", beadID, "--assignee=", "--status", "open")
+	_, err := runBD(ctx, root, "update", beadID, "--assignee=")
 	if err != nil {
 		return fmt.Errorf("releasing bead ownership %s: %w", beadID, err)
 	}

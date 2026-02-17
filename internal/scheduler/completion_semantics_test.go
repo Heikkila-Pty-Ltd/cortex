@@ -168,6 +168,53 @@ func TestCheckRunningDispatches_ZeroExitWithoutTerminalFailureStaysCompleted(t *
 	}
 }
 
+func TestCheckRunningDispatches_GatewayClosedQueuesRetry(t *testing.T) {
+	outputPath := filepath.Join(t.TempDir(), "gateway-closed.out")
+	output := "gateway connect failed: Error: gateway closed (1000):"
+	if err := os.WriteFile(outputPath, []byte(output), 0o644); err != nil {
+		t.Fatalf("write output file: %v", err)
+	}
+
+	handle := 4203
+	dispatcher := &completionTestDispatcher{
+		alive: map[int]bool{
+			handle: false,
+		},
+		states: map[int]dispatch.ProcessState{
+			handle: {
+				State:      "exited",
+				ExitCode:   1,
+				OutputPath: outputPath,
+			},
+		},
+	}
+
+	sched, st := newCompletionSemanticsScheduler(t, dispatcher)
+	id, err := st.RecordDispatch("bead-gateway", "project", "agent", "provider", "balanced", handle, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatalf("record dispatch: %v", err)
+	}
+
+	sched.checkRunningDispatches(context.Background())
+
+	d, err := st.GetDispatchByID(id)
+	if err != nil {
+		t.Fatalf("get dispatch: %v", err)
+	}
+	if d.Status != "pending_retry" {
+		t.Fatalf("expected pending_retry status, got %s", d.Status)
+	}
+	if d.Stage != "pending_retry" {
+		t.Fatalf("expected pending_retry stage, got %s", d.Stage)
+	}
+	if d.Retries != 1 {
+		t.Fatalf("expected retries=1, got %d", d.Retries)
+	}
+	if d.FailureCategory != "gateway_closed" {
+		t.Fatalf("expected gateway_closed category, got %s", d.FailureCategory)
+	}
+}
+
 func TestDetectTerminalOutputFailure_OpenClawContextLimitRejection(t *testing.T) {
 	output := "exec sh \"/tmp/cortex-openclaw-726809661.sh\" \"/tmp/cortex-prompt-1676569569.txt\"\n" +
 		"LLM request rejected: input length and `max_tokens` exceed context limit: 198983 + 34048 > 200000, decrease input length or `max_tokens` and try again\n" +
@@ -185,5 +232,19 @@ func TestDetectTerminalOutputFailure_OpenClawContextLimitRejection(t *testing.T)
 	}
 	if !strings.Contains(strings.ToLower(summary), "context limit") {
 		t.Fatalf("expected summary to mention context limit, got %q", summary)
+	}
+}
+
+func TestDetectTerminalOutputFailure_GatewayClosed(t *testing.T) {
+	output := "Gateway agent failed; gateway connect failed: Error: gateway closed (1000):"
+	category, summary, flagged := detectTerminalOutputFailure(output)
+	if !flagged {
+		t.Fatal("expected gateway failure to be flagged")
+	}
+	if category != "gateway_closed" {
+		t.Fatalf("expected gateway_closed category, got %s", category)
+	}
+	if !strings.Contains(strings.ToLower(summary), "gateway") {
+		t.Fatalf("expected gateway summary, got %q", summary)
 	}
 }

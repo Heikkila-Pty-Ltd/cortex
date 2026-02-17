@@ -230,7 +230,7 @@ func TestReleaseBeadOwnershipCtx(t *testing.T) {
 		t.Fatalf("read args log: %v", err)
 	}
 	got := string(args)
-	if !strings.Contains(got, "update cortex-456 --assignee= --status open") {
+	if !strings.Contains(got, "update cortex-456 --assignee=") {
 		t.Fatalf("unexpected bd args: %q", got)
 	}
 }

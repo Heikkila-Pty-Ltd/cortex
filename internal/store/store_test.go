@@ -473,6 +473,152 @@ func TestGetPendingRetryDispatches(t *testing.T) {
 	}
 }
 
+func TestMarkDispatchPendingRetryUpdatesStageAndCompletion(t *testing.T) {
+	s := tempStore(t)
+
+	id, err := s.RecordDispatch("bead-retry", "proj", "agent-1", "cerebras", "fast", 100, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(id, "failed", 1, 12.3); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkDispatchPendingRetry(id, "balanced"); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := s.GetDispatchByID(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Status != "pending_retry" {
+		t.Fatalf("expected status pending_retry, got %s", d.Status)
+	}
+	if d.Stage != "pending_retry" {
+		t.Fatalf("expected stage pending_retry, got %s", d.Stage)
+	}
+	if d.Retries != 1 {
+		t.Fatalf("expected retries=1, got %d", d.Retries)
+	}
+	if !d.CompletedAt.Valid {
+		t.Fatal("expected completed_at to be set")
+	}
+}
+
+func TestClaimLeaseLifecycle(t *testing.T) {
+	s := tempStore(t)
+
+	if err := s.UpsertClaimLease("bead-lease", "proj", "/tmp/proj/.beads", "proj-coder"); err != nil {
+		t.Fatal(err)
+	}
+
+	lease, err := s.GetClaimLease("bead-lease")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease == nil {
+		t.Fatal("expected claim lease to exist")
+	}
+	if lease.Project != "proj" {
+		t.Fatalf("expected project proj, got %s", lease.Project)
+	}
+
+	dispatchID, err := s.RecordDispatch("bead-lease", "proj", "proj-coder", "cerebras", "fast", 120, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AttachDispatchToClaimLease("bead-lease", dispatchID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.HeartbeatClaimLease("bead-lease"); err != nil {
+		t.Fatal(err)
+	}
+
+	lease, err = s.GetClaimLease("bead-lease")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.DispatchID != dispatchID {
+		t.Fatalf("expected dispatch_id=%d, got %d", dispatchID, lease.DispatchID)
+	}
+
+	_, err = s.db.Exec(`UPDATE claim_leases SET heartbeat_at = datetime('now', '-10 minutes') WHERE bead_id = ?`, "bead-lease")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expired, err := s.GetExpiredClaimLeases(5 * time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expired) != 1 {
+		t.Fatalf("expected 1 expired lease, got %d", len(expired))
+	}
+	if expired[0].BeadID != "bead-lease" {
+		t.Fatalf("expected expired lease for bead-lease, got %s", expired[0].BeadID)
+	}
+
+	if err := s.DeleteClaimLease("bead-lease"); err != nil {
+		t.Fatal(err)
+	}
+	lease, err = s.GetClaimLease("bead-lease")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease != nil {
+		t.Fatal("expected claim lease to be deleted")
+	}
+}
+
+func TestCountRecentDispatchesByFailureCategory(t *testing.T) {
+	s := tempStore(t)
+
+	id1, err := s.RecordDispatch("bead-gw-1", "proj", "agent-1", "cerebras", "fast", 100, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(id1, "failed", 1, 3.0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateFailureDiagnosis(id1, "gateway_closed", "gateway connect failed: Error: gateway closed (1000):"); err != nil {
+		t.Fatal(err)
+	}
+
+	id2, err := s.RecordDispatch("bead-gw-2", "proj", "agent-1", "cerebras", "fast", 101, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(id2, "failed", 1, 3.0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateFailureDiagnosis(id2, "gateway_closed", "gateway connect failed: Error: gateway closed (1000):"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.db.Exec(`UPDATE dispatches SET completed_at = datetime('now', '-20 minutes') WHERE id = ?`, id2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id3, err := s.RecordDispatch("bead-other", "proj", "agent-1", "cerebras", "fast", 102, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(id3, "failed", 1, 3.0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateFailureDiagnosis(id3, "context_limit_rejected", "LLM request rejected"); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := s.CountRecentDispatchesByFailureCategory("gateway_closed", 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 recent gateway_closed dispatch, got %d", count)
+	}
+}
+
 func TestHasRecentConsecutiveFailures_IncludesFailureLikeStatuses(t *testing.T) {
 	s := tempStore(t)
 	beadID := "bead-failure-like"
@@ -595,9 +741,9 @@ func TestGetDispatchCost(t *testing.T) {
 
 	// Record some cost
 	expectedInput := 2000
-	expectedOutput := 1500  
+	expectedOutput := 1500
 	expectedCost := 1.25
-	
+
 	err = s.RecordDispatchCost(dispatchID, expectedInput, expectedOutput, expectedCost)
 	if err != nil {
 		t.Fatal(err)
@@ -855,7 +1001,7 @@ func TestBeadStagesCrossProjectCollisions(t *testing.T) {
 	}
 
 	stage2 := &BeadStage{
-		Project:      "project-b", 
+		Project:      "project-b",
 		BeadID:       "same-bead-id", // Same bead ID, different project
 		Workflow:     "content",
 		CurrentStage: "review",
@@ -986,11 +1132,11 @@ func TestBeadStagesAmbiguousLookup(t *testing.T) {
 
 	// Add same bead ID to multiple projects
 	stage1 := &BeadStage{
-		Project: "proj-1", BeadID: "ambiguous-bead", Workflow: "dev", 
+		Project: "proj-1", BeadID: "ambiguous-bead", Workflow: "dev",
 		CurrentStage: "coding", StageIndex: 1, TotalStages: 3,
 	}
 	stage2 := &BeadStage{
-		Project: "proj-2", BeadID: "ambiguous-bead", Workflow: "content", 
+		Project: "proj-2", BeadID: "ambiguous-bead", Workflow: "content",
 		CurrentStage: "review", StageIndex: 2, TotalStages: 4,
 	}
 
