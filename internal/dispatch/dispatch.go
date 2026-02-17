@@ -42,17 +42,21 @@ fi
 if grep -Fqi 'unknown option' "$err_file" && grep -Fqi -- '--message' "$err_file"; then
   should_fallback=1
 fi
-if grep -Fqi "required option '-m, --message" "$err_file"; then
-  should_fallback=1
-fi
-if grep -Fqi 'required option.*--message' "$err_file"; then
-  should_fallback=1
-fi
 
 if [ "$should_fallback" -eq 1 ]; then
-  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"
+  fallback_err=$(mktemp)
+  printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"
   status=$?
-  rm -f "$err_file"
+  if [ "$status" -ne 0 ]; then
+    if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
+      openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"
+      status=$?
+    fi
+  fi
+  if [ "$status" -ne 0 ]; then
+    cat "$fallback_err" >&2
+  fi
+  rm -f "$err_file" "$fallback_err"
   exit $status
 fi
 

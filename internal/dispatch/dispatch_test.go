@@ -125,3 +125,18 @@ func TestOpenclawCommandArgs_PassesSessionID(t *testing.T) {
 		t.Fatalf("expected provider arg at position 6, got %q", args[6])
 	}
 }
+
+func TestOpenclawShellScript_RetriesMessageAfterFallbackRequiredOption(t *testing.T) {
+	script := openclawShellScript()
+	checks := []string{
+		`fallback_err=$(mktemp)`,
+		`printf '%s' "$msg" | openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking" 2>"$fallback_err"`,
+		`grep -Fqi "required option '-m, --message" "$fallback_err"`,
+		`openclaw agent --agent "$agent" --session-id "$session_id" --message "$msg" --thinking "$thinking" 2>"$fallback_err"`,
+	}
+	for _, check := range checks {
+		if !strings.Contains(script, check) {
+			t.Fatalf("shell script missing %q", check)
+		}
+	}
+}
