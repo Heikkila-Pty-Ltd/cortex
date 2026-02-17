@@ -18,7 +18,7 @@ var stageInstructions = map[string]func(bead beads.Bead) string{
 1. Review and refine the task description
 2. Add or improve acceptance criteria using: bd update %s --acceptance="..."
 3. Break down if too large — create sub-tasks with bd create
-4. Transition to planning: bd update %s --labels stage:planning
+4. Transition to planning: bd update %s --set-labels stage:planning
 5. Unassign yourself: bd update %s --assignee=""
 `, b.ID, b.ID, b.ID)
 	},
@@ -28,7 +28,7 @@ var stageInstructions = map[string]func(bead beads.Bead) string{
 2. Create an implementation plan with design notes: bd update %s --design="..."
 3. Identify files to create or modify, list them in the design
 4. Estimate effort if not set
-5. Transition to ready: bd update %s --labels stage:ready
+5. Transition to ready: bd update %s --set-labels stage:ready
 6. Unassign yourself: bd update %s --assignee=""
 `, b.ID, b.ID, b.ID)
 	},
@@ -42,7 +42,7 @@ var stageInstructions = map[string]func(bead beads.Bead) string{
 2. Implement in the files listed (create if needed)
 3. Run tests if they exist
 4. Commit with message: feat(%s): %s
-5. Transition to review: bd update %s --labels stage:review
+5. Transition to review: bd update %s --set-labels stage:review
 6. Unassign yourself: bd update %s --assignee=""
 7. Push: git push
 `, b.ID, shortTitle, b.ID, b.ID)
@@ -51,8 +51,8 @@ var stageInstructions = map[string]func(bead beads.Bead) string{
 		return fmt.Sprintf(`## Instructions (Reviewer)
 1. Review the code changes against acceptance criteria
 2. Check for correctness, style, and test coverage
-3. If approved: transition to QA: bd update %s --labels stage:qa
-4. If changes needed: add review notes and transition back: bd update %s --labels stage:coding
+3. If approved: transition to QA: bd update %s --set-labels stage:qa
+4. If changes needed: add review notes and transition back: bd update %s --set-labels stage:coding
 5. Unassign yourself: bd update %s --assignee=""
 `, b.ID, b.ID, b.ID)
 	},
@@ -61,7 +61,7 @@ var stageInstructions = map[string]func(bead beads.Bead) string{
 1. Run the full test suite
 2. Verify acceptance criteria are met
 3. If all tests pass: bd close %s
-4. If tests fail: add failure notes and transition back: bd update %s --labels stage:coding
+4. If tests fail: add failure notes and transition back: bd update %s --set-labels stage:coding
 5. Unassign yourself: bd update %s --assignee=""
 `, b.ID, b.ID, b.ID)
 	},

@@ -21,7 +21,7 @@ func NewDispatcher() *Dispatcher {
 func ThinkingLevel(tier string) string {
 	switch tier {
 	case "fast":
-		return "none"
+		return "off"
 	case "balanced":
 		return "low"
 	case "premium":
@@ -40,40 +40,36 @@ func (d *Dispatcher) Dispatch(ctx context.Context, agent string, prompt string, 
 	if err != nil {
 		return 0, fmt.Errorf("dispatch: create temp prompt file: %w", err)
 	}
+	tmpPath := tmpFile.Name()
 
 	if _, err := tmpFile.WriteString(prompt); err != nil {
 		tmpFile.Close()
-		os.Remove(tmpFile.Name())
+		os.Remove(tmpPath)
 		return 0, fmt.Errorf("dispatch: write prompt to temp file: %w", err)
 	}
+	tmpFile.Close()
 
-	if _, err := tmpFile.Seek(0, 0); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpFile.Name())
-		return 0, fmt.Errorf("dispatch: seek temp file: %w", err)
-	}
-
-	cmd := exec.CommandContext(ctx,
-		"openclaw", "agent",
-		"--agent", agent,
-		"--message", "-",
-		"--thinking", thinking,
+	// Use a shell helper to read the prompt from the temp file and pass it
+	// as --message, since stdin piping can fail when the openclaw gateway
+	// falls back to embedded mode.
+	// Use context.Background() so the child process survives if cortex
+	// exits in --once mode (the parent context gets cancelled on exit).
+	shellScript := `msg=$(cat "$1") && exec openclaw agent --agent "$2" --message "$msg" --thinking "$3"`
+	cmd := exec.Command(
+		"sh", "-c", shellScript, "_", tmpPath, agent, thinking,
 	)
 	cmd.Dir = workDir
-	cmd.Stdin = tmpFile
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 
 	if err := cmd.Start(); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpFile.Name())
+		os.Remove(tmpPath)
 		return 0, fmt.Errorf("dispatch: start openclaw agent: %w", err)
 	}
 
 	go func() {
 		_ = cmd.Wait()
-		tmpFile.Close()
-		os.Remove(tmpFile.Name())
+		os.Remove(tmpPath)
 	}()
 
 	return cmd.Process.Pid, nil

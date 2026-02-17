@@ -13,7 +13,7 @@ func TestThinkingLevel(t *testing.T) {
 		tier string
 		want string
 	}{
-		{"fast", "none"},
+		{"fast", "off"},
 		{"balanced", "low"},
 		{"premium", "high"},
 		{"unknown", "low"},
