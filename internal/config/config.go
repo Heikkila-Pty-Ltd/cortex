@@ -62,9 +62,11 @@ type RateLimits struct {
 }
 
 type Provider struct {
-	Tier   string `toml:"tier"`
-	Authed bool   `toml:"authed"`
-	Model  string `toml:"model"`
+	Tier              string  `toml:"tier"`
+	Authed            bool    `toml:"authed"`
+	Model             string  `toml:"model"`
+	CostInputPerMtok  float64 `toml:"cost_input_per_mtok"`
+	CostOutputPerMtok float64 `toml:"cost_output_per_mtok"`
 }
 
 type Tiers struct {

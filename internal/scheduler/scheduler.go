@@ -20,16 +20,18 @@ type Scheduler struct {
 	rateLimiter *dispatch.RateLimiter
 	dispatcher  dispatch.DispatcherInterface
 	logger      *slog.Logger
+	dryRun      bool
 }
 
 // New creates a new Scheduler with all dependencies.
-func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatch.DispatcherInterface, logger *slog.Logger) *Scheduler {
+func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatch.DispatcherInterface, logger *slog.Logger, dryRun bool) *Scheduler {
 	return &Scheduler{
 		cfg:         cfg,
 		store:       s,
 		rateLimiter: rl,
 		dispatcher:  d,
 		logger:      logger,
+		dryRun:      dryRun,
 	}
 }
 
@@ -98,7 +100,8 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			s.logger.Info("team agents created", "project", np.name, "agents", created)
 		}
 
-		beadList, err := beads.ListBeads(config.ExpandHome(np.proj.BeadsDir))
+		beadsDir := config.ExpandHome(np.proj.BeadsDir)
+		beadList, err := beads.ListBeads(beadsDir)
 		if err != nil {
 			s.logger.Error("failed to list beads", "project", np.name, "error", err)
 			continue
@@ -106,6 +109,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 
 		graph := beads.BuildDepGraph(beadList)
 		ready := beads.FilterUnblockedOpen(beadList, graph)
+
+		// Enrich ready beads with bd show data (acceptance, design, estimate)
+		beads.EnrichBeads(ctx, beadsDir, ready)
 
 		// Count metrics
 		openCount := 0
@@ -200,6 +206,31 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		prompt := BuildPromptWithRole(item.bead, item.project, role)
 		thinkingLevel := dispatch.ThinkingLevel(currentTier)
 
+		// Determine stage for logging
+		stage := ""
+		for _, label := range item.bead.Labels {
+			if len(label) > 6 && label[:6] == "stage:" {
+				stage = label
+				break
+			}
+		}
+
+		if s.dryRun {
+			// Dry-run mode: log what WOULD be dispatched without actually dispatching
+			s.logger.Info("dispatched",
+				"bead", item.bead.ID,
+				"project", item.name,
+				"agent", agent,
+				"role", role,
+				"stage", stage,
+				"provider", provider.Model,
+				"tier", currentTier,
+				"dry_run", true,
+			)
+			dispatched++
+			continue
+		}
+
 		handle, err := s.dispatcher.Dispatch(ctx, agent, prompt, provider.Model, thinkingLevel, config.ExpandHome(item.project.Workspace))
 		if err != nil {
 			s.logger.Error("dispatch failed", "bead", item.bead.ID, "agent", agent, "error", err)
@@ -219,15 +250,6 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		// Record authed usage
 		if provider.Authed {
 			s.rateLimiter.RecordAuthedDispatch(provider.Model, agent, item.bead.ID)
-		}
-
-		// Determine stage for logging
-		stage := ""
-		for _, label := range item.bead.Labels {
-			if len(label) > 6 && label[:6] == "stage:" {
-				stage = label
-				break
-			}
 		}
 
 		s.logger.Info("dispatched",

@@ -368,3 +368,176 @@ func TestGetOutputNotFound(t *testing.T) {
 		t.Error("expected error for non-existent dispatch")
 	}
 }
+
+func TestRecordDispatchCost(t *testing.T) {
+	s := tempStore(t)
+
+	// Create a dispatch
+	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "claude", "premium", 100, "", "test prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Record cost
+	inputTokens := 1500
+	outputTokens := 2500
+	costUSD := 0.075 // $0.075
+
+	err = s.RecordDispatchCost(dispatchID, inputTokens, outputTokens, costUSD)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify values via raw SQL query
+	var gotInputTokens, gotOutputTokens int
+	var gotCostUSD float64
+
+	err = s.db.QueryRow(
+		`SELECT input_tokens, output_tokens, cost_usd FROM dispatches WHERE id = ?`,
+		dispatchID,
+	).Scan(&gotInputTokens, &gotOutputTokens, &gotCostUSD)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if gotInputTokens != inputTokens {
+		t.Errorf("input_tokens = %d, want %d", gotInputTokens, inputTokens)
+	}
+	if gotOutputTokens != outputTokens {
+		t.Errorf("output_tokens = %d, want %d", gotOutputTokens, outputTokens)
+	}
+	if gotCostUSD != costUSD {
+		t.Errorf("cost_usd = %f, want %f", gotCostUSD, costUSD)
+	}
+}
+
+func TestGetTotalCost(t *testing.T) {
+	s := tempStore(t)
+
+	// Create multiple dispatches with costs
+	dispatches := []struct {
+		project     string
+		inputTokens int
+		outputTokens int
+		costUSD     float64
+	}{
+		{"proj-a", 1000, 2000, 0.05},
+		{"proj-a", 1500, 2500, 0.075},
+		{"proj-b", 2000, 3000, 0.10},
+		{"proj-b", 500, 1000, 0.025},
+	}
+
+	for i, d := range dispatches {
+		beadID := fmt.Sprintf("bead-%d", i)
+		dispatchID, err := s.RecordDispatch(beadID, d.project, "agent-1", "claude", "premium", 100+i, "", "prompt")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		err = s.RecordDispatchCost(dispatchID, d.inputTokens, d.outputTokens, d.costUSD)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Test total cost for all projects
+	totalCost, err := s.GetTotalCost("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedTotal := 0.05 + 0.075 + 0.10 + 0.025
+	if fmt.Sprintf("%.3f", totalCost) != fmt.Sprintf("%.3f", expectedTotal) {
+		t.Errorf("total cost = %f, want %f", totalCost, expectedTotal)
+	}
+
+	// Test total cost for proj-a
+	projACost, err := s.GetTotalCost("proj-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedProjA := 0.05 + 0.075
+	if fmt.Sprintf("%.3f", projACost) != fmt.Sprintf("%.3f", expectedProjA) {
+		t.Errorf("proj-a cost = %f, want %f", projACost, expectedProjA)
+	}
+
+	// Test total cost for proj-b
+	projBCost, err := s.GetTotalCost("proj-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedProjB := 0.10 + 0.025
+	if fmt.Sprintf("%.3f", projBCost) != fmt.Sprintf("%.3f", expectedProjB) {
+		t.Errorf("proj-b cost = %f, want %f", projBCost, expectedProjB)
+	}
+
+	// Test cost for non-existent project
+	nonExistCost, err := s.GetTotalCost("non-existent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nonExistCost != 0 {
+		t.Errorf("non-existent project cost = %f, want 0", nonExistCost)
+	}
+}
+
+func TestInterruptRunningDispatches(t *testing.T) {
+	s := tempStore(t)
+
+	// Create some running dispatches
+	id1, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "prompt1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id2, err := s.RecordDispatch("bead-2", "proj", "agent-2", "cerebras", "fast", 101, "", "prompt2")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = s.RecordDispatch("bead-3", "proj", "agent-3", "cerebras", "fast", 102, "", "prompt3")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Complete one dispatch before interrupting
+	err = s.UpdateDispatchStatus(id1, "completed", 0, 10.5)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Interrupt all running dispatches
+	count, err := s.InterruptRunningDispatches()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should have interrupted 2 dispatches (id2 and id3, not id1 which was completed)
+	if count != 2 {
+		t.Errorf("expected 2 interrupted, got %d", count)
+	}
+
+	// Verify no running dispatches remain
+	running, err := s.GetRunningDispatches()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(running) != 0 {
+		t.Errorf("expected 0 running after interrupt, got %d", len(running))
+	}
+
+	// Verify the interrupted dispatches have status and completed_at set correctly
+	var d Dispatch
+	err = s.db.QueryRow(`SELECT `+dispatchCols+` FROM dispatches WHERE id = ?`, id2).Scan(
+		&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName,
+		&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.ExitCode, &d.DurationS, &d.Retries, &d.EscalatedFromTier,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Status != "interrupted" {
+		t.Errorf("expected status 'interrupted', got %q", d.Status)
+	}
+	if !d.CompletedAt.Valid {
+		t.Error("expected completed_at to be set")
+	}
+}

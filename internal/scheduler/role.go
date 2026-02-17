@@ -66,14 +66,21 @@ func InferRole(bead beads.Bead) string {
 	return "coder"
 }
 
-// StageForRole returns the stage label a bead should have for a given role.
+// StageForRole returns the entry-point stage label for a given role.
+// When a role maps to multiple stages (e.g. coder → ready, coding),
+// returns the earliest (lowest-order) stage.
 func StageForRole(role string) string {
+	bestStage := ""
+	bestOrder := 999
 	for stage, r := range stageRoles {
 		if r == role {
-			return stage
+			if order, ok := stageOrder[stage]; ok && order < bestOrder {
+				bestStage = stage
+				bestOrder = order
+			}
 		}
 	}
-	return ""
+	return bestStage
 }
 
 // ResolveAgent returns the agent name for a project and role.

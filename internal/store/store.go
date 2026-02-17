@@ -161,6 +161,38 @@ func migrate(db *sql.DB) error {
 			return fmt.Errorf("add session_name column: %w", err)
 		}
 	}
+
+	// Add cost tracking columns if they don't exist
+	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('dispatches') WHERE name = 'input_tokens'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check input_tokens column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE dispatches ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add input_tokens column: %w", err)
+		}
+	}
+
+	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('dispatches') WHERE name = 'output_tokens'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check output_tokens column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE dispatches ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add output_tokens column: %w", err)
+		}
+	}
+
+	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('dispatches') WHERE name = 'cost_usd'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check cost_usd column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE dispatches ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add cost_usd column: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -209,6 +241,11 @@ func (s *Store) GetRunningDispatches() ([]Dispatch, error) {
 func (s *Store) GetStuckDispatches(timeout time.Duration) ([]Dispatch, error) {
 	cutoff := time.Now().Add(-timeout).UTC().Format(time.DateTime)
 	return s.queryDispatches(`SELECT `+dispatchCols+` FROM dispatches WHERE status = 'running' AND dispatched_at < ?`, cutoff)
+}
+
+// GetDispatchesByBead returns all dispatches for a given bead ID, ordered by dispatched_at DESC.
+func (s *Store) GetDispatchesByBead(beadID string) ([]Dispatch, error) {
+	return s.queryDispatches(`SELECT `+dispatchCols+` FROM dispatches WHERE bead_id = ? ORDER BY dispatched_at DESC`, beadID)
 }
 
 func (s *Store) queryDispatches(query string, args ...any) ([]Dispatch, error) {
@@ -399,15 +436,63 @@ func extractTail(text string, lines int) string {
 	if text == "" {
 		return ""
 	}
-	
+
 	// Split into lines
 	allLines := strings.Split(text, "\n")
-	
+
 	// Return the last N lines
 	if len(allLines) <= lines {
 		return text
 	}
-	
+
 	tailLines := allLines[len(allLines)-lines:]
 	return strings.Join(tailLines, "\n")
+}
+
+// RecordDispatchCost updates token usage and cost for a completed dispatch.
+func (s *Store) RecordDispatchCost(dispatchID int64, inputTokens, outputTokens int, costUSD float64) error {
+	_, err := s.db.Exec(
+		`UPDATE dispatches SET input_tokens = ?, output_tokens = ?, cost_usd = ? WHERE id = ?`,
+		inputTokens, outputTokens, costUSD, dispatchID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: record dispatch cost: %w", err)
+	}
+	return nil
+}
+
+// GetTotalCost returns total cost in USD for a given project (or all projects if empty).
+func (s *Store) GetTotalCost(project string) (float64, error) {
+	var query string
+	var args []any
+
+	if project == "" {
+		query = `SELECT COALESCE(SUM(cost_usd), 0) FROM dispatches`
+	} else {
+		query = `SELECT COALESCE(SUM(cost_usd), 0) FROM dispatches WHERE project = ?`
+		args = []any{project}
+	}
+
+	var totalCost float64
+	err := s.db.QueryRow(query, args...).Scan(&totalCost)
+	if err != nil {
+		return 0, fmt.Errorf("store: get total cost: %w", err)
+	}
+	return totalCost, nil
+}
+
+// InterruptRunningDispatches marks all running dispatches as interrupted.
+// Returns the count of affected rows.
+func (s *Store) InterruptRunningDispatches() (int, error) {
+	res, err := s.db.Exec(
+		`UPDATE dispatches SET status = 'interrupted', completed_at = datetime('now') WHERE status = 'running'`,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: interrupt running dispatches: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: get rows affected: %w", err)
+	}
+	return int(affected), nil
 }

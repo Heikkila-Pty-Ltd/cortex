@@ -27,11 +27,11 @@ type Bead struct {
 	Priority        int              `json:"priority"`
 	Type            string           `json:"issue_type"`
 	Labels          []string         `json:"labels"`
-	EstimateMinutes int              `json:"estimate_minutes"`
+	EstimateMinutes int              `json:"estimated_minutes"`
 	ParentID        string           `json:"parent_id"`
 	DependsOn       []string         `json:"depends_on"`
 	Dependencies    []BeadDependency `json:"dependencies"`
-	Acceptance      string           `json:"acceptance"`
+	Acceptance      string           `json:"acceptance_criteria"`
 	Design          string           `json:"design"`
 	CreatedAt       time.Time        `json:"created_at"`
 }
@@ -123,6 +123,33 @@ func ShowBeadCtx(ctx context.Context, beadsDir, beadID string) (*BeadDetail, err
 		return nil, fmt.Errorf("parsing bd show output for %s: %w", beadID, err)
 	}
 	return &detail, nil
+}
+
+// EnrichBeads calls bd show for each bead to populate fields not returned by bd list
+// (acceptance_criteria, design, estimated_minutes). Only enriches open, non-epic beads.
+// Errors on individual beads are logged and skipped.
+func EnrichBeads(ctx context.Context, beadsDir string, beadList []Bead) {
+	for i := range beadList {
+		b := &beadList[i]
+		if b.Status != "open" || b.Type == "epic" {
+			continue
+		}
+		// Skip if already has the detail fields (e.g. from a richer API)
+		if b.Acceptance != "" || b.Design != "" || b.EstimateMinutes != 0 {
+			continue
+		}
+		detail, err := ShowBeadCtx(ctx, beadsDir, b.ID)
+		if err != nil {
+			continue // best-effort enrichment
+		}
+		b.Acceptance = detail.Acceptance
+		b.Design = detail.Design
+		b.EstimateMinutes = detail.EstimateMinutes
+		// Also backfill labels if bd list omitted them
+		if len(b.Labels) == 0 && len(detail.Labels) > 0 {
+			b.Labels = detail.Labels
+		}
+	}
 }
 
 // CloseBead runs bd close {beadID} in the project root.

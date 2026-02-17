@@ -49,6 +49,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/teams", s.handleTeams)
 	mux.HandleFunc("/teams/", s.handleTeamDetail)
 	mux.HandleFunc("/metrics", s.handleMetrics)
+	mux.HandleFunc("/dispatches/", s.handleDispatchDetail)
 
 	s.httpServer = &http.Server{
 		Addr:        s.cfg.API.Bind,
@@ -268,4 +269,63 @@ func (s *Server) handleTeamDetail(w http.ResponseWriter, r *http.Request) {
 		"project": project,
 		"agents":  agents,
 	})
+}
+
+// GET /dispatches/{bead_id} — dispatch history for a bead
+func (s *Server) handleDispatchDetail(w http.ResponseWriter, r *http.Request) {
+	beadID := strings.TrimPrefix(r.URL.Path, "/dispatches/")
+	if beadID == "" {
+		writeError(w, http.StatusBadRequest, "bead_id required")
+		return
+	}
+
+	dispatches, err := s.store.GetDispatchesByBead(beadID)
+	if err != nil {
+		s.logger.Error("failed to query dispatches", "bead_id", beadID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to query dispatches")
+		return
+	}
+
+	// Build response with dispatch details including output tails
+	type dispatchResponse struct {
+		ID            int64   `json:"id"`
+		Agent         string  `json:"agent"`
+		Provider      string  `json:"provider"`
+		Tier          string  `json:"tier"`
+		Status        string  `json:"status"`
+		ExitCode      int     `json:"exit_code"`
+		DurationS     float64 `json:"duration_s"`
+		DispatchedAt  string  `json:"dispatched_at"`
+		SessionName   string  `json:"session_name"`
+		OutputTail    string  `json:"output_tail"`
+	}
+
+	var dispatchList []dispatchResponse
+	for _, d := range dispatches {
+		// Try to get output tail, use empty string if not available
+		outputTail, err := s.store.GetOutputTail(d.ID)
+		if err != nil {
+			outputTail = ""
+		}
+
+		dispatchList = append(dispatchList, dispatchResponse{
+			ID:           d.ID,
+			Agent:        d.AgentID,
+			Provider:     d.Provider,
+			Tier:         d.Tier,
+			Status:       d.Status,
+			ExitCode:     d.ExitCode,
+			DurationS:    d.DurationS,
+			DispatchedAt: d.DispatchedAt.Format(time.RFC3339),
+			SessionName:  d.SessionName,
+			OutputTail:   outputTail,
+		})
+	}
+
+	resp := map[string]any{
+		"bead_id":    beadID,
+		"dispatches": dispatchList,
+	}
+
+	writeJSON(w, resp)
 }

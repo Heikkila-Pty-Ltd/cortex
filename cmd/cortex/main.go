@@ -21,6 +21,7 @@ func main() {
 	configPath := flag.String("config", "cortex.toml", "path to config file")
 	once := flag.Bool("once", false, "run a single tick then exit")
 	dev := flag.Bool("dev", false, "use text log format (default is JSON)")
+	dryRun := flag.Bool("dry-run", false, "run tick logic without actually dispatching agents")
 	flag.Parse()
 
 	// Bootstrap logger (text, info) for early startup
@@ -86,7 +87,7 @@ func main() {
 		d = dispatch.NewDispatcher()
 	}
 	
-	sched := scheduler.New(cfg, st, rl, d, logger.With("component", "scheduler"))
+	sched := scheduler.New(cfg, st, rl, d, logger.With("component", "scheduler"), *dryRun)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -128,8 +129,19 @@ func main() {
 	logger.Info("received signal, shutting down", "signal", sig)
 	cancel()
 
-	// Give running goroutines time to finish
-	time.Sleep(500 * time.Millisecond)
+	// Graceful shutdown: drain dispatches if using tmux
+	if d.GetHandleType() == "session" {
+		logger.Info("draining tmux sessions", "timeout", "30s")
+		dispatch.GracefulShutdown(30 * time.Second)
+	}
+
+	// Mark all remaining running dispatches as interrupted
+	interrupted, err := st.InterruptRunningDispatches()
+	if err != nil {
+		logger.Error("failed to interrupt running dispatches", "error", err)
+	} else if interrupted > 0 {
+		logger.Info("interrupted running dispatches", "count", interrupted)
+	}
 
 	logger.Info("cortex stopped", "shutdown_duration", time.Since(shutdownStart).String())
 }
