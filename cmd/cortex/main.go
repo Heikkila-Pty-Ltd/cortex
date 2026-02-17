@@ -13,6 +13,7 @@ import (
 	"github.com/antigravity-dev/cortex/internal/config"
 	"github.com/antigravity-dev/cortex/internal/dispatch"
 	"github.com/antigravity-dev/cortex/internal/health"
+	"github.com/antigravity-dev/cortex/internal/learner"
 	"github.com/antigravity-dev/cortex/internal/scheduler"
 	"github.com/antigravity-dev/cortex/internal/store"
 )
@@ -105,6 +106,10 @@ func main() {
 	// Start health monitor
 	hm := health.NewMonitor(cfg.Health, cfg.General, st, d, logger.With("component", "health"))
 	go hm.Start(ctx)
+
+	// Start learner cycle worker
+	lw := learner.NewCycleWorker(cfg.Learner, st, logger.With("component", "learner"))
+	go lw.Start(ctx)
 
 	// Start API server with scheduler reference
 	apiSrv := api.NewServer(cfg, st, rl, sched, d, logger.With("component", "api"))

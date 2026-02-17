@@ -9,11 +9,13 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/antigravity-dev/cortex/internal/config"
 	"github.com/antigravity-dev/cortex/internal/dispatch"
+	"github.com/antigravity-dev/cortex/internal/learner"
 	"github.com/antigravity-dev/cortex/internal/scheduler"
 	"github.com/antigravity-dev/cortex/internal/store"
 	"github.com/antigravity-dev/cortex/internal/team"
@@ -58,6 +60,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/scheduler/pause", s.handleSchedulerPause)
 	mux.HandleFunc("/scheduler/resume", s.handleSchedulerResume)
 	mux.HandleFunc("/scheduler/status", s.handleSchedulerStatus)
+	mux.HandleFunc("/recommendations", s.handleRecommendations)
 
 	s.httpServer = &http.Server{
 		Addr:        s.cfg.API.Bind,
@@ -165,9 +168,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 				healthy = false
 			}
 			recentEvents = append(recentEvents, map[string]any{
-				"type":    e.EventType,
-				"details": e.Details,
-				"time":    e.CreatedAt.Format(time.RFC3339),
+				"type":        e.EventType,
+				"details":     e.Details,
+				"dispatch_id": e.DispatchID,
+				"bead_id":     e.BeadID,
+				"time":        e.CreatedAt.Format(time.RFC3339),
 			})
 		}
 	}
@@ -514,4 +519,39 @@ func (s *Server) handleSchedulerStatus(w http.ResponseWriter, r *http.Request) {
 		"paused":        s.scheduler.IsPaused(),
 		"tick_interval": s.cfg.General.TickInterval.Duration.String(),
 	})
+}
+
+// GET /recommendations - Returns recent system recommendations
+func (s *Server) handleRecommendations(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// Get hours parameter, default to 24
+	hoursStr := r.URL.Query().Get("hours")
+	hours := 24
+	if hoursStr != "" {
+		if h, err := strconv.Atoi(hoursStr); err == nil && h > 0 && h <= 168 { // Max 1 week
+			hours = h
+		}
+	}
+
+	// Import learner package to access recommendations
+	recStore := learner.NewRecommendationStore(s.store)
+	recommendations, err := recStore.GetRecentRecommendations(hours)
+	if err != nil {
+		s.logger.Error("failed to get recommendations", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to get recommendations")
+		return
+	}
+
+	resp := map[string]any{
+		"recommendations": recommendations,
+		"hours":          hours,
+		"count":          len(recommendations),
+		"generated_at":   time.Now(),
+	}
+
+	writeJSON(w, resp)
 }

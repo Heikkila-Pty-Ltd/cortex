@@ -37,6 +37,7 @@ type Config struct {
 	Workflows  map[string]WorkflowConfig  `toml:"workflows"`
 	Health     Health                     `toml:"health"`
 	Reporter   Reporter                   `toml:"reporter"`
+	Learner    Learner                    `toml:"learner"`
 	API        API                        `toml:"api"`
 	Dispatch   Dispatch                   `toml:"dispatch"`
 }
@@ -105,6 +106,13 @@ type Reporter struct {
 	AgentID         string `toml:"agent_id"`
 	DailyDigestTime string `toml:"daily_digest_time"`
 	WeeklyRetroDay  string `toml:"weekly_retro_day"`
+}
+
+type Learner struct {
+	Enabled         bool     `toml:"enabled"`
+	AnalysisWindow  Duration `toml:"analysis_window"`
+	CycleInterval   Duration `toml:"cycle_interval"`
+	IncludeInDigest bool     `toml:"include_in_digest"`
 }
 
 type API struct {
@@ -256,6 +264,16 @@ func applyDefaults(cfg *Config) {
 	if cfg.Health.GatewayUnit == "" {
 		cfg.Health.GatewayUnit = "openclaw-gateway.service"
 	}
+
+	// Learner defaults
+	if cfg.Learner.AnalysisWindow.Duration == 0 {
+		cfg.Learner.AnalysisWindow.Duration = 48 * time.Hour
+	}
+	if cfg.Learner.CycleInterval.Duration == 0 {
+		cfg.Learner.CycleInterval.Duration = 6 * time.Hour
+	}
+	// Enabled defaults to false - must be explicitly enabled
+	// IncludeInDigest defaults to false
 
 	// Project branch defaults
 	for name, project := range cfg.Projects {
