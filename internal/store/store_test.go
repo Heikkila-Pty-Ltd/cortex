@@ -577,6 +577,7 @@ func TestInterruptRunningDispatches(t *testing.T) {
 		&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName,
 		&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.Stage, &d.PRURL, &d.PRNumber, &d.ExitCode, &d.DurationS, &d.Retries, &d.EscalatedFromTier,
 		&d.FailureCategory, &d.FailureSummary, &d.LogPath, &d.Branch, &d.Backend,
+		&d.InputTokens, &d.OutputTokens, &d.CostUSD,
 	)
 	if err != nil {
 		t.Fatal(err)

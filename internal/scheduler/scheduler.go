@@ -298,11 +298,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			continue
 		}
 
-		// Build prompt with role awareness and dispatch
-		prompt := BuildPromptWithRoleBranches(item.bead, item.project, role, item.project.UseBranches)
-		thinkingLevel := dispatch.ThinkingLevel(currentTier)
-
-		// Determine stage for logging
+		// Determine stage for logging and diff fetching
 		stage := ""
 		for _, label := range item.bead.Labels {
 			if len(label) > 6 && label[:6] == "stage:" {
@@ -310,6 +306,29 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 				break
 			}
 		}
+
+		// Fetch PR diff if this is a reviewer dispatch
+		workspace := config.ExpandHome(item.project.Workspace)
+		var prDiff string
+		if role == "reviewer" && item.project.UseBranches {
+			// Try to get PR number from last dispatch
+			lastID, err := s.store.GetLastDispatchIDForBead(item.bead.ID)
+			if err == nil && lastID != 0 {
+				if d, err := s.store.GetDispatchByID(lastID); err == nil && d.PRNumber > 0 {
+					diff, err := git.GetPRDiff(workspace, d.PRNumber)
+					if err != nil {
+						s.logger.Warn("failed to fetch PR diff for review", "bead", item.bead.ID, "pr", d.PRNumber, "error", err)
+					} else {
+						// Truncate if too large (50KB max)
+						prDiff = git.TruncateDiff(diff, 50*1024)
+					}
+				}
+			}
+		}
+
+		// Build prompt with role awareness and dispatch
+		prompt := BuildPromptWithRoleBranches(item.bead, item.project, role, item.project.UseBranches, prDiff)
+		thinkingLevel := dispatch.ThinkingLevel(currentTier)
 
 		if s.dryRun {
 			// Dry-run mode: log what WOULD be dispatched without actually dispatching
@@ -328,7 +347,6 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		}
 
 		// Create feature branch if branch workflow is enabled
-		workspace := config.ExpandHome(item.project.Workspace)
 		if item.project.UseBranches {
 			if err := git.EnsureFeatureBranchWithBase(workspace, item.bead.ID, item.project.BaseBranch, item.project.BranchPrefix); err != nil {
 				s.logger.Error("failed to create feature branch", "bead", item.bead.ID, "error", err)

@@ -40,6 +40,9 @@ type Dispatch struct {
 	LogPath           string
 	Branch            string
 	Backend           string
+	InputTokens       int
+	OutputTokens      int
+	CostUSD           float64
 }
 
 // HealthEvent represents a recorded health event.
@@ -93,7 +96,10 @@ CREATE TABLE IF NOT EXISTS dispatches (
 	retries INTEGER NOT NULL DEFAULT 0,
 	escalated_from_tier TEXT NOT NULL DEFAULT '',
 	pr_url TEXT NOT NULL DEFAULT '',
-	pr_number INTEGER NOT NULL DEFAULT 0
+	pr_number INTEGER NOT NULL DEFAULT 0,
+	input_tokens INTEGER NOT NULL DEFAULT 0,
+	output_tokens INTEGER NOT NULL DEFAULT 0,
+	cost_usd REAL NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS provider_usage (
@@ -101,6 +107,8 @@ CREATE TABLE IF NOT EXISTS provider_usage (
 	provider TEXT NOT NULL,
 	agent_id TEXT NOT NULL,
 	bead_id TEXT NOT NULL,
+	input_tokens INTEGER NOT NULL DEFAULT 0,
+	output_tokens INTEGER NOT NULL DEFAULT 0,
 	dispatched_at DATETIME NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -269,6 +277,27 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// Add token columns to provider_usage if they don't exist
+	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('provider_usage') WHERE name = 'input_tokens'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check provider_usage input_tokens column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE provider_usage ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add provider_usage input_tokens column: %w", err)
+		}
+	}
+
+	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('provider_usage') WHERE name = 'output_tokens'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check provider_usage output_tokens column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE provider_usage ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add provider_usage output_tokens column: %w", err)
+		}
+	}
+
 	// Add PR tracking columns if they don't exist
 	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('dispatches') WHERE name = 'pr_url'`).Scan(&count)
 	if err != nil {
@@ -367,7 +396,7 @@ func (s *Store) GetLastDispatchIDForBead(beadID string) (int64, error) {
 	return id, nil
 }
 
-const dispatchCols = `id, bead_id, project, agent_id, provider, tier, pid, session_name, prompt, dispatched_at, completed_at, status, stage, pr_url, pr_number, exit_code, duration_s, retries, escalated_from_tier, failure_category, failure_summary, log_path, branch, backend`
+const dispatchCols = `id, bead_id, project, agent_id, provider, tier, pid, session_name, prompt, dispatched_at, completed_at, status, stage, pr_url, pr_number, exit_code, duration_s, retries, escalated_from_tier, failure_category, failure_summary, log_path, branch, backend, input_tokens, output_tokens, cost_usd`
 
 // GetRunningDispatches returns all dispatches with status 'running'.
 func (s *Store) GetRunningDispatches() ([]Dispatch, error) {
@@ -459,6 +488,7 @@ func (s *Store) queryDispatches(query string, args ...any) ([]Dispatch, error) {
 			&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName,
 			&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.Stage, &d.PRURL, &d.PRNumber, &d.ExitCode, &d.DurationS,
 			&d.Retries, &d.EscalatedFromTier, &d.FailureCategory, &d.FailureSummary, &d.LogPath, &d.Branch, &d.Backend,
+			&d.InputTokens, &d.OutputTokens, &d.CostUSD,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan dispatch: %w", err)
 		}
@@ -672,6 +702,18 @@ func (s *Store) RecordDispatchCost(dispatchID int64, inputTokens, outputTokens i
 		return fmt.Errorf("store: record dispatch cost: %w", err)
 	}
 	return nil
+}
+
+// GetDispatchCost returns token usage and cost for a dispatch.
+func (s *Store) GetDispatchCost(dispatchID int64) (inputTokens, outputTokens int, costUSD float64, err error) {
+	err = s.db.QueryRow(
+		`SELECT input_tokens, output_tokens, cost_usd FROM dispatches WHERE id = ?`,
+		dispatchID,
+	).Scan(&inputTokens, &outputTokens, &costUSD)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("store: get dispatch cost: %w", err)
+	}
+	return inputTokens, outputTokens, costUSD, nil
 }
 
 // GetTotalCost returns total cost in USD for a given project (or all projects if empty).

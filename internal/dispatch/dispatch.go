@@ -9,6 +9,16 @@ import (
 	"time"
 )
 
+// openclawShellScript is shared between PID and tmux dispatchers so model/provider
+// handling stays consistent.
+func openclawShellScript() string {
+	return `msg=$(cat "$1"); if [ -n "$4" ]; then exec openclaw agent --agent "$2" --message "$msg" --thinking "$3" --model "$4"; else exec openclaw agent --agent "$2" --message "$msg" --thinking "$3"; fi`
+}
+
+func openclawCommandArgs(tmpPath, agent, thinking, provider string) []string {
+	return []string{"-c", openclawShellScript(), "_", tmpPath, agent, thinking, provider}
+}
+
 // DispatcherInterface defines the common interface for dispatching agents.
 type DispatcherInterface interface {
 	Dispatch(ctx context.Context, agent string, prompt string, provider string, thinkingLevel string, workDir string) (int, error)
@@ -63,10 +73,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, agent string, prompt string, 
 	// falls back to embedded mode.
 	// Use context.Background() so the child process survives if cortex
 	// exits in --once mode (the parent context gets cancelled on exit).
-	shellScript := `msg=$(cat "$1") && exec openclaw agent --agent "$2" --message "$msg" --thinking "$3"`
-	cmd := exec.Command(
-		"sh", "-c", shellScript, "_", tmpPath, agent, thinking,
-	)
+	cmd := exec.Command("sh", openclawCommandArgs(tmpPath, agent, thinking, provider)...)
 	cmd.Dir = workDir
 	cmd.Stdout = nil
 	cmd.Stderr = nil
