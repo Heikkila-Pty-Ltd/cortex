@@ -190,9 +190,13 @@ func clearStaleLocks(agent string) {
 	}
 }
 
+func buildTmuxAgentCommand(tmpPath, agent, thinking, provider string) string {
+	return fmt.Sprintf("sh -c %q _ %q %q %q %q", openclawShellScript(), tmpPath, agent, thinking, provider)
+}
+
 // Dispatch implements DispatcherInterface for tmux-based dispatching.
 func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt string, provider string, thinkingLevel string, workDir string) (int, error) {
-	thinking := ThinkingLevel(thinkingLevel)
+	thinking := normalizeThinkingLevel(thinkingLevel)
 
 	// Write prompt to temp file to avoid shell escaping issues.
 	tmpFile, err := os.CreateTemp("", "cortex-prompt-*.txt")
@@ -209,8 +213,7 @@ func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt stri
 	tmpFile.Close()
 
 	// Build agent command
-	shellScript := `msg=$(cat "$1") && exec openclaw agent --agent "$2" --message "$msg" --thinking "$3"`
-	agentCmd := fmt.Sprintf(`sh -c '%s' _ '%s' '%s' '%s'`, shellScript, tmpPath, agent, thinking)
+	agentCmd := buildTmuxAgentCommand(tmpPath, agent, thinking, provider)
 
 	// Generate unique session name with collision detection
 	var sessionName string
