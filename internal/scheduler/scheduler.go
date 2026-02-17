@@ -10,6 +10,7 @@ import (
 
 	"github.com/antigravity-dev/cortex/internal/beads"
 	"github.com/antigravity-dev/cortex/internal/config"
+	"github.com/antigravity-dev/cortex/internal/cost"
 	"github.com/antigravity-dev/cortex/internal/dispatch"
 	"github.com/antigravity-dev/cortex/internal/git"
 	"github.com/antigravity-dev/cortex/internal/health"
@@ -527,6 +528,25 @@ func (s *Scheduler) checkRunningDispatches() {
 			s.logger.Error("failed to update dispatch status", "id", d.ID, "error", err)
 		} else {
 			if status == "completed" {
+				// Calculate and record cost for completed dispatches
+				output, _ := s.store.GetOutput(d.ID)
+				usage := cost.ExtractTokenUsage(output, d.Prompt)
+				
+				var inputPrice, outputPrice float64
+				// Lookup provider prices from config
+				for _, p := range s.cfg.Providers {
+					if p.Model == d.Provider {
+						inputPrice = p.CostInputPerMtok
+						outputPrice = p.CostOutputPerMtok
+						break
+					}
+				}
+				
+				totalCost := cost.CalculateCost(usage, inputPrice, outputPrice)
+				if err := s.store.RecordDispatchCost(d.ID, usage.Input, usage.Output, totalCost); err != nil {
+					s.logger.Error("failed to record dispatch cost", "dispatch_id", d.ID, "error", err)
+				}
+
 				if err := s.store.UpdateDispatchStage(d.ID, "completed"); err != nil {
 					s.logger.Warn("failed to update dispatch stage", "dispatch_id", d.ID, "stage", "completed", "error", err)
 				}
@@ -602,6 +622,8 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			duration := time.Since(retry.DispatchedAt).Seconds()
 			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
 				s.logger.Error("failed to update over-retry dispatch", "id", retry.ID, "error", err)
+			} else if err := s.store.UpdateDispatchStage(retry.ID, "failed"); err != nil {
+				s.logger.Warn("failed to update over-retry dispatch stage", "id", retry.ID, "error", err)
 			}
 			continue
 		}
@@ -637,6 +659,8 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			duration := time.Since(retry.DispatchedAt).Seconds()
 			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
 				s.logger.Error("failed to update retry status", "id", retry.ID, "error", err)
+			} else if err := s.store.UpdateDispatchStage(retry.ID, "failed"); err != nil {
+				s.logger.Warn("failed to update retry dispatch stage", "id", retry.ID, "error", err)
 			}
 			continue
 		}
@@ -666,6 +690,8 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			duration := time.Since(retry.DispatchedAt).Seconds()
 			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
 				s.logger.Error("failed to update failed retry", "id", retry.ID, "error", err)
+			} else if err := s.store.UpdateDispatchStage(retry.ID, "failed"); err != nil {
+				s.logger.Warn("failed to update failed retry stage", "id", retry.ID, "error", err)
 			}
 			continue
 		}
@@ -680,6 +706,9 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 		if err != nil {
 			s.logger.Error("failed to record retry dispatch", "bead", retry.BeadID, "error", err)
 			continue
+		}
+		if err := s.store.UpdateDispatchStage(newDispatchID, "running"); err != nil {
+			s.logger.Warn("failed to set retry dispatch stage", "dispatch_id", newDispatchID, "error", err)
 		}
 
 		// Mark the original dispatch as retried (superseded by the new one)

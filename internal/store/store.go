@@ -369,6 +369,27 @@ func (s *Store) UpdateDispatchStage(id int64, stage string) error {
 	return nil
 }
 
+// MarkDispatchPendingRetry marks a failed dispatch for retry, increments retries,
+// and updates the tier for the next retry attempt.
+func (s *Store) MarkDispatchPendingRetry(id int64, nextTier string) error {
+	_, err := s.db.Exec(
+		`UPDATE dispatches
+		 SET status = 'pending_retry',
+		     retries = retries + 1,
+		     tier = ?,
+		     escalated_from_tier = CASE
+		       WHEN escalated_from_tier = '' THEN tier
+		       ELSE escalated_from_tier
+		     END
+		 WHERE id = ?`,
+		nextTier, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: mark dispatch pending retry: %w", err)
+	}
+	return nil
+}
+
 // UpdateDispatchPR updates a dispatch's PR information.
 func (s *Store) UpdateDispatchPR(id int64, prURL string, prNumber int) error {
 	_, err := s.db.Exec(
@@ -417,20 +438,45 @@ func (s *Store) GetDispatchesByBead(beadID string) ([]Dispatch, error) {
 // WasBeadDispatchedRecently checks if a bead has been dispatched within the cooldown period.
 // Returns true if the bead should be skipped due to recent dispatch activity.
 func (s *Store) WasBeadDispatchedRecently(beadID string, cooldownPeriod time.Duration) (bool, error) {
+	return s.WasBeadAgentDispatchedRecently(beadID, "", cooldownPeriod)
+}
+
+// WasBeadAgentDispatchedRecently checks if a bead has been dispatched within the cooldown period.
+// If agentID is empty, checks across all agents.
+func (s *Store) WasBeadAgentDispatchedRecently(beadID, agentID string, cooldownPeriod time.Duration) (bool, error) {
+	if cooldownPeriod <= 0 {
+		return false, nil
+	}
+
 	cutoff := time.Now().Add(-cooldownPeriod).UTC()
-	
+
 	var count int
-	err := s.db.QueryRow(`
+	var err error
+	if agentID == "" {
+		err = s.db.QueryRow(`
 		SELECT COUNT(*) 
 		FROM dispatches 
-		WHERE bead_id = ? AND dispatched_at > ?`,
+		WHERE bead_id = ?
+		  AND dispatched_at > ?
+		  AND status IN ('running', 'completed', 'failed', 'cancelled', 'interrupted', 'pending_retry', 'retried')`,
 		beadID, cutoff.Format(time.DateTime),
-	).Scan(&count)
-	
+		).Scan(&count)
+	} else {
+		err = s.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM dispatches
+		WHERE bead_id = ?
+		  AND agent_id = ?
+		  AND dispatched_at > ?
+		  AND status IN ('running', 'completed', 'failed', 'cancelled', 'interrupted', 'pending_retry', 'retried')`,
+			beadID, agentID, cutoff.Format(time.DateTime),
+		).Scan(&count)
+	}
+
 	if err != nil {
 		return false, fmt.Errorf("check recent dispatch: %w", err)
 	}
-	
+
 	return count > 0, nil
 }
 

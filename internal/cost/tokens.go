@@ -33,7 +33,7 @@ func ExtractTokenUsage(output string, prompt string) TokenUsage {
 			usage.Input, _ = strconv.Atoi(m[1])
 		}
 		if m := outputRe.FindStringSubmatch(output); len(m) == 2 {
-			usage.Output, _ = strconv.Atoi(m[2])
+			usage.Output, _ = strconv.Atoi(m[1])
 		}
 	}
 

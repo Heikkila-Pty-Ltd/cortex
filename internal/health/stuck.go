@@ -34,57 +34,47 @@ func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterfac
 			alive = sessionStatus == "running"
 		}
 
-		if !alive {
-			// Process already dead - mark as failed
-			duration := time.Since(d.DispatchedAt).Seconds()
-			s.UpdateDispatchStatus(d.ID, "failed", -1, duration)
-			if err := s.UpdateDispatchStage(d.ID, "failed"); err != nil {
-				logger.Warn("failed to update stuck dispatch stage", "dispatch_id", d.ID, "stage", "failed", "error", err)
+		// Kill if still alive
+		if alive {
+			logger.Warn("killing stuck dispatch", "bead", d.BeadID, "handle", d.PID, "handle_type", dispatcher.GetHandleType())
+			var killErr error
+			if dispatcher.GetHandleType() == "session" && d.SessionName != "" {
+				killErr = dispatch.KillSession(d.SessionName)
+			} else {
+				killErr = dispatcher.Kill(d.PID)
 			}
+			if killErr != nil {
+				logger.Error("failed to kill stuck process", "handle", d.PID, "error", killErr)
+			}
+			s.RecordHealthEvent("stuck_killed", fmt.Sprintf("bead %s handle %d (%s) killed after timeout", d.BeadID, d.PID, dispatcher.GetHandleType()))
+		} else {
 			s.RecordHealthEvent("stuck_dead", fmt.Sprintf("bead %s handle %d (%s) already dead", d.BeadID, d.PID, dispatcher.GetHandleType()))
 			logger.Warn("stuck dispatch already dead", "bead", d.BeadID, "handle", d.PID, "handle_type", dispatcher.GetHandleType())
-			actions = append(actions, StuckAction{
-				BeadID: d.BeadID,
-				Action: "killed",
-			})
-			continue
 		}
 
-		// Still alive but past timeout - kill it
-		logger.Warn("killing stuck dispatch", "bead", d.BeadID, "handle", d.PID, "handle_type", dispatcher.GetHandleType())
-		var killErr error
-		if dispatcher.GetHandleType() == "session" && d.SessionName != "" {
-			killErr = dispatch.KillSession(d.SessionName)
-		} else {
-			killErr = dispatcher.Kill(d.PID)
-		}
-		if killErr != nil {
-			logger.Error("failed to kill stuck process", "handle", d.PID, "error", killErr)
-		}
-
+		// Mark as failed and check retry eligibility
 		duration := time.Since(d.DispatchedAt).Seconds()
-		s.UpdateDispatchStatus(d.ID, "failed", -1, duration)
-		if err := s.UpdateDispatchStage(d.ID, "failed"); err != nil {
-			logger.Warn("failed to update stuck dispatch stage", "dispatch_id", d.ID, "stage", "failed", "error", err)
-		}
-		s.RecordHealthEvent("stuck_killed", fmt.Sprintf("bead %s handle %d (%s) killed after %ds", d.BeadID, d.PID, dispatcher.GetHandleType(), int(duration)))
-
+		
 		// Check retries
 		if d.Retries < maxRetries {
-			// Escalate tier
-			newTier := dispatch.DowngradeTier(d.Tier)
-			if newTier == "" {
-				newTier = d.Tier // can't downgrade further from fast, try same tier
-			}
-			// Actually we escalate UP for retries: fast -> balanced -> premium
-			newTier = escalateTier(d.Tier)
+			// Escalate tier for retry
+			newTier := escalateTier(d.Tier)
 
-			logger.Info("retrying with escalated tier",
+			logger.Info("queueing retry with escalated tier",
 				"bead", d.BeadID,
 				"from_tier", d.Tier,
 				"to_tier", newTier,
 				"retry", d.Retries+1,
 			)
+
+			// Mark as pending_retry with escalated tier
+			if err := s.MarkDispatchPendingRetry(d.ID, newTier); err != nil {
+				logger.Error("failed to mark dispatch for retry", "dispatch_id", d.ID, "error", err)
+			} else {
+				if err := s.UpdateDispatchStage(d.ID, "failed"); err != nil {
+					logger.Warn("failed to update retry dispatch stage", "dispatch_id", d.ID, "stage", "failed", "error", err)
+				}
+			}
 
 			actions = append(actions, StuckAction{
 				BeadID:  d.BeadID,
@@ -96,6 +86,13 @@ func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterfac
 		} else {
 			logger.Error("max retries exceeded", "bead", d.BeadID, "retries", d.Retries)
 			s.RecordHealthEvent("max_retries", fmt.Sprintf("bead %s failed after %d retries", d.BeadID, d.Retries))
+			
+			// Mark as permanently failed
+			s.UpdateDispatchStatus(d.ID, "failed", -1, duration)
+			if err := s.UpdateDispatchStage(d.ID, "failed"); err != nil {
+				logger.Warn("failed to update failed dispatch stage", "dispatch_id", d.ID, "stage", "failed", "error", err)
+			}
+
 			actions = append(actions, StuckAction{
 				BeadID:  d.BeadID,
 				Action:  "failed_permanently",
