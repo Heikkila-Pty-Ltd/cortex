@@ -164,6 +164,12 @@ func Load(path string) (*Config, error) {
 }
 
 func applyDefaults(cfg *Config) {
+	if cfg.General.TickInterval.Duration == 0 {
+		cfg.General.TickInterval.Duration = 60 * time.Second
+	}
+	if cfg.General.StuckTimeout.Duration == 0 {
+		cfg.General.StuckTimeout.Duration = 30 * time.Minute
+	}
 	if cfg.General.MaxPerTick == 0 {
 		cfg.General.MaxPerTick = 3
 	}
@@ -225,6 +231,14 @@ func applyDefaults(cfg *Config) {
 	// Dispatch log retention
 	if cfg.Dispatch.LogRetentionDays == 0 {
 		cfg.Dispatch.LogRetentionDays = 30
+	}
+
+	// Health defaults
+	if cfg.Health.CheckInterval.Duration == 0 {
+		cfg.Health.CheckInterval.Duration = 5 * time.Minute
+	}
+	if cfg.Health.GatewayUnit == "" {
+		cfg.Health.GatewayUnit = "openclaw-gateway.service"
 	}
 
 	// Project branch defaults

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -223,6 +224,24 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&b, "# TYPE cortex_rate_limiter_usage_5h gauge\n")
 	fmt.Fprintf(&b, "cortex_rate_limiter_usage_5h %d\n", usage5h)
 
+	// Running dispatches by stage
+	runningByStage, err := s.store.GetRunningDispatchStageCounts()
+	if err != nil {
+		s.logger.Warn("failed to get dispatch stage counts", "error", err)
+	} else {
+		fmt.Fprintf(&b, "# HELP cortex_dispatches_running_by_stage Current number of running dispatches by stage\n")
+		fmt.Fprintf(&b, "# TYPE cortex_dispatches_running_by_stage gauge\n")
+
+		stages := make([]string, 0, len(runningByStage))
+		for stage := range runningByStage {
+			stages = append(stages, stage)
+		}
+		sort.Strings(stages)
+		for _, stage := range stages {
+			fmt.Fprintf(&b, "cortex_dispatches_running_by_stage{stage=%q} %d\n", stage, runningByStage[stage])
+		}
+	}
+
 	fmt.Fprintf(&b, "# HELP cortex_uptime_seconds Uptime in seconds\n")
 	fmt.Fprintf(&b, "# TYPE cortex_uptime_seconds gauge\n")
 	fmt.Fprintf(&b, "cortex_uptime_seconds %.0f\n", time.Since(s.startTime).Seconds())
@@ -318,6 +337,7 @@ func (s *Server) handleDispatchDetail(w http.ResponseWriter, r *http.Request) {
 		Provider        string  `json:"provider"`
 		Tier            string  `json:"tier"`
 		Status          string  `json:"status"`
+		Stage           string  `json:"stage"`
 		ExitCode        int     `json:"exit_code"`
 		DurationS       float64 `json:"duration_s"`
 		DispatchedAt    string  `json:"dispatched_at"`
@@ -341,6 +361,7 @@ func (s *Server) handleDispatchDetail(w http.ResponseWriter, r *http.Request) {
 			Provider:        d.Provider,
 			Tier:            d.Tier,
 			Status:          d.Status,
+			Stage:           d.Stage,
 			ExitCode:        d.ExitCode,
 			DurationS:       d.DurationS,
 			DispatchedAt:    d.DispatchedAt.Format(time.RFC3339),

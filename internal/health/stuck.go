@@ -11,11 +11,11 @@ import (
 
 // StuckAction describes an action taken on a stuck dispatch.
 type StuckAction struct {
-	BeadID    string
-	Action    string // killed, retried, failed_permanently
-	OldTier   string
-	NewTier   string
-	Retries   int
+	BeadID  string
+	Action  string // killed, retried, failed_permanently
+	OldTier string
+	NewTier string
+	Retries int
 }
 
 // CheckStuckDispatches finds and handles dispatches that have been running too long.
@@ -29,11 +29,18 @@ func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterfac
 	var actions []StuckAction
 	for _, d := range stuck {
 		alive := dispatcher.IsAlive(d.PID)
+		if dispatcher.GetHandleType() == "session" && d.SessionName != "" {
+			sessionStatus, _ := dispatch.SessionStatus(d.SessionName)
+			alive = sessionStatus == "running"
+		}
 
 		if !alive {
 			// Process already dead - mark as failed
 			duration := time.Since(d.DispatchedAt).Seconds()
 			s.UpdateDispatchStatus(d.ID, "failed", -1, duration)
+			if err := s.UpdateDispatchStage(d.ID, "failed"); err != nil {
+				logger.Warn("failed to update stuck dispatch stage", "dispatch_id", d.ID, "stage", "failed", "error", err)
+			}
 			s.RecordHealthEvent("stuck_dead", fmt.Sprintf("bead %s handle %d (%s) already dead", d.BeadID, d.PID, dispatcher.GetHandleType()))
 			logger.Warn("stuck dispatch already dead", "bead", d.BeadID, "handle", d.PID, "handle_type", dispatcher.GetHandleType())
 			actions = append(actions, StuckAction{
@@ -45,12 +52,21 @@ func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterfac
 
 		// Still alive but past timeout - kill it
 		logger.Warn("killing stuck dispatch", "bead", d.BeadID, "handle", d.PID, "handle_type", dispatcher.GetHandleType())
-		if err := dispatcher.Kill(d.PID); err != nil {
-			logger.Error("failed to kill stuck process", "handle", d.PID, "error", err)
+		var killErr error
+		if dispatcher.GetHandleType() == "session" && d.SessionName != "" {
+			killErr = dispatch.KillSession(d.SessionName)
+		} else {
+			killErr = dispatcher.Kill(d.PID)
+		}
+		if killErr != nil {
+			logger.Error("failed to kill stuck process", "handle", d.PID, "error", killErr)
 		}
 
 		duration := time.Since(d.DispatchedAt).Seconds()
 		s.UpdateDispatchStatus(d.ID, "failed", -1, duration)
+		if err := s.UpdateDispatchStage(d.ID, "failed"); err != nil {
+			logger.Warn("failed to update stuck dispatch stage", "dispatch_id", d.ID, "stage", "failed", "error", err)
+		}
 		s.RecordHealthEvent("stuck_killed", fmt.Sprintf("bead %s handle %d (%s) killed after %ds", d.BeadID, d.PID, dispatcher.GetHandleType(), int(duration)))
 
 		// Check retries

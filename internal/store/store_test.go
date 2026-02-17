@@ -233,7 +233,7 @@ func TestCaptureAndGetOutput(t *testing.T) {
 	}
 
 	testOutput := "line 1\nline 2\nline 3\nresult: success"
-	
+
 	// Capture output
 	err = s.CaptureOutput(dispatchID, testOutput)
 	if err != nil {
@@ -272,7 +272,7 @@ func TestCaptureOutputSizeLimit(t *testing.T) {
 	const maxOutputBytes = 500 * 1024
 	// Create large string efficiently
 	largeOutput := strings.Repeat("A", maxOutputBytes+1000)
-	
+
 	// Add some newlines to test truncation logic
 	largeOutput = "initial\nlines\n" + largeOutput + "\nfinal\nline"
 
@@ -287,7 +287,7 @@ func TestCaptureOutputSizeLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	if len(output) > maxOutputBytes {
 		t.Errorf("output not properly truncated: got %d bytes, max %d", len(output), maxOutputBytes)
 	}
@@ -308,7 +308,7 @@ func TestCaptureOutputTail(t *testing.T) {
 		lines[i] = fmt.Sprintf("line %d", i+1)
 	}
 	testOutput := strings.Join(lines, "\n")
-	
+
 	// Capture output
 	err = s.CaptureOutput(dispatchID, testOutput)
 	if err != nil {
@@ -320,7 +320,7 @@ func TestCaptureOutputTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	expectedTail := strings.Join(lines[50:], "\n")
 	if tail != expectedTail {
 		t.Errorf("tail mismatch:\nexpected last 100 lines\ngot: %s", tail[:100]+"...")
@@ -462,10 +462,10 @@ func TestGetTotalCost(t *testing.T) {
 
 	// Create multiple dispatches with costs
 	dispatches := []struct {
-		project     string
-		inputTokens int
+		project      string
+		inputTokens  int
 		outputTokens int
-		costUSD     float64
+		costUSD      float64
 	}{
 		{"proj-a", 1000, 2000, 0.05},
 		{"proj-a", 1500, 2500, 0.075},
@@ -575,7 +575,7 @@ func TestInterruptRunningDispatches(t *testing.T) {
 	var d Dispatch
 	err = s.db.QueryRow(`SELECT `+dispatchCols+` FROM dispatches WHERE id = ?`, id2).Scan(
 		&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName,
-		&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.ExitCode, &d.DurationS, &d.Retries, &d.EscalatedFromTier,
+		&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.Stage, &d.ExitCode, &d.DurationS, &d.Retries, &d.EscalatedFromTier,
 		&d.FailureCategory, &d.FailureSummary, &d.LogPath, &d.Branch, &d.Backend,
 	)
 	if err != nil {
@@ -636,9 +636,9 @@ func TestNewColumnsStorage(t *testing.T) {
 		12345,
 		"test-session",
 		"test prompt",
-		"/path/to/log.txt",     // logPath
-		"feature-branch",        // branch
-		"tmux",                  // backend
+		"/path/to/log.txt", // logPath
+		"feature-branch",   // branch
+		"tmux",             // backend
 	)
 	if err != nil {
 		t.Fatalf("RecordDispatch failed: %v", err)

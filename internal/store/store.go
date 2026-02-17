@@ -28,6 +28,7 @@ type Dispatch struct {
 	DispatchedAt      time.Time
 	CompletedAt       sql.NullTime
 	Status            string // running, completed, failed
+	Stage             string // dispatched, running, completed, failed, cancelled, gone
 	ExitCode          int
 	DurationS         float64
 	Retries           int
@@ -80,6 +81,7 @@ CREATE TABLE IF NOT EXISTS dispatches (
 	tier TEXT NOT NULL,
 	pid INTEGER NOT NULL DEFAULT 0,
 	session_name TEXT NOT NULL DEFAULT '',
+	stage TEXT NOT NULL DEFAULT 'dispatched',
 	prompt TEXT NOT NULL,
 	dispatched_at DATETIME NOT NULL DEFAULT (datetime('now')),
 	completed_at DATETIME,
@@ -252,6 +254,17 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// Add stage column if it doesn't exist
+	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('dispatches') WHERE name = 'stage'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check stage column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE dispatches ADD COLUMN stage TEXT NOT NULL DEFAULT 'dispatched'`); err != nil {
+			return fmt.Errorf("add stage column: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -268,7 +281,7 @@ func (s *Store) DB() *sql.DB {
 // RecordDispatch inserts a new dispatch record and returns its ID.
 func (s *Store) RecordDispatch(beadID, project, agent, provider, tier string, handle int, sessionName, prompt, logPath, branch, backend string) (int64, error) {
 	res, err := s.db.Exec(
-		`INSERT INTO dispatches (bead_id, project, agent_id, provider, tier, pid, session_name, prompt, log_path, branch, backend) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO dispatches (bead_id, project, agent_id, provider, tier, pid, session_name, stage, prompt, log_path, branch, backend) VALUES (?, ?, ?, ?, ?, ?, ?, 'dispatched', ?, ?, ?, ?)`,
 		beadID, project, agent, provider, tier, handle, sessionName, prompt, logPath, branch, backend,
 	)
 	if err != nil {
@@ -289,7 +302,20 @@ func (s *Store) UpdateDispatchStatus(id int64, status string, exitCode int, dura
 	return nil
 }
 
-const dispatchCols = `id, bead_id, project, agent_id, provider, tier, pid, session_name, prompt, dispatched_at, completed_at, status, exit_code, duration_s, retries, escalated_from_tier, failure_category, failure_summary, log_path, branch, backend`
+// UpdateDispatchStage updates a dispatch's stage.
+func (s *Store) UpdateDispatchStage(id int64, stage string) error {
+	_, err := s.db.Exec(
+		`UPDATE dispatches SET stage = ? WHERE id = ?`,
+		stage,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update dispatch stage: %w", err)
+	}
+	return nil
+}
+
+const dispatchCols = `id, bead_id, project, agent_id, provider, tier, pid, session_name, prompt, dispatched_at, completed_at, status, stage, exit_code, duration_s, retries, escalated_from_tier, failure_category, failure_summary, log_path, branch, backend`
 
 // GetRunningDispatches returns all dispatches with status 'running'.
 func (s *Store) GetRunningDispatches() ([]Dispatch, error) {
@@ -321,7 +347,30 @@ func (s *Store) GetDispatchByID(id int64) (*Dispatch, error) {
 
 // GetPendingRetryDispatches returns all dispatches with status "pending_retry", ordered by dispatched_at ASC.
 func (s *Store) GetPendingRetryDispatches() ([]Dispatch, error) {
-	return s.queryDispatches(`SELECT `+dispatchCols+` FROM dispatches WHERE status = 'pending_retry' ORDER BY dispatched_at ASC`)
+	return s.queryDispatches(`SELECT ` + dispatchCols + ` FROM dispatches WHERE status = 'pending_retry' ORDER BY dispatched_at ASC`)
+}
+
+// GetRunningDispatchStageCounts returns counts of running dispatches grouped by stage.
+func (s *Store) GetRunningDispatchStageCounts() (map[string]int, error) {
+	rows, err := s.db.Query(`SELECT stage, COUNT(*) FROM dispatches WHERE status='running' GROUP BY stage`)
+	if err != nil {
+		return nil, fmt.Errorf("store: query running dispatch stage counts: %w", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var stage string
+		var count int
+		if err := rows.Scan(&stage, &count); err != nil {
+			return nil, fmt.Errorf("store: scan running dispatch stage count: %w", err)
+		}
+		if stage == "" {
+			stage = "unknown"
+		}
+		counts[stage] = count
+	}
+	return counts, rows.Err()
 }
 
 func (s *Store) queryDispatches(query string, args ...any) ([]Dispatch, error) {
@@ -334,7 +383,11 @@ func (s *Store) queryDispatches(query string, args ...any) ([]Dispatch, error) {
 	var dispatches []Dispatch
 	for rows.Next() {
 		var d Dispatch
-		if err := rows.Scan(&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName, &d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.ExitCode, &d.DurationS, &d.Retries, &d.EscalatedFromTier, &d.FailureCategory, &d.FailureSummary, &d.LogPath, &d.Branch, &d.Backend); err != nil {
+		if err := rows.Scan(
+			&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName,
+			&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.Stage, &d.ExitCode, &d.DurationS,
+			&d.Retries, &d.EscalatedFromTier, &d.FailureCategory, &d.FailureSummary, &d.LogPath, &d.Branch, &d.Backend,
+		); err != nil {
 			return nil, fmt.Errorf("store: scan dispatch: %w", err)
 		}
 		dispatches = append(dispatches, d)
@@ -461,7 +514,7 @@ func (s *Store) CaptureOutput(dispatchID int64, output string) error {
 	const maxOutputBytes = 500 * 1024 // 500KB
 
 	outputBytes := int64(len(output))
-	
+
 	// Truncate output if too large
 	if outputBytes > maxOutputBytes {
 		// Find a reasonable truncation point (avoid breaking mid-line)

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/antigravity-dev/cortex/internal/config"
+	"github.com/antigravity-dev/cortex/internal/dispatch"
 	"github.com/antigravity-dev/cortex/internal/store"
 )
 
@@ -21,14 +22,22 @@ type HealthStatus struct {
 
 // Monitor runs periodic health checks.
 type Monitor struct {
-	cfg    config.Health
-	store  *store.Store
-	logger *slog.Logger
+	cfg        config.Health
+	general    config.General
+	store      *store.Store
+	dispatcher dispatch.DispatcherInterface
+	logger     *slog.Logger
 }
 
 // NewMonitor creates a new health monitor.
-func NewMonitor(cfg config.Health, s *store.Store, logger *slog.Logger) *Monitor {
-	return &Monitor{cfg: cfg, store: s, logger: logger}
+func NewMonitor(cfg config.Health, general config.General, s *store.Store, dispatcher dispatch.DispatcherInterface, logger *slog.Logger) *Monitor {
+	return &Monitor{
+		cfg:        cfg,
+		general:    general,
+		store:      s,
+		dispatcher: dispatcher,
+		logger:     logger,
+	}
 }
 
 // Start runs health checks on the configured interval until context is cancelled.
@@ -42,7 +51,29 @@ func (m *Monitor) Start(ctx context.Context) {
 			return
 		case <-ticker.C:
 			m.CheckGateway(ctx)
+			m.checkDispatchHealth()
 		}
+	}
+}
+
+// checkDispatchHealth runs periodic dispatch lifecycle checks.
+func (m *Monitor) checkDispatchHealth() {
+	if m.general.StuckTimeout.Duration > 0 {
+		actions := CheckStuckDispatches(
+			m.store,
+			m.dispatcher,
+			m.general.StuckTimeout.Duration,
+			m.general.MaxRetries,
+			m.logger.With("scope", "stuck"),
+		)
+		if len(actions) > 0 {
+			m.logger.Info("stuck dispatch check complete", "actions", len(actions))
+		}
+	}
+
+	killed := CleanZombies(m.store, m.dispatcher, m.logger.With("scope", "zombie"))
+	if killed > 0 {
+		m.logger.Info("zombie cleanup complete", "killed", killed)
 	}
 }
 

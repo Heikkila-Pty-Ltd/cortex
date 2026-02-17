@@ -42,7 +42,7 @@ func setupTestServer(t *testing.T) *Server {
 	d := dispatch.NewDispatcher()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	sched := scheduler.New(cfg, st, rl, d, logger, false)
-	return NewServer(cfg, st, rl, sched, logger)
+	return NewServer(cfg, st, rl, sched, d, logger)
 }
 
 func TestHandleStatus(t *testing.T) {
