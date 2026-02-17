@@ -98,3 +98,5 @@
 [2026-02-18T06:35:43+10:00] checkpoint running=2 completed_15m=5 failed_15m=3 usage_5h=138/150 usage_weekly=229/2000
 [2026-02-18T06:50:43+10:00] NUDGE: Repeated failure signature 2x/15m: <none>
 [2026-02-18T06:50:44+10:00] checkpoint running=1 completed_15m=2 failed_15m=4 usage_5h=123/150 usage_weekly=234/2000
+[2026-02-18T07:05:44+10:00] NUDGE: Repeated failure signature 2x/15m: <none>
+[2026-02-18T07:05:44+10:00] checkpoint running=3 completed_15m=3 failed_15m=4 usage_5h=111/150 usage_weekly=243/2000

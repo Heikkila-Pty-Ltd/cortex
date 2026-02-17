@@ -1,11 +1,11 @@
-timestamp: 2026-02-18T06:50:44+10:00
-running_count: 1
-completed_15m: 2
+timestamp: 2026-02-18T07:05:44+10:00
+running_count: 3
+completed_15m: 3
 failed_15m: 4
 cancelled_15m: 0
-usage_5h: 123/150
-usage_weekly: 234/2000
+usage_5h: 111/150
+usage_weekly: 243/2000
 top_failures_15m:
 <none> x2
 gateway connect failed: Error: gateway closed (1000): x1
-FAIL    github.com/antigravity-dev/cortex/internal/store [build failed] x1
+exec sh /tmp/cortex-openclaw-1542929114.sh /tmp/cortex-prompt-1797489597.txt /tm x1

@@ -9,13 +9,13 @@ import (
 
 // SprintReviewData holds metrics comparing planned vs delivered beads for a sprint period.
 type SprintReviewData struct {
-	StartDate      time.Time               `json:"start_date"`
-	EndDate        time.Time               `json:"end_date"`
-	TotalBeads     int                     `json:"total_beads"`
-	CompletedBeads int                     `json:"completed_beads"`
-	PlannedBeads   int                     `json:"planned_beads"`
-	CompletionRate float64                 `json:"completion_rate"`
-	ProjectStats   map[string]ProjectStat  `json:"project_stats"`
+	StartDate      time.Time              `json:"start_date"`
+	EndDate        time.Time              `json:"end_date"`
+	TotalBeads     int                    `json:"total_beads"`
+	CompletedBeads int                    `json:"completed_beads"`
+	PlannedBeads   int                    `json:"planned_beads"`
+	CompletionRate float64                `json:"completion_rate"`
+	ProjectStats   map[string]ProjectStat `json:"project_stats"`
 }
 
 // ProjectStat holds completion metrics for a specific project.
@@ -29,54 +29,54 @@ type ProjectStat struct {
 
 // FailedDispatchDetail contains comprehensive information about a failed dispatch.
 type FailedDispatchDetail struct {
-	ID               int64     `json:"id"`
-	BeadID           string    `json:"bead_id"`
-	Project          string    `json:"project"`
-	AgentID          string    `json:"agent_id"`
-	Provider         string    `json:"provider"`
-	Tier             string    `json:"tier"`
-	DispatchedAt     time.Time `json:"dispatched_at"`
-	FailedAt         time.Time `json:"failed_at"`
-	Duration         float64   `json:"duration"`
-	ExitCode         int       `json:"exit_code"`
-	Retries          int       `json:"retries"`
-	EscalatedFrom    string    `json:"escalated_from"`
-	FailureCategory  string    `json:"failure_category"`
-	FailureSummary   string    `json:"failure_summary"`
-	LogPath          string    `json:"log_path"`
-	Branch           string    `json:"branch"`
-	BeadContext      *BeadStage `json:"bead_context,omitempty"`
+	ID              int64      `json:"id"`
+	BeadID          string     `json:"bead_id"`
+	Project         string     `json:"project"`
+	AgentID         string     `json:"agent_id"`
+	Provider        string     `json:"provider"`
+	Tier            string     `json:"tier"`
+	DispatchedAt    time.Time  `json:"dispatched_at"`
+	FailedAt        time.Time  `json:"failed_at"`
+	Duration        float64    `json:"duration"`
+	ExitCode        int        `json:"exit_code"`
+	Retries         int        `json:"retries"`
+	EscalatedFrom   string     `json:"escalated_from"`
+	FailureCategory string     `json:"failure_category"`
+	FailureSummary  string     `json:"failure_summary"`
+	LogPath         string     `json:"log_path"`
+	Branch          string     `json:"branch"`
+	BeadContext     *BeadStage `json:"bead_context,omitempty"`
 }
 
 // StuckDispatchDetail contains information about dispatches that are stuck.
 type StuckDispatchDetail struct {
-	ID               int64     `json:"id"`
-	BeadID           string    `json:"bead_id"`
-	Project          string    `json:"project"`
-	AgentID          string    `json:"agent_id"`
-	Provider         string    `json:"provider"`
-	Tier             string    `json:"tier"`
-	DispatchedAt     time.Time `json:"dispatched_at"`
-	StuckDuration    float64   `json:"stuck_duration_hours"`
-	PID              int       `json:"pid"`
-	SessionName      string    `json:"session_name"`
-	Stage            string    `json:"stage"`
-	BeadContext      *BeadStage `json:"bead_context,omitempty"`
+	ID            int64      `json:"id"`
+	BeadID        string     `json:"bead_id"`
+	Project       string     `json:"project"`
+	AgentID       string     `json:"agent_id"`
+	Provider      string     `json:"provider"`
+	Tier          string     `json:"tier"`
+	DispatchedAt  time.Time  `json:"dispatched_at"`
+	StuckDuration float64    `json:"stuck_duration_hours"`
+	PID           int        `json:"pid"`
+	SessionName   string     `json:"session_name"`
+	Stage         string     `json:"stage"`
+	BeadContext   *BeadStage `json:"bead_context,omitempty"`
 }
 
 // AgentPerformanceStats contains performance metrics for agents.
 type AgentPerformanceStats struct {
-	AgentID         string            `json:"agent_id"`
-	TotalDispatches int               `json:"total_dispatches"`
-	Completed       int               `json:"completed"`
-	Failed          int               `json:"failed"`
-	CompletionRate  float64           `json:"completion_rate"`
-	FailureRate     float64           `json:"failure_rate"`
-	AvgDuration     float64           `json:"avg_duration"`
-	TierStats       map[string]TierStat `json:"tier_stats"`
+	AgentID         string                         `json:"agent_id"`
+	TotalDispatches int                            `json:"total_dispatches"`
+	Completed       int                            `json:"completed"`
+	Failed          int                            `json:"failed"`
+	CompletionRate  float64                        `json:"completion_rate"`
+	FailureRate     float64                        `json:"failure_rate"`
+	AvgDuration     float64                        `json:"avg_duration"`
+	TierStats       map[string]TierStat            `json:"tier_stats"`
 	ProviderStats   map[string]ProviderPerformance `json:"provider_stats"`
-	TokenUsage      TokenUsageStats   `json:"token_usage"`
-	CostStats       CostStats         `json:"cost_stats"`
+	TokenUsage      TokenUsageStats                `json:"token_usage"`
+	CostStats       CostStats                      `json:"cost_stats"`
 }
 
 // TierStat holds performance metrics for a specific tier.
@@ -212,9 +212,9 @@ func (s *Store) GetFailedDispatchDetails(startDate, endDate time.Time) ([]Failed
 		var stageIndex, totalStages sql.NullInt64
 
 		err := rows.Scan(
-			&detail.ID, &detail.BeadID, &detail.Project, &detail.AgentID, 
+			&detail.ID, &detail.BeadID, &detail.Project, &detail.AgentID,
 			&detail.Provider, &detail.Tier, &detail.DispatchedAt, &completedAt,
-			&detail.Duration, &detail.ExitCode, &detail.Retries, 
+			&detail.Duration, &detail.ExitCode, &detail.Retries,
 			&detail.EscalatedFrom, &detail.FailureCategory, &detail.FailureSummary,
 			&detail.LogPath, &detail.Branch,
 			&workflow, &currentStage, &stageIndex, &totalStages, &stageHistory,
@@ -378,7 +378,7 @@ func (s *Store) GetAgentPerformanceStats(startDate, endDate time.Time) (map[stri
 	// Get per-tier stats for each agent
 	for agentID := range stats {
 		agentStats := stats[agentID]
-		
+
 		// Tier stats
 		tierRows, err := s.db.Query(`
 			SELECT 
