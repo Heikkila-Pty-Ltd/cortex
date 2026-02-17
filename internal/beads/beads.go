@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -83,6 +84,37 @@ func runBD(ctx context.Context, projectDir string, args ...string) ([]byte, erro
 		return nil, fmt.Errorf("bd %v failed: %w\nstderr: %s", args, err, stderr.String())
 	}
 	return stdout.Bytes(), nil
+}
+
+// CreateIssue creates a new bead issue and returns its issue ID.
+func CreateIssue(beadsDir, title, issueType string, priority int, description string, deps []string) (string, error) {
+	return CreateIssueCtx(context.Background(), beadsDir, title, issueType, priority, description, deps)
+}
+
+// CreateIssueCtx is the context-aware version of CreateIssue.
+func CreateIssueCtx(ctx context.Context, beadsDir, title, issueType string, priority int, description string, deps []string) (string, error) {
+	root := projectRoot(beadsDir)
+	args := []string{
+		"create",
+		"--type", issueType,
+		"--priority", strconv.Itoa(priority),
+		"--title", title,
+		"--description", description,
+		"--silent",
+	}
+	if len(deps) > 0 {
+		args = append(args, "--deps", strings.Join(deps, ","))
+	}
+
+	out, err := runBD(ctx, root, args...)
+	if err != nil {
+		return "", fmt.Errorf("creating bead issue %q: %w", title, err)
+	}
+	issueID := strings.TrimSpace(string(out))
+	if issueID == "" {
+		return "", fmt.Errorf("creating bead issue %q returned empty id", title)
+	}
+	return issueID, nil
 }
 
 // ListBeads runs bd list --json --quiet in the project root and returns parsed beads.

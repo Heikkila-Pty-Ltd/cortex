@@ -21,8 +21,8 @@ workspace = "~/projects/hg-website"
 priority = 1
 
 [rate_limits]
-window_5h_cap = 50
-weekly_cap = 500
+window_5h_cap = 150
+weekly_cap = 2000
 weekly_headroom_pct = 70
 
 [providers.claude-max20]

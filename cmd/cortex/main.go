@@ -112,7 +112,13 @@ func main() {
 	go lw.Start(ctx)
 
 	// Start API server with scheduler reference
-	apiSrv := api.NewServer(cfg, st, rl, sched, d, logger.With("component", "api"))
+	apiSrv, err := api.NewServer(cfg, st, rl, sched, d, logger.With("component", "api"))
+	if err != nil {
+		logger.Error("failed to create api server", "error", err)
+		os.Exit(1)
+	}
+	defer apiSrv.Close()
+
 	go func() {
 		if err := apiSrv.Start(ctx); err != nil {
 			logger.Error("api server error", "error", err)

@@ -138,3 +138,105 @@ func TestHasActiveChurnEscalation(t *testing.T) {
 		})
 	}
 }
+
+func TestShouldAutoCloseEpicBreakdownTask(t *testing.T) {
+	tests := []struct {
+		name   string
+		issue  beads.Bead
+		byID   map[string]beads.Bead
+		wantID string
+		want   bool
+	}{
+		{
+			name: "open auto-breakdown task with closed discovered epic is auto-closed",
+			issue: beads.Bead{
+				ID:     "cortex-34e",
+				Type:   "task",
+				Status: "open",
+				Title:  "Auto: break down epic cortex-a6p into executable bug/task beads",
+				Dependencies: []beads.BeadDependency{
+					{IssueID: "cortex-34e", DependsOnID: "cortex-a6p", Type: "discovered-from"},
+				},
+			},
+			byID: map[string]beads.Bead{
+				"cortex-a6p": {ID: "cortex-a6p", Type: "epic", Status: "closed"},
+			},
+			wantID: "cortex-a6p",
+			want:   true,
+		},
+		{
+			name: "open task is not auto-closed when discovered epic is still open",
+			issue: beads.Bead{
+				ID:     "cortex-34e",
+				Type:   "task",
+				Status: "open",
+				Title:  "Auto: break down epic cortex-a6p into executable bug/task beads",
+				Dependencies: []beads.BeadDependency{
+					{IssueID: "cortex-34e", DependsOnID: "cortex-a6p", Type: "discovered-from"},
+				},
+			},
+			byID: map[string]beads.Bead{
+				"cortex-a6p": {ID: "cortex-a6p", Type: "epic", Status: "open"},
+			},
+			want: false,
+		},
+		{
+			name: "task is not auto-closed without discovered-from dependency",
+			issue: beads.Bead{
+				ID:     "cortex-34e",
+				Type:   "task",
+				Status: "open",
+				Title:  "Auto: break down epic cortex-a6p into executable bug/task beads",
+			},
+			byID: map[string]beads.Bead{
+				"cortex-a6p": {ID: "cortex-a6p", Type: "epic", Status: "closed"},
+			},
+			want: false,
+		},
+		{
+			name: "task is not auto-closed when discovered-from id mismatches title epic id",
+			issue: beads.Bead{
+				ID:     "cortex-34e",
+				Type:   "task",
+				Status: "open",
+				Title:  "Auto: break down epic cortex-a6p into executable bug/task beads",
+				Dependencies: []beads.BeadDependency{
+					{IssueID: "cortex-34e", DependsOnID: "cortex-other", Type: "discovered-from"},
+				},
+			},
+			byID: map[string]beads.Bead{
+				"cortex-a6p":   {ID: "cortex-a6p", Type: "epic", Status: "closed"},
+				"cortex-other": {ID: "cortex-other", Type: "epic", Status: "closed"},
+			},
+			want: false,
+		},
+		{
+			name: "non-matching title is not auto-closed",
+			issue: beads.Bead{
+				ID:     "cortex-34e",
+				Type:   "task",
+				Status: "open",
+				Title:  "Auto: churn guard blocked bead cortex-34e (6 dispatches/1h0m0s)",
+				Dependencies: []beads.BeadDependency{
+					{IssueID: "cortex-34e", DependsOnID: "cortex-a6p", Type: "discovered-from"},
+				},
+			},
+			byID: map[string]beads.Bead{
+				"cortex-a6p": {ID: "cortex-a6p", Type: "epic", Status: "closed"},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotID, got := shouldAutoCloseEpicBreakdownTask(tt.issue, tt.byID)
+			if got != tt.want {
+				t.Fatalf("shouldAutoCloseEpicBreakdownTask() = %v, want %v", got, tt.want)
+			}
+			if gotID != tt.wantID {
+				t.Fatalf("shouldAutoCloseEpicBreakdownTask() id = %q, want %q", gotID, tt.wantID)
+			}
+		})
+	}
+}

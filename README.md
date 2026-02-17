@@ -2,6 +2,13 @@
 
 Autonomous agent orchestrator that reads work items (beads) from project directories, builds dependency graphs, dispatches AI agents via openclaw with rate limiting, and tracks everything in SQLite.
 
+See:
+
+- `docs/CORTEX_OVERVIEW.md` for what Cortex does, how it works, and how it differs from OpenClaw and Gas Town.
+- `docs/CORTEX_QUICK_BRIEF.md` for a 1-page operator brief.
+- `docs/CORTEX_LLM_INTERACTION_GUIDE.md` for LLM-safe operation and interaction playbooks.
+- `docs/LAUNCH_READINESS_CHECKLIST.md` for go/no-go launch criteria.
+
 ## Architecture
 
 ```

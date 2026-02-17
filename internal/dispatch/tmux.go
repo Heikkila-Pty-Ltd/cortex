@@ -48,7 +48,8 @@ const (
 // TmuxDispatcher launches and manages agent processes inside tmux sessions.
 type TmuxDispatcher struct {
 	historyLimit int
-	sessions     map[int]string // maps numeric handles to session names
+	sessions     map[int]string    // maps numeric handles to session names
+	metadata     map[string]string // maps session names to agent names for robust cleanup
 	mu           sync.RWMutex
 }
 
@@ -57,6 +58,7 @@ func NewTmuxDispatcher() *TmuxDispatcher {
 	return &TmuxDispatcher{
 		historyLimit: defaultHistoryLimit,
 		sessions:     make(map[int]string),
+		metadata:     make(map[string]string),
 	}
 }
 
@@ -344,14 +346,26 @@ func (d *TmuxDispatcher) DispatchToSession(
 	}
 
 	// Set remain-on-exit before the command runs — no race possible.
-	exec.Command("tmux", "set", "-t", sessionName, "remain-on-exit", "on").Run()
+	if err := exec.Command("tmux", "set", "-t", sessionName, "remain-on-exit", "on").Run(); err != nil {
+		// Cleanup: kill the session we just created
+		KillSession(sessionName)
+		return fmt.Errorf("tmux dispatch: failed to set remain-on-exit for session %q: %w", sessionName, err)
+	}
 
 	// Set history limit for output capture
-	exec.Command("tmux", "set-option", "-t", sessionName, "history-limit", strconv.Itoa(d.historyLimit)).Run()
+	if err := exec.Command("tmux", "set-option", "-t", sessionName, "history-limit", strconv.Itoa(d.historyLimit)).Run(); err != nil {
+		// Cleanup: kill the session we created
+		KillSession(sessionName)
+		return fmt.Errorf("tmux dispatch: failed to set history-limit for session %q: %w", sessionName, err)
+	}
 
 	// Now send the actual command. The session has a shell waiting for input,
 	// so we send the command text followed by Enter.
-	exec.Command("tmux", "send-keys", "-t", sessionName, shellCmd, "Enter").Run()
+	if err := exec.Command("tmux", "send-keys", "-t", sessionName, shellCmd, "Enter").Run(); err != nil {
+		// Cleanup: kill the session we created
+		KillSession(sessionName)
+		return fmt.Errorf("tmux dispatch: failed to send command to session %q: %w", sessionName, err)
+	}
 
 	return nil
 }
@@ -423,12 +437,12 @@ func (d *TmuxDispatcher) GetProcessState(handle int) ProcessState {
 			OutputPath: "",
 		}
 	}
-	
+
 	status, exitCode := SessionStatus(sessionName)
-	
+
 	var state string
 	var outputPath string
-	
+
 	switch status {
 	case "running":
 		state = "running"
@@ -445,7 +459,7 @@ func (d *TmuxDispatcher) GetProcessState(handle int) ProcessState {
 		state = "unknown"
 		exitCode = -1
 	}
-	
+
 	return ProcessState{
 		State:      state,
 		ExitCode:   exitCode,
@@ -547,13 +561,16 @@ func SessionStatus(sessionName string) (status string, exitCode int) {
 	}
 
 	fields := strings.Fields(strings.TrimSpace(string(out)))
-	if len(fields) < 2 {
+	if len(fields) == 0 {
 		return "running", 0
 	}
 
 	paneDead := fields[0]
 	if paneDead == "1" {
-		code, _ := strconv.Atoi(fields[1])
+		code := -1
+		if len(fields) >= 2 {
+			code, _ = strconv.Atoi(fields[1])
+		}
 		return "exited", code
 	}
 	return "running", 0

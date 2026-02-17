@@ -103,6 +103,20 @@ Please wait before retrying`
 	}
 }
 
+func TestDiagnoseFailure_ContextLimitRejected(t *testing.T) {
+	output := `OpenClaw run
+LLM request rejected: input length and max_tokens exceed context limit
+Pane is dead (status 0)`
+
+	diag := DiagnoseFailure(output)
+	if diag == nil {
+		t.Fatal("expected diagnosis, got nil")
+	}
+	if diag.Category != "context_limit_rejected" {
+		t.Errorf("expected category context_limit_rejected, got %s", diag.Category)
+	}
+}
+
 func TestDiagnoseFailure_Timeout(t *testing.T) {
 	output := `Executing long-running task...
 Error: context deadline exceeded

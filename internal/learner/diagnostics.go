@@ -26,6 +26,10 @@ func DiagnoseFailure(output string) *FailureDiagnosis {
 		matchers []string
 	}{
 		{
+			category: "context_limit_rejected",
+			matchers: []string{"LLM request rejected", "exceed context limit", "exceeds context limit"},
+		},
+		{
 			category: "test_failure",
 			matchers: []string{"FAIL", "FAILED", "--- FAIL"},
 		},

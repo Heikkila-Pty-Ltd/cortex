@@ -1,0 +1,34 @@
+[2026-02-18T01:34:13+10:00] Reconciled 2 dead-running dispatch(es)
+[2026-02-18T01:34:13+10:00] Filed bead cortex-umg: Auto: multiple dead-running dispatches reconciled (2)
+[2026-02-18T01:34:13+10:00] Filed bead cortex-lh8: Auto: repeated failure (2x/15m): synthetic-nightwatch-force-test
+[2026-02-18T01:34:13+10:00] Repeated failure signature 2x/15m: synthetic-nightwatch-force-test
+[2026-02-18T01:34:19+10:00] Repeated failure signature 2x/15m: synthetic-nightwatch-force-test
+[2026-02-18T01:34:24+10:00] Repeated failure signature 2x/15m: synthetic-nightwatch-force-test
+[2026-02-18T01:34:30+10:00] Repeated failure signature 2x/15m: synthetic-nightwatch-force-test
+[2026-02-18T01:34:35+10:00] Repeated failure signature 2x/15m: synthetic-nightwatch-force-test
+[2026-02-18T01:34:41+10:00] Repeated failure signature 2x/15m: synthetic-nightwatch-force-test
+[2026-02-18T01:43:57+10:00] codex-incident-worker started (poll 60s)
+[2026-02-18T01:43:58+10:00] codex-worker closed cortex-umg (dead-running dispatches resolved)
+[2026-02-18T01:44:28+10:00] codex-incident-worker started (poll 60s)
+[2026-02-18T01:49:56+10:00] codex-incident-worker started (poll 300s)
+[2026-02-18T01:49:56+10:00] Reconciled 1 dead-running dispatch(es)
+[2026-02-18T02:04:57+10:00] Reconciled 2 dead-running dispatch(es)
+[2026-02-18T02:04:57+10:00] Filed bead cortex-k12: Auto: multiple dead-running dispatches reconciled (2)
+[2026-02-18T02:04:58+10:00] codex-worker closed cortex-k12 (dead-running dispatches resolved)
+[2026-02-18T02:13:15+10:00] codex-worker escalation completed for cortex-5mz
+[2026-02-18T02:19:58+10:00] Reconciled 1 dead-running dispatch(es)
+[2026-02-18T02:30:28+10:00] codex-worker escalation completed for cortex-u37
+[2026-02-18T02:34:59+10:00] Detected repeated '-m/--message' failures (3/15m); restarting Cortex
+[2026-02-18T02:34:59+10:00] Filed bead cortex-otx: Auto: repeated '-m/--message' runtime failures
+[2026-02-18T02:35:05+10:00] Filed bead cortex-mlq: Auto: repeated failure (3x/15m): error: required option '-m, --message <text>' not specified
+[2026-02-18T02:35:05+10:00] Repeated failure signature 3x/15m: error: required option '-m, --message <text>' not specified
+[2026-02-18T02:48:14+10:00] codex-worker escalation completed for cortex-ztu
+[2026-02-18T02:48:15+10:00] codex-worker closed cortex-mlq (failure signature cleared)
+[2026-02-18T03:05:06+10:00] Detected repeated '-m/--message' failures (5/15m); restarting Cortex
+[2026-02-18T03:05:11+10:00] Repeated failure signature 5x/15m: error: required option '-m, --message <text>' not specified
+[2026-02-18T03:20:11+10:00] Detected repeated '-m/--message' failures (2/15m); restarting Cortex
+[2026-02-18T03:20:16+10:00] Repeated failure signature 2x/15m: error: required option '-m, --message <text>' not specified
+[2026-02-18T04:10:27+10:00] codex-worker escalation completed for cortex-dxj
+[2026-02-18T04:20:18+10:00] Detected repeated '-m/--message' failures (6/15m); restarting Cortex
+[2026-02-18T04:20:23+10:00] Repeated failure signature 6x/15m: error: required option '-m, --message <text>' not specified
+[2026-02-18T04:22:53+10:00] codex-worker escalation completed for cortex-cm5

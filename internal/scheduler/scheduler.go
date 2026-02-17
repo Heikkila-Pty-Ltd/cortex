@@ -45,7 +45,9 @@ const (
 	churnWindow            = 60 * time.Minute
 	churnBlockInterval     = 20 * time.Minute
 
-	epicBreakdownInterval = 6 * time.Hour
+	epicBreakdownInterval   = 6 * time.Hour
+	epicBreakdownTitleStart = "Auto: break down epic "
+	epicBreakdownTitleEnd   = " into executable bug/task beads"
 
 	nightModeStartHour = 22
 	nightModeEndHour   = 7
@@ -211,6 +213,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			continue
 		}
 		s.ensureEpicBreakdowns(ctx, beadsDir, beadList, np.name)
+		s.reconcileCompletedEpicBreakdowns(ctx, beadsDir, beadList, np.name)
 
 		graph := beads.BuildDepGraph(beadList)
 		ready := beads.FilterUnblockedOpen(beadList, graph)
@@ -874,6 +877,100 @@ func (s *Scheduler) ensureEpicBreakdowns(ctx context.Context, beadsDir string, b
 			fmt.Sprintf("project %s epic %s queued for breakdown via %s", projectName, b.ID, issueID),
 			0, b.ID)
 	}
+}
+
+func (s *Scheduler) reconcileCompletedEpicBreakdowns(ctx context.Context, beadsDir string, beadList []beads.Bead, projectName string) {
+	byID := make(map[string]beads.Bead, len(beadList))
+	for _, issue := range beadList {
+		byID[issue.ID] = issue
+	}
+
+	for i := range beadList {
+		epicID, ok := shouldAutoCloseEpicBreakdownTask(beadList[i], byID)
+		if !ok {
+			continue
+		}
+
+		issueID := beadList[i].ID
+		// Suppress redispatch this tick even if close command fails.
+		beadList[i].Status = "closed"
+		byID[issueID] = beadList[i]
+
+		if err := beads.CloseBeadCtx(ctx, beadsDir, issueID); err != nil {
+			s.logger.Warn("failed to auto-close stale epic breakdown task",
+				"project", projectName,
+				"bead", issueID,
+				"epic", epicID,
+				"error", err)
+			continue
+		}
+
+		s.logger.Warn("auto-closed stale epic breakdown task",
+			"project", projectName,
+			"bead", issueID,
+			"epic", epicID)
+		_ = s.store.RecordHealthEventWithDispatch("epic_breakdown_auto_closed",
+			fmt.Sprintf("project %s bead %s auto-closed because epic %s is already closed", projectName, issueID, epicID),
+			0, issueID)
+	}
+}
+
+func shouldAutoCloseEpicBreakdownTask(issue beads.Bead, byID map[string]beads.Bead) (string, bool) {
+	if !strings.EqualFold(strings.TrimSpace(issue.Status), "open") {
+		return "", false
+	}
+	if normalizeIssueType(issue.Type) != "task" {
+		return "", false
+	}
+
+	titleEpicID, ok := epicBreakdownTargetID(issue.Title)
+	if !ok {
+		return "", false
+	}
+
+	depEpicID, ok := discoveredFromTargetID(issue)
+	if !ok || depEpicID != titleEpicID {
+		return "", false
+	}
+
+	epic, ok := byID[depEpicID]
+	if !ok {
+		return "", false
+	}
+	if normalizeIssueType(epic.Type) != "epic" {
+		return "", false
+	}
+	if !strings.EqualFold(strings.TrimSpace(epic.Status), "closed") {
+		return "", false
+	}
+
+	return depEpicID, true
+}
+
+func epicBreakdownTargetID(title string) (string, bool) {
+	title = strings.TrimSpace(title)
+	if !strings.HasPrefix(title, epicBreakdownTitleStart) || !strings.HasSuffix(title, epicBreakdownTitleEnd) {
+		return "", false
+	}
+
+	epicID := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(title, epicBreakdownTitleStart), epicBreakdownTitleEnd))
+	if epicID == "" {
+		return "", false
+	}
+	return epicID, true
+}
+
+func discoveredFromTargetID(issue beads.Bead) (string, bool) {
+	for _, dep := range issue.Dependencies {
+		if dep.Type != "discovered-from" {
+			continue
+		}
+		depID := strings.TrimSpace(dep.DependsOnID)
+		if depID != "" {
+			return depID, true
+		}
+	}
+	return "", false
 }
 
 func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, projectName string, beadsDir string) bool {

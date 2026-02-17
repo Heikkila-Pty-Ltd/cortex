@@ -31,24 +31,41 @@ type Server struct {
 	logger      *slog.Logger
 	startTime   time.Time
 	httpServer  *http.Server
+	authMiddleware *AuthMiddleware
 }
 
 // NewServer creates a new API server.
-func NewServer(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, sched *scheduler.Scheduler, disp dispatch.DispatcherInterface, logger *slog.Logger) *Server {
-	return &Server{
-		cfg:         cfg,
-		store:       s,
-		rateLimiter: rl,
-		scheduler:   sched,
-		dispatcher:  disp,
-		logger:      logger,
-		startTime:   time.Now(),
+func NewServer(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, sched *scheduler.Scheduler, disp dispatch.DispatcherInterface, logger *slog.Logger) (*Server, error) {
+	authMiddleware, err := NewAuthMiddleware(&cfg.API.Security, logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize auth middleware: %w", err)
 	}
+	
+	return &Server{
+		cfg:            cfg,
+		store:          s,
+		rateLimiter:    rl,
+		scheduler:      sched,
+		dispatcher:     disp,
+		logger:         logger,
+		startTime:      time.Now(),
+		authMiddleware: authMiddleware,
+	}, nil
+}
+
+// Close closes the server and cleans up resources
+func (s *Server) Close() error {
+	if s.authMiddleware != nil {
+		return s.authMiddleware.Close()
+	}
+	return nil
 }
 
 // Start begins listening on the configured bind address. Blocks until context is cancelled.
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
+	
+	// Read-only endpoints (no auth required)
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/projects", s.handleProjects)
 	mux.HandleFunc("/projects/", s.handleProjectDetail)
@@ -56,11 +73,15 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/teams", s.handleTeams)
 	mux.HandleFunc("/teams/", s.handleTeamDetail)
 	mux.HandleFunc("/metrics", s.handleMetrics)
-	mux.HandleFunc("/dispatches/", s.routeDispatches)
-	mux.HandleFunc("/scheduler/pause", s.handleSchedulerPause)
-	mux.HandleFunc("/scheduler/resume", s.handleSchedulerResume)
-	mux.HandleFunc("/scheduler/status", s.handleSchedulerStatus)
 	mux.HandleFunc("/recommendations", s.handleRecommendations)
+	mux.HandleFunc("/scheduler/status", s.handleSchedulerStatus)
+	
+	// Dispatch endpoints (mixed read/write - auth applied per endpoint)
+	mux.HandleFunc("/dispatches/", s.authMiddleware.RequireAuth(s.routeDispatches))
+	
+	// Control endpoints (write operations - require auth)
+	mux.HandleFunc("/scheduler/pause", s.authMiddleware.RequireAuth(s.handleSchedulerPause))
+	mux.HandleFunc("/scheduler/resume", s.authMiddleware.RequireAuth(s.handleSchedulerResume))
 
 	s.httpServer = &http.Server{
 		Addr:        s.cfg.API.Bind,

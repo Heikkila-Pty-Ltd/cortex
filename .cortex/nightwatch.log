@@ -1,0 +1,69 @@
+[2026-02-18T01:25:34+10:00] nightwatch starting interval_sec=900 api=http://127.0.0.1:8900 db=/home/ubuntu/.local/share/cortex/cortex.db
+[2026-02-18T01:25:35+10:00] checkpoint running=1 completed_15m=14 failed_15m=0 usage_5h=57/150 usage_weekly=77/2000
+[2026-02-18T01:29:26+10:00] created codex-panel tmux panel
+[2026-02-18T01:29:26+10:00] nightwatch starting interval_sec=900 api=http://127.0.0.1:8900 db=/home/ubuntu/.local/share/cortex/cortex.db auto_file_bugs=1 nudge_session=codex-panel
+[2026-02-18T01:29:27+10:00] checkpoint running=0 completed_15m=20 failed_15m=0 usage_5h=62/150 usage_weekly=82/2000
+[2026-02-18T01:34:12+10:00] nightwatch starting interval_sec=5 api=http://127.0.0.1:8900 db=/home/ubuntu/.local/share/cortex/cortex.db auto_file_bugs=1 nudge_session=codex-panel
+[2026-02-18T01:34:12+10:00] reconciled dead running dispatch id=1002 bead=cortex-46d.9 pane=1 resp={"dispatch_id":1002,"status":"cancelled"}
+[2026-02-18T01:34:13+10:00] reconciled dead running dispatch id=1003 bead=cortex-evu.2 pane=1 resp={"dispatch_id":1003,"status":"cancelled"}
+[2026-02-18T01:34:13+10:00] NUDGE: Reconciled 2 dead-running dispatch(es)
+[2026-02-18T01:34:13+10:00] filed bead bug key=dead-running-291c974bf419ff5e0212eaefd3cd9ee8fc2736b0 issue=cortex-umg title=Auto: multiple dead-running dispatches reconciled (2)
+[2026-02-18T01:34:13+10:00] NUDGE: Filed bead cortex-umg: Auto: multiple dead-running dispatches reconciled (2)
+[2026-02-18T01:34:13+10:00] filed bead bug key=failsig-fe563750315f09144ba68e38baafb1f446c6e2c7 issue=cortex-lh8 title=Auto: repeated failure (2x/15m): synthetic-nightwatch-force-test
+[2026-02-18T01:34:13+10:00] NUDGE: Filed bead cortex-lh8: Auto: repeated failure (2x/15m): synthetic-nightwatch-force-test
+[2026-02-18T01:34:13+10:00] NUDGE: Repeated failure signature 2x/15m: synthetic-nightwatch-force-test
+[2026-02-18T01:34:14+10:00] checkpoint running=0 completed_15m=19 failed_15m=2 usage_5h=69/150 usage_weekly=89/2000
+[2026-02-18T01:34:19+10:00] NUDGE: Repeated failure signature 2x/15m: synthetic-nightwatch-force-test
+[2026-02-18T01:34:19+10:00] checkpoint running=0 completed_15m=19 failed_15m=2 usage_5h=69/150 usage_weekly=89/2000
+[2026-02-18T01:34:24+10:00] NUDGE: Repeated failure signature 2x/15m: synthetic-nightwatch-force-test
+[2026-02-18T01:34:25+10:00] checkpoint running=0 completed_15m=19 failed_15m=2 usage_5h=69/150 usage_weekly=89/2000
+[2026-02-18T01:34:30+10:00] NUDGE: Repeated failure signature 2x/15m: synthetic-nightwatch-force-test
+[2026-02-18T01:34:30+10:00] checkpoint running=1 completed_15m=19 failed_15m=2 usage_5h=70/150 usage_weekly=90/2000
+[2026-02-18T01:34:35+10:00] NUDGE: Repeated failure signature 2x/15m: synthetic-nightwatch-force-test
+[2026-02-18T01:34:36+10:00] checkpoint running=1 completed_15m=19 failed_15m=2 usage_5h=70/150 usage_weekly=90/2000
+[2026-02-18T01:34:41+10:00] NUDGE: Repeated failure signature 2x/15m: synthetic-nightwatch-force-test
+[2026-02-18T01:34:41+10:00] checkpoint running=1 completed_15m=19 failed_15m=2 usage_5h=70/150 usage_weekly=90/2000
+[2026-02-18T01:34:46+10:00] nightwatch starting interval_sec=900 api=http://127.0.0.1:8900 db=/home/ubuntu/.local/share/cortex/cortex.db auto_file_bugs=1 nudge_session=codex-panel
+[2026-02-18T01:34:46+10:00] checkpoint running=1 completed_15m=19 failed_15m=0 usage_5h=70/150 usage_weekly=90/2000
+[2026-02-18T01:49:46+10:00] checkpoint running=1 completed_15m=18 failed_15m=0 usage_5h=90/150 usage_weekly=110/2000
+[2026-02-18T01:49:55+10:00] nightwatch starting interval_sec=900 api=http://127.0.0.1:8900 db=/home/ubuntu/.local/share/cortex/cortex.db auto_file_bugs=1 nudge_session=codex-panel
+[2026-02-18T01:49:56+10:00] reconciled dead running dispatch id=1026 bead=cortex-evu.3 pane=1 resp={"dispatch_id":1026,"status":"cancelled"}
+[2026-02-18T01:49:56+10:00] NUDGE: Reconciled 1 dead-running dispatch(es)
+[2026-02-18T01:49:56+10:00] checkpoint running=0 completed_15m=18 failed_15m=0 usage_5h=90/150 usage_weekly=110/2000
+[2026-02-18T02:04:56+10:00] reconciled dead running dispatch id=1041 bead=cortex-c4j.2 pane=1 resp={"dispatch_id":1041,"status":"cancelled"}
+[2026-02-18T02:04:57+10:00] reconciled dead running dispatch id=1046 bead=cortex-o3u pane=1 resp={"dispatch_id":1046,"status":"cancelled"}
+[2026-02-18T02:04:57+10:00] NUDGE: Reconciled 2 dead-running dispatch(es)
+[2026-02-18T02:04:57+10:00] filed bead bug key=dead-running-0ef697514bd2c83c6516ad65809239c446b66846 issue=cortex-k12 title=Auto: multiple dead-running dispatches reconciled (2)
+[2026-02-18T02:04:57+10:00] NUDGE: Filed bead cortex-k12: Auto: multiple dead-running dispatches reconciled (2)
+[2026-02-18T02:04:58+10:00] checkpoint running=0 completed_15m=18 failed_15m=0 usage_5h=85/150 usage_weekly=130/2000
+[2026-02-18T02:19:58+10:00] reconciled dead running dispatch id=1073 bead=cortex-x1f pane=1 resp={"dispatch_id":1073,"status":"cancelled"}
+[2026-02-18T02:19:58+10:00] NUDGE: Reconciled 1 dead-running dispatch(es)
+[2026-02-18T02:19:59+10:00] checkpoint running=0 completed_15m=26 failed_15m=0 usage_5h=107/150 usage_weekly=157/2000
+[2026-02-18T02:34:59+10:00] detected repeated '-m/--message' failures in last 15m (3); forcing restart
+[2026-02-18T02:34:59+10:00] NUDGE: Detected repeated '-m/--message' failures (3/15m); restarting Cortex
+[2026-02-18T02:34:59+10:00] filed bead bug key=missing-message-flag issue=cortex-otx title=Auto: repeated '-m/--message' runtime failures
+[2026-02-18T02:34:59+10:00] NUDGE: Filed bead cortex-otx: Auto: repeated '-m/--message' runtime failures
+[2026-02-18T02:34:59+10:00] restarting cortex service
+[2026-02-18T02:35:05+10:00] filed bead bug key=failsig-02bdeb1afb4e1604d31000508c901da186d6c8d9 issue=cortex-mlq title=Auto: repeated failure (3x/15m): error: required option '-m, --message <text>' not specified
+[2026-02-18T02:35:05+10:00] NUDGE: Filed bead cortex-mlq: Auto: repeated failure (3x/15m): error: required option '-m, --message <text>' not specified
+[2026-02-18T02:35:05+10:00] NUDGE: Repeated failure signature 3x/15m: error: required option '-m, --message <text>' not specified
+[2026-02-18T02:35:05+10:00] checkpoint running=2 completed_15m=10 failed_15m=3 usage_5h=122/150 usage_weekly=172/2000
+[2026-02-18T02:50:06+10:00] checkpoint running=1 completed_15m=5 failed_15m=1 usage_5h=127/150 usage_weekly=177/2000
+[2026-02-18T03:05:06+10:00] detected repeated '-m/--message' failures in last 15m (5); forcing restart
+[2026-02-18T03:05:07+10:00] NUDGE: Detected repeated '-m/--message' failures (5/15m); restarting Cortex
+[2026-02-18T03:05:07+10:00] restarting cortex service
+[2026-02-18T03:05:11+10:00] NUDGE: Repeated failure signature 5x/15m: error: required option '-m, --message <text>' not specified
+[2026-02-18T03:05:11+10:00] checkpoint running=0 completed_15m=3 failed_15m=7 usage_5h=136/150 usage_weekly=186/2000
+[2026-02-18T03:20:11+10:00] detected repeated '-m/--message' failures in last 15m (2); forcing restart
+[2026-02-18T03:20:11+10:00] NUDGE: Detected repeated '-m/--message' failures (2/15m); restarting Cortex
+[2026-02-18T03:20:11+10:00] restarting cortex service
+[2026-02-18T03:20:16+10:00] NUDGE: Repeated failure signature 2x/15m: error: required option '-m, --message <text>' not specified
+[2026-02-18T03:20:16+10:00] checkpoint running=0 completed_15m=2 failed_15m=17 usage_5h=150/150 usage_weekly=202/2000
+[2026-02-18T03:35:16+10:00] checkpoint running=0 completed_15m=0 failed_15m=15 usage_5h=150/150 usage_weekly=202/2000
+[2026-02-18T03:50:16+10:00] checkpoint running=0 completed_15m=0 failed_15m=15 usage_5h=150/150 usage_weekly=202/2000
+[2026-02-18T04:05:17+10:00] checkpoint running=1 completed_15m=0 failed_15m=11 usage_5h=149/150 usage_weekly=202/2000
+[2026-02-18T04:20:18+10:00] detected repeated '-m/--message' failures in last 15m (6); forcing restart
+[2026-02-18T04:20:18+10:00] NUDGE: Detected repeated '-m/--message' failures (6/15m); restarting Cortex
+[2026-02-18T04:20:18+10:00] restarting cortex service
+[2026-02-18T04:20:23+10:00] NUDGE: Repeated failure signature 6x/15m: error: required option '-m, --message <text>' not specified
+[2026-02-18T04:20:23+10:00] checkpoint running=0 completed_15m=3 failed_15m=6 usage_5h=145/150 usage_weekly=210/2000
