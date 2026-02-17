@@ -12,6 +12,7 @@ import (
 	"github.com/antigravity-dev/cortex/internal/config"
 	"github.com/antigravity-dev/cortex/internal/dispatch"
 	"github.com/antigravity-dev/cortex/internal/git"
+	"github.com/antigravity-dev/cortex/internal/health"
 	"github.com/antigravity-dev/cortex/internal/learner"
 	"github.com/antigravity-dev/cortex/internal/store"
 	"github.com/antigravity-dev/cortex/internal/team"
@@ -137,6 +138,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 
 	// Process pending retries with backoff
 	s.processPendingRetries(ctx)
+
+	// Run health checks - stuck dispatch detection and zombie cleanup
+	s.runHealthChecks()
 
 	// Collect all ready beads across enabled projects
 	var allReady []struct {
@@ -623,5 +627,31 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			"new_dispatch_id", newDispatchID, 
 			"handle", handle, 
 			"session", sessionName)
+	}
+}
+
+// runHealthChecks executes stuck dispatch detection and zombie cleanup as part of the scheduler loop.
+func (s *Scheduler) runHealthChecks() {
+	// Skip health checks if stuck timeout is not configured
+	if s.cfg.General.StuckTimeout.Duration <= 0 {
+		return
+	}
+
+	// Check for stuck dispatches
+	actions := health.CheckStuckDispatches(
+		s.store,
+		s.dispatcher,
+		s.cfg.General.StuckTimeout.Duration,
+		s.cfg.General.MaxRetries,
+		s.logger.With("scope", "stuck"),
+	)
+	if len(actions) > 0 {
+		s.logger.Info("stuck dispatch check complete", "actions", len(actions))
+	}
+
+	// Clean up zombie processes/sessions
+	killed := health.CleanZombies(s.store, s.dispatcher, s.logger.With("scope", "zombie"))
+	if killed > 0 {
+		s.logger.Info("zombie cleanup complete", "killed", killed)
 	}
 }
