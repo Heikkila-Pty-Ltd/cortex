@@ -62042,3 +62042,573 @@ tokens used
 - Closed issue `cortex-cm5` with evidence and closed follow-up `cortex-cm5.1`; left `cortex-cm5.2` open as optional observability follow-up.
 - I avoided committing/pushing because the repo has concurrent unrelated in-flight changes from other workers, and I kept this fix scoped to the scheduler/test files only.
 [2026-02-18T04:22:53+10:00] codex escalation completed for cortex-cm5
+[2026-02-18T04:27:56+10:00] processing auto-issue cortex-32o title=Auto: churn guard blocked bead cortex-y6s (6 dispatches/1h0m0s)
+[2026-02-18T04:27:57+10:00] escalating issue cortex-32o to codex model=gpt-5.3-codex timeout=1200s
+OpenAI Codex v0.101.0 (research preview)
+--------
+workdir: /home/ubuntu/projects/cortex
+model: gpt-5.3-codex
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: auto
+session id: 019c6cdb-ee6d-7061-b7dc-9945c80e942f
+--------
+user
+You are codex-incident-worker for overnight engine stabilization.
+
+Repository: /home/ubuntu/projects/cortex
+Issue ID: cortex-32o
+Issue title: Auto: churn guard blocked bead cortex-y6s (6 dispatches/1h0m0s)
+Issue description:
+Bead `cortex-y6s` in project `cortex` exceeded churn threshold (6 dispatches in 1h0m0s) and was blocked from further overnight dispatch.
+
+Please investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.
+
+Bead title: Auto: break down epic cortex-46d into executable bug/task beads
+Bead type: task
+
+Task:
+1) Attempt a minimal, safe fix for this issue now.
+2) If you can fix safely, implement and close issue cortex-32o with evidence in the close reason.
+3) If this is too large/risky for a quick fix, create a new scoped bead (task/bug) with acceptance criteria and dependency discovered-from:cortex-32o.
+4) Keep changes surgical and avoid stepping on active coders.
+
+Constraints:
+- No destructive git commands.
+- Prefer operational/config/script fixes first.
+- Do not pause scheduler/workers unless absolutely required to recover.
+- Keep command usage non-interactive.
+
+When done, print a concise summary of what you changed.
+
+mcp: linear starting
+mcp: linear failed: MCP client for `linear` failed to start: MCP startup failed: Environment variable LINEAR_API_KEY for MCP server 'linear' is not set
+mcp startup: failed: linear
+2026-02-17T18:27:58.966247Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c68d5-90e0-7601-94eb-10d106653269
+2026-02-17T18:27:59.001135Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c6b1d-9530-77a1-9a5a-7923286c4f6e
+2026-02-17T18:27:59.033581Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c6b75-4c4a-7c63-ba16-402b589d68ae
+
+thinking
+**Preparing investigation workflow**
+codex
+I’m going to inspect the bead state and dispatch history for `cortex-32o`/`cortex-y6s` first, then apply the smallest safe hardening change and add a focused test. I’ll start with `bd` status/details and relevant scheduler/churn-guard code paths.
+exec
+/usr/bin/zsh -lc 'pwd && ls -la && git status --short --branch' in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'bd onboard && bd show cortex-32o && bd show cortex-y6s && bd show cortex-46d' in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'bd ready && bd list --status open' in /home/ubuntu/projects/cortex succeeded in 50ms:
+/home/ubuntu/projects/cortex
+total 41084
+drwxr-xr-x 13 ubuntu ubuntu     4096 Feb 18 04:09 .
+drwxr-xr-x 26 ubuntu ubuntu     4096 Feb 17 14:45 ..
+drwx------  2 ubuntu ubuntu     4096 Feb 18 04:26 .beads
+drwxr-xr-x  2 ubuntu ubuntu     4096 Feb 17 18:23 .claude
+drwxr-xr-x  2 ubuntu ubuntu     4096 Feb 18 04:20 .cortex
+drwxr-xr-x  7 ubuntu ubuntu     4096 Feb 18 04:27 .git
+-rw-r--r--  1 ubuntu ubuntu       70 Feb 17 13:28 .gitattributes
+-rw-r--r--  1 ubuntu ubuntu      103 Feb 17 15:03 .gitignore
+drwxr-xr-x  2 ubuntu ubuntu     4096 Feb 17 17:59 .openclaw
+-rw-r--r--  1 ubuntu ubuntu     4503 Feb 18 04:12 AGENTS.md
+-rw-r--r--  1 ubuntu ubuntu     1470 Feb 17 17:59 BOOTSTRAP.md
+-rw-r--r--  1 ubuntu ubuntu     4070 Feb 18 02:30 CORTEX-3Q5-ANALYSIS.md
+-rw-r--r--  1 ubuntu ubuntu     2791 Feb 18 02:37 CORTEX-C5S-ANALYSIS.md
+-rw-r--r--  1 ubuntu ubuntu     4939 Feb 18 02:43 CORTEX-NJB-ANALYSIS.md
+-rw-r--r--  1 ubuntu ubuntu     4694 Feb 18 02:33 CORTEX-XCP-ANALYSIS.md
+-rw-r--r--  1 ubuntu ubuntu      168 Feb 17 17:59 HEARTBEAT.md
+-rw-r--r--  1 ubuntu ubuntu      636 Feb 17 17:59 IDENTITY.md
+-rw-r--r--  1 ubuntu ubuntu      519 Feb 18 00:23 Makefile
+ succeeded in 682ms:
+
+📋 Ready work (10 issues with no blockers):
+
+1. [● P1] [epic] cortex-pg5: Multi-workflow support: stage-based pipelines for dev, content, trading
+2. [● P1] [epic] cortex-hrz: Dry-run mode and control plane API
+3. [● P1] [task] cortex-5a9: Auto: break down epic cortex-hrz into executable bug/task beads
+4. [● P1] [task] cortex-7j0: Auto: break down epic cortex-2px into executable bug/task beads
+5. [● P1] [task] cortex-ax7: Auto: break down epic cortex-xhk into executable bug/task beads
+6. [● P1] [task] cortex-kvo: Auto: break down epic cortex-a4s into executable bug/task beads
+   Assignee: Simon Heikkila
+7. [● P1] [bug] cortex-5qx: Auto: churn guard blocked bead cortex-46d.2 (9 dispatches/1h0m0s)
+   Assignee: Simon Heikkila
+8. [● P1] [bug] cortex-o3u: Auto: churn guard blocked bead cortex-46d.8 (8 dispatches/1h0m0s)
+   Assignee: Simon Heikkila
+9. [● P1] [bug] cortex-3zi: Auto: churn guard blocked bead cortex-46d.7 (8 dispatches/1h0m0s)
+   Assignee: Simon Heikkila
+10. [● P1] [bug] cortex-cne: Auto: churn guard blocked bead cortex-evu.3 (7 dispatches/1h0m0s)
+   Assignee: Simon Heikkila
+
+
+ succeeded in 933ms:
+
+bd Onboarding
+
+Add this minimal snippet to AGENTS.md (or create it):
+
+--- BEGIN AGENTS.MD CONTENT ---
+## Issue Tracking
+
+This project uses **bd (beads)** for issue tracking.
+Run `bd prime` for workflow context, or install hooks (`bd hooks install`) for auto-injection.
+
+**Quick reference:**
+- `bd ready` - Find unblocked work
+- `bd create "Title" --type task --priority 2` - Create issue
+- `bd close <id>` - Complete work
+- `bd sync` - Sync with git (run at session end)
+
+For full workflow details: `bd prime`
+--- END AGENTS.MD CONTENT ---
+
+
+thinking
+**Investigating churn cause**
+codex
+I confirmed the target beads are now closed, so the churn likely came from scheduler logic dispatching a task that should have been skipped. Next I’m tracing churn-guard and dispatch eligibility code to find why a closed/already-satisfied breakdown bead kept being selected.
+exec
+/usr/bin/zsh -lc 'rg -n "churn|dispatches|blocked|ready|eligible|closed|stage:qa|break down epic|epic" internal cmd scripts -S' in /home/ubuntu/projects/cortex succeeded in 51ms:
+Total output lines: 593
+
+cmd/cortex/main.go:143:	// Graceful shutdown: drain dispatches if using tmux
+cmd/cortex/main.go:149:	// Mark all remaining running dispatches as interrupted
+cmd/cortex/main.go:150:	interrupted, err := st.InterruptRunningDispatches()
+cmd/cortex/main.go:152:		logger.Error("failed to interrupt running dispatches", "error", err)
+cmd/cortex/main.go:154:		logger.Info("interrupted running dispatches", "count", interrupted)
+internal/workflow/types_test.go:106:		{"label match", "epic", []string{"code"}, true},
+internal/workflow/types_test.go:107:		{"label match feature", "epic", []string{"feature"}, true},
+internal/workflow/types_test.go:108:		{"no match", "epic", []string{"trading"}, false},
+internal/workflow/types_test.go:158:	w = reg.Resolve("epic", []string{"docs"})
+internal/workflow/types_test.go:160:		t.Errorf("Resolve(epic, [docs]) = %v, want content", w)
+internal/workflow/types_test.go:164:	w = reg.Resolve("epic", []string{"trading"})
+internal/workflow/types_test.go:166:		t.Errorf("Resolve(epic, [trading]) = %v, want dev (default)", w)
+internal/dispatch/dispatch_test.go:76:func TestKillProcess_AlreadyDead(t *testing.T) {
+internal/dispatch/ratelimit_test.go:59:		t.Error("should be blocked by 5h cap")
+internal/dispatch/ratelimit_test.go:73:		t.Error("should be blocked by weekly cap")
+internal/dispatch/ratelimit_test.go:100:	// Even with zero caps (authed blocked), fast tier should work (free providers)
+internal/dispatch/ratelimit_test.go:110:func TestPickProvider_AuthedBlocked(t *testing.T) {
+internal/dispatch/ratelimit_test.go:117:		t.Error("should return nil when authed is blocked")
+exec
+/usr/bin/zsh -lc 'rg --files internal | sort' in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'rg -n "cortex-y6s|cortex-46d|Auto: break down epic|stage:qa" -S .' in /home/ubuntu/projects/cortex succeeded in 98ms:
+internal/api/api.go
+internal/api/api_test.go
+internal/api/auth.go
+internal/api/auth_test.go
+internal/beads/beads.go
+internal/beads/beads_test.go
+internal/beads/crossdeps.go
+internal/beads/crossdeps_test.go
+internal/config/config.go
+internal/config/config_test.go
+internal/cost/tokens.go
+internal/cost/tokens_test.go
+internal/dispatch/backend.go
+internal/dispatch/backoff.go
+internal/dispatch/backoff_test.go
+internal/dispatch/dispatch.go
+internal/dispatch/dispatch_test.go
+internal/dispatch/pid_completion_test.go
+internal/dispatch/ratelimit.go
+internal/dispatch/ratelimit_test.go
+ succeeded in 366ms:
+./internal/scheduler/scheduler.go:49:	epicBreakdownTitleStart = "Auto: break down epic "
+./internal/scheduler/scheduler.go:862:		title := fmt.Sprintf("Auto: break down epic %s into executable bug/task beads", b.ID)
+./internal/scheduler/churn_guard_test.go:156:				Title:  "Auto: break down epic cortex-a6p into executable bug/task beads",
+./internal/scheduler/churn_guard_test.go:173:				Title:  "Auto: break down epic cortex-a6p into executable bug/task beads",
+./internal/scheduler/churn_guard_test.go:189:				Title:  "Auto: break down epic cortex-a6p into executable bug/task beads",
+./internal/scheduler/churn_guard_test.go:202:				Title:  "Auto: break down epic cortex-a6p into executable bug/task beads",
+./internal/scheduler/prompt_test.go:74:			contains: []string{"Reviewer", "Review the code", "stage:qa", "stage:coding"},
+./internal/scheduler/role.go:16:	"stage:qa":       "ops",
+./internal/scheduler/role.go:27:	"stage:qa":       5,
+./internal/scheduler/role_test.go:22:		{"stage:qa", beads.Bead{Type: "task", Labels: []string{"stage:qa"}}, "ops"},
+./internal/scheduler/prompt.go:63:3. If approved: transition to QA: bd update %s --set-labels stage:qa
+./internal/team/team.go:72:- If approved, transition to **stage:qa**
+./internal/team/team.go:87:- You receive tasks at **stage:qa**
+./AGENTS.md:105:**When completing epic breakdown tasks (like "Auto: break down epic X"):**
+./tools/rollout-monitor.go:77:	"session_gone|disappeared":                   {"cortex-46d.11"}, // Replace gone with failed_needs_check
+./tools/rollout-monitor.go:78:	"zombie_killed|defunct_process":              {"cortex-46d.3"},  // Single-writer ownership
+./tools/rollout-monitor.go:79:	"no_progress_loop|repeated_completion":       {"cortex-46d.12"}, // Progression watchdog
+./tools/rollout-monitor.go:80:	"pid_completion|exit_code|process_death":     {"cortex-46d.2"},  // PID dispatcher semantics
+./tools/rollout-monitor.go:81:	"cross_project|dependency.*unavailable":     {"cortex-46d.6"},  // Cross-project dependency resolution
+./tools/rollout-monitor.go:82:	"stage.*collision|cross.*project.*bead":     {"cortex-46d.5"},  // Bead stage keying
+
+thinking
+**Reviewing scheduler and churn guard code**
+codex
+I found existing logic for epic-breakdown auto-creation/auto-close and churn blocking in `internal/scheduler/scheduler.go`. I’m reading those sections and current tests to identify the exact gap that let `cortex-y6s` keep dispatching.
+exec
+/usr/bin/zsh -lc "sed -n '260,560p' internal/scheduler/scheduler.go" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "sed -n '1,260p' internal/scheduler/scheduler.go" in /home/ubuntu/projects/cortex succeeded in 51ms:
+		if err != nil {
+			s.logger.Error("failed to check dispatch status", "bead", item.bead.ID, "error", err)
+			continue
+		}
+		if already {
+			continue
+		}
+		if s.isChurnBlocked(ctx, item.bead, item.name, itemBeadsDir) {
+			continue
+		}
+
+		// Infer role - skip epics and done
+		role := InferRole(item.bead)
+		if role == "skip" {
+			continue
+		}
+
+		// Check agent-busy guard: one dispatch per agent per project per tick
+		agent := ResolveAgent(item.name, role)
+		if s.isDispatchCoolingDown(item.bead.ID, agent) {
+ succeeded in 54ms:
+package scheduler
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/antigravity-dev/cortex/internal/beads"
+	"github.com/antigravity-dev/cortex/internal/config"
+	"github.com/antigravity-dev/cortex/internal/cost"
+	"github.com/antigravity-dev/cortex/internal/dispatch"
+	"github.com/antigravity-dev/cortex/internal/git"
+	"github.com/antigravity-dev/cortex/internal/health"
+	"github.com/antigravity-dev/cortex/internal/learner"
+	"github.com/antigravity-dev/cortex/internal/store"
+exec
+/usr/bin/zsh -lc "sed -n '560,860p' internal/scheduler/scheduler.go" in /home/ubuntu/projects/cortex succeeded in 50ms:
+				finalStage = "failed_needs_check"
+				s.logger.Error("dispatch session disappeared - needs manual diagnosis",
+					"bead", d.BeadID,
+					"session", d.SessionName,
+					"agent", d.AgentID,
+					"provider", d.Provider,
+					"duration_s", duration)
+
+				// Record detailed health event for tracking
+				healthDetails := fmt.Sprintf("bead %s session %s (agent=%s, provider=%s) disappeared after %.1fs - session may have crashed or been terminated externally",
+					d.BeadID, d.SessionName, d.AgentID, d.Provider, duration)
+				_ = s.store.RecordHealthEventWithDispatch("dispatch_session_gone", healthDetails, d.ID, d.BeadID)
+
+				// Set failure diagnosis for manual review
+				category := "session_disappeared"
+				summary := fmt.Sprintf("Tmux session %s disappeared unexpectedly during execution. This may indicate a system crash, out-of-memory condition, or external termination. Manual investigation required.", d.SessionName)
+				if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
+					s.logger.Error("failed to store failure diagnosis for gone session", "dispatch_id", d.ID, "error", err)
+				}
+			case "exited":
+codex
+I’m in the critical section now. I’ll inspect the remainder of the epic-breakdown reconciliation/churn code and corresponding tests to confirm whether we’re missing dedupe against already-closed targets or stale bead snapshots in the same tick.
+exec
+/usr/bin/zsh -lc "sed -n '860,1120p' internal/scheduler/scheduler.go" in /home/ubuntu/projects/cortex succeeded in 50ms:
+		}
+
+		title := fmt.Sprintf("Auto: break down epic %s into executable bug/task beads", b.ID)
+		description := fmt.Sprintf(
+			"Epic `%s` is still open in project `%s`.\n\nPolicy: epics should not be assigned directly to coders. Break this epic into concrete `bug`/`task` beads with acceptance criteria so overnight automation can execute them.\n\nEpic title: %s",
+			b.ID, projectName, b.Title,
+		)
+		deps := []string{fmt.Sprintf("discovered-from:%s", b.ID)}
+		issueID, err := beads.CreateIssueCtx(ctx, beadsDir, title, "task", 1, description, deps)
+		if err != nil {
+			s.logger.Warn("failed to create epic breakdown task", "project", projectName, "epic", b.ID, "error", err)
+			continue
+		}
+
+		s.epicBreakup[key] = now
+		s.logger.Warn("epic auto-breakdown task created", "project", projectName, "epic", b.ID, "created_issue", issueID)
+		_ = s.store.RecordHealthEventWithDispatch("epic_breakdown_requested",
+			fmt.Sprintf("project %s epic %s queued for breakdown via %s", projectName, b.ID, issueID),
+			0, b.ID)
+	}
+exec
+/usr/bin/zsh -lc "sed -n '1,260p' internal/scheduler/churn_guard_test.go" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "sed -n '260,520p' internal/scheduler/churn_guard_test.go" in /home/ubuntu/projects/cortex succeeded in 51ms:
+
+ succeeded in 51ms:
+package scheduler
+
+import (
+	"testing"
+
+	"github.com/antigravity-dev/cortex/internal/beads"
+)
+
+func TestHasActiveChurnEscalation(t *testing.T) {
+	beadID := "cortex-c4j.3"
+	title := "Auto: churn guard blocked bead cortex-c4j.3 (6 dispatches/1h0m0s)"
+
+	tests := []struct {
+		name   string
+		issues []beads.Bead
+		want   bool
+	}{
+		{
+			name: "open bug with discovered-from dependency is active",
+			issues: []beads.Bead{
+
+thinking
+**Investigating scheduler and filter logic**
+codex
+The existing tests cover basic auto-close detection, so I’m now checking whether dispatch selection can still include stale/open copies in the same tick or ignore related open work. If so, I’ll patch that path and add regression coverage.
+exec
+/usr/bin/zsh -lc "sed -n '1,260p' internal/beads/beads.go" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "sed -n '1,260p' internal/beads/crossdeps.go" in /home/ubuntu/projects/cortex succeeded in 50ms:
+package beads
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// BeadDependency represents a dependency relationship from bd list --json.
+type BeadDependency struct {
+	IssueID     string `json:"issue_id"`
+	DependsOnID string `json:"depends_on_id"`
+ succeeded in 51ms:
+package beads
+
+import (
+	"context"
+	"strings"
+
+	"github.com/antigravity-dev/cortex/internal/config"
+)
+
+// CrossDep represents a dependency on a bead in another project.
+type CrossDep struct {
+	Project string
+	BeadID  string
+}
+
+// ParseCrossDep parses a dependency ID. If it contains ":", it's cross-project.
+// Returns (project, beadID, isCross).
+func ParseCrossDep(depID string) (string, string, bool) {
+	if idx := strings.Index(depID, ":"); idx > 0 {
+		return depID[:idx], depID[idx+1:], true
+exec
+/usr/bin/zsh -lc "rg -n \"FilterUnblockedOpen|Status == \\\"open\\\"|status == \\\"open\\\"|in_progress\" internal/beads internal/scheduler -S" in /home/ubuntu/projects/cortex succeeded in 51ms:
+internal/beads/crossdeps.go:114:	// Apply the same sorting as FilterUnblockedOpen
+internal/beads/crossdeps.go:140:// sortByPriorityAndEstimate applies the same sorting logic as FilterUnblockedOpen.
+internal/beads/crossdeps.go:142:	// Inline the sorting logic from FilterUnblockedOpen
+internal/beads/beads_test.go:43:func TestFilterUnblockedOpen_AllDepsClosed(t *testing.T) {
+internal/beads/beads_test.go:50:	result := FilterUnblockedOpen(beads, g)
+internal/beads/beads_test.go:60:func TestFilterUnblockedOpen_SomeDepsOpen(t *testing.T) {
+internal/beads/beads_test.go:67:	result := FilterUnblockedOpen(beads, g)
+internal/beads/beads_test.go:78:func TestFilterUnblockedOpen_ExcludesEpics(t *testing.T) {
+internal/beads/beads_test.go:85:	result := FilterUnblockedOpen(beads, g)
+internal/beads/beads_test.go:95:func TestFilterUnblockedOpen_PrioritySorting(t *testing.T) {
+internal/beads/beads_test.go:104:	result := FilterUnblockedOpen(beads, g)
+internal/beads/beads_test.go:118:func TestFilterUnblockedOpen_EmptyList(t *testing.T) {
+internal/beads/beads_test.go:120:	result := FilterUnblockedOpen(nil, g)
+internal/beads/beads_test.go:126:func TestFilterUnblockedOpen_NoDeps(t *testing.T) {
+internal/beads/beads_test.go:133:	result := FilterUnblockedOpen(beads, g)
+internal/beads/beads.go:279:// FilterUnblockedOpen returns open, non-epic beads whose dependencies are all closed.
+internal/beads/beads.go:281:func FilterUnblockedOpen(beads []Bead, graph *DepGraph) []Bead {
+internal/scheduler/pipeline.go:19:	ready := beads.FilterUnblockedOpen(beadList, graph)
+internal/scheduler/scheduler.go:219:		ready := beads.FilterUnblockedOpen(beadList, graph)
+internal/scheduler/scheduler.go:230:			if b.Status == "open" {
+
+thinking
+**Analyzing repeated dispatch cause**
+exec
+/usr/bin/zsh -lc "rg -n \"func \\(s \\*Store\\) IsBeadDispatched|IsBeadDispatched\\(\" internal/store/store.go && sed -n '780,860p' internal/store/store.go" in /home/ubuntu/projects/cortex succeeded in 50ms:
+812:func (s *Store) IsBeadDispatched(beadID string) (bool, error) {
+		`INSERT INTO tick_metrics (project, beads_open, beads_ready, dispatched, completed, failed, stuck) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		project, open, ready, dispatched, completed, failed, stuck,
+	)
+	if err != nil {
+		return fmt.Errorf("store: record tick metrics: %w", err)
+	}
+	return nil
+}
+
+// GetRecentHealthEvents returns health events from the last N hours.
+func (s *Store) GetRecentHealthEvents(hours int) ([]HealthEvent, error) {
+	rows, err := s.db.Query(
+		`SELECT id, event_type, details, dispatch_id, bead_id, created_at FROM health_events WHERE created_at >= datetime('now', ? || ' hours') ORDER BY created_at DESC`,
+		fmt.Sprintf("-%d", hours),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query health events: %w", err)
+	}
+	defer rows.Close()
+
+thinking
+**Assessing dispatch churn causes**
+codex
+I found that dispatch dedupe only checks `running` status, so any open bead can be redispatched indefinitely after each completion/failure. I’m now pulling dispatch history/output for `cortex-y6s` to confirm the concrete failure pattern before applying a surgical guard.
+exec
+/usr/bin/zsh -lc "sqlite3 .cortex/cortex.db \"SELECT id, bead_id, status, stage, dispatched_at, completed_at, exit_code, substr(failure_summary,1,120) FROM dispatches WHERE bead_id='cortex-y6s' ORDER BY id DESC;\"" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'ls -la .cortex && find .cortex -maxdepth 2 -type f | sort' in /home/ubuntu/projects/cortex exited 1 in 51ms:
+Error: in prepare, no such table: dispatches
+ succeeded in 50ms:
+total 2260
+drwxr-xr-x  2 ubuntu ubuntu    4096 Feb 18 04:29 .
+drwxr-xr-x 13 ubuntu ubuntu    4096 Feb 18 04:09 ..
+-rw-r--r--  1 ubuntu ubuntu    1441 Feb 18 04:27 codex-incident-worker-seen.tsv
+-rw-r--r--  1 ubuntu ubuntu     128 Feb 18 04:22 codex-incident-worker.latest
+-rw-r--r--  1 ubuntu ubuntu       0 Feb 18 01:49 codex-incident-worker.lock
+-rw-r--r--  1 ubuntu ubuntu 2242062 Feb 18 04:29 codex-incident-worker.log
+-rw-r--r--  1 ubuntu ubuntu    3154 Feb 18 04:22 codex-nudges.log
+-rw-r--r--  1 ubuntu ubuntu       0 Feb 18 04:29 cortex.db
+-rw-r--r--  1 ubuntu ubuntu     337 Feb 18 02:35 nightwatch-bug-state.tsv
+-rw-r--r--  1 ubuntu ubuntu    3441 Feb 18 04:20 nightwatch-checkpoints.jsonl
+-rw-r--r--  1 ubuntu ubuntu     224 Feb 18 04:20 nightwatch.latest
+-rw-r--r--  1 ubuntu ubuntu       0 Feb 18 01:49 nightwatch.lock
+-rw-r--r--  1 ubuntu ubuntu    8175 Feb 18 04:20 nightwatch.log
+-rw-r--r--  1 ubuntu ubuntu   16571 Feb 18 04:27 overnight-issues.jsonl
+.cortex/codex-incident-worker-seen.tsv
+.cortex/codex-incident-worker.latest
+.cortex/codex-incident-worker.lock
+.cortex/codex-incident-worker.log
+.cortex/codex-nudges.log
+exec
+/usr/bin/zsh -lc "rg -n \"db_path|store|sqlite|state.db|cortex.db\" cortex.toml cmd/cortex/main.go internal/config/config.go -S && sed -n '1,260p' cortex.toml && sed -n '1,260p' internal/config/config.go" in /home/ubuntu/projects/cortex succeeded in 54ms:
+cortex.toml:9:state_db = "~/.local/share/cortex/cortex.db"
+cmd/cortex/main.go:18:	"github.com/antigravity-dev/cortex/internal/store"
+cmd/cortex/main.go:69:	// Open store
+cmd/cortex/main.go:71:	st, err := store.Open(dbPath)
+cmd/cortex/main.go:73:		logger.Error("failed to open store", "path", dbPath, "error", err)
+internal/config/config.go:56:	StateDB          string   `toml:"state_db"`
+internal/config/config.go:399:			return fmt.Errorf("state_db directory %q does not exist: %w", dir, err)
+internal/config/config.go:402:			return fmt.Errorf("state_db parent path %q is not a directory", dir)
+# Cortex Agent Orchestrator Configuration
+
+[general]
+tick_interval = "60s"
+max_per_tick = 5
+stuck_timeout = "30m"
+max_retries = 2
+log_level = "info"
+state_db = "~/.local/share/cortex/cortex.db"
+
+[projects.cortex]
+enabled = true
+
+thinking
+**Locating valid database file**
+exec
+/usr/bin/zsh -lc 'ls -la ~/.local/share/cortex && sqlite3 ~/.local/share/cortex/cortex.db ".tables" && sqlite3 ~/.local/share/cortex/cortex.db "SELECT COUNT(*) FROM dispatches;"' in /home/ubuntu/projects/cortex succeeded in 362ms:
+total 7404
+drwxr-xr-x  2 ubuntu ubuntu    4096 Feb 18 00:52 .
+drwxr-xr-x 24 ubuntu ubuntu    4096 Feb 17 14:54 ..
+-rw-r--r--  1 ubuntu ubuntu 3395584 Feb 18 03:52 cortex.db
+-rw-r--r--  1 ubuntu ubuntu   32768 Feb 18 04:28 cortex.db-shm
+-rw-r--r--  1 ubuntu ubuntu 4136512 Feb 18 04:28 cortex.db-wal
+bead_stages      dispatches       provider_usage 
+dispatch_output  health_events    tick_metrics   
+1175
+
+thinking
+**Planning dispatch history query**
+exec
+/usr/bin/zsh -lc "sqlite3 ~/.local/share/cortex/cortex.db \"SELECT id, bead_id, status, stage, dispatched_at, completed_at, exit_code, retries, provider, agent_id FROM dispatches WHERE bead_id='cortex-y6s' ORDER BY id DESC;\"" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "sqlite3 ~/.local/share/cortex/cortex.db \"SELECT id,event_type,created_at,substr(details,1,180) FROM health_events WHERE bead_id='cortex-y6s' ORDER BY id DESC LIMIT 20;\"" in /home/ubuntu/projects/cortex succeeded in 51ms:
+1169|cortex-y6s|failed|failed|2026-02-17 18:14:24|2026-02-17 18:16:15|1|0|gpt-5.3-codex|cortex-ops
+1166|cortex-y6s|completed|completed|2026-02-17 18:11:26|2026-02-17 18:14:15|0|0|gpt-5.3-codex|cortex-reviewer
+1165|cortex-y6s|completed|completed|2026-02-17 18:07:25|2026-02-17 18:11:15|0|0|gpt-5.3-codex|cortex-coder
+1136|cortex-y6s|failed|failed|2026-02-17 17:34:23|2026-02-17 17:35:15|-1|0|llama-4-scout|cortex-coder
+1130|cortex-y6s|failed|failed|2026-02-17 17:28:24|2026-02-17 17:29:15|-1|0|llama-4-scout|cortex-coder
+1124|cortex-y6s|failed|failed|2026-02-17 17:22:25|2026-02-17 17:23:15|-1|0|llama-4-scout|cortex-coder
+ succeeded in 51ms:
+391|bead_churn_blocked|2026-02-17 18:20:34|project cortex bead cortex-y6s blocked after 6 dispatches in 1h0m0s
+387|bead_churn_blocked|2026-02-17 18:16:25|project cortex bead cortex-y6s blocked after 6 dispatches in 1h0m0s
+385|session_cleaned|2026-02-17 18:16:15|cleaned dead session ctx-cortex-cortex-ops-1771352064513471726-261856-a72dd8f6 for dispatch 1169 bead cortex-y6s status failed
+383|session_cleaned|2026-02-17 18:14:15|cleaned dead session ctx-cortex-cortex-reviewer-1771351886024250184-261856-1da07144 for dispatch 1166 bead cortex-y6s status completed
+378|session_cleaned|2026-02-17 18:11:15|cleaned dead session ctx-cortex-cortex-coder-1771351645829116673-261856-3f73c946 for dispatch 1165 bead cortex-y6s status completed
+313|session_cleaned|2026-02-17 17:35:15|cleaned dead session ctx-cortex-cortex-coder-1771349663515113751-261856-7938e260 for dispatch 1136 bead cortex-y6s status failed
+303|session_cleaned|2026-02-17 17:29:15|cleaned dead session ctx-cortex-cortex-coder-1771349304587020970-261856-ed8eb7f6 for dispatch 1130 bead cortex-y6s status failed
+294|session_cleaned|2026-02-17 17:23:15|cleaned dead session ctx-cortex-cortex-coder-1771348945412679500-261856-9f2e6068 for dispatch 1124 bead cortex-y6s status failed
+exec
+/usr/bin/zsh -lc "sqlite3 ~/.local/share/cortex/cortex.db \"SELECT d.id, d.status, d.stage, d.dispatched_at, substr(COALESCE(o.output_tail,''),1,220) FROM dispatches d LEFT JOIN dispatch_output o ON o.dispatch_id=d.id WHERE d.bead_id='cortex-y6s' ORDER BY d.id DESC LIMIT 8;\"" in /home/ubuntu/projects/cortex succeeded in 51ms:
+1169|failed|failed|2026-02-17 18:14:24|/home/ubuntu/.zshrc:source:2: no such file or directory: /home/ubuntu/.acfs/zsh/
+acfs.zshrc
+exec sh "/tmp/cortex-openclaw-2276274827.sh" "/tmp/cortex-prompt-3532460156.txt"
+ "cortex-ops" "low" "gpt-5.3-codex"
+vmi3041112%
+1166|completed|completed|2026-02-17 18:11:26|/home/ubuntu/.zshrc:source:2: no such file or directory: /home/ubuntu/.acfs/zsh/
+acfs.zshrc
+exec sh "/tmp/cortex-openclaw-719894881.sh" "/tmp/cortex-prompt-3417668006.txt"
+"cortex-reviewer" "low" "gpt-5.3-codex"
+vmi30411
+1165|completed|completed|2026-02-17 18:07:25|vmi3041112% exec sh "/tmp/cortex-openclaw-1294906628.sh" "/tmp/cortex-prompt-130
+8785915.txt" "cortex-coder" "low" "gpt-5.3-codex"
+
+🦞 OpenClaw 2026.2.9 (33c75cb) — End-to-end encrypted, drama-to-drama excluded.
+
+│
+◇  Doc
+1136|failed|failed|2026-02-17 17:34:23|exec sh "/tmp/cortex-openclaw-3619784741.sh" "/tmp/cortex-prompt-4130825794.txt"
+ "cortex-coder" "off" "llama-4-scout"
+/home/ubuntu/.zshrc:source:2: no such file or directory: /home/ubuntu/.acfs/zsh/
+
+thinking
+**Analyzing multi-stage dispatch churn**
+exec
+/usr/bin/zsh -lc "sqlite3 ~/.local/share/cortex/cortex.db \"PRAGMA table_info(bead_stages); SELECT id,bead_id,stage,changed_at FROM bead_stages WHERE bead_id='cortex-y6s' ORDER BY id;\"" in /home/ubuntu/projects/cortex exited 1 in 67ms:
+0|id|INTEGER|0||1
+1|bead_id|TEXT|1||0
+2|project|TEXT|1||0
+3|workflow|TEXT|1||0
+4|current_stage|TEXT|1||0
+5|stage_index|INTEGER|1|0|0
+6|total_stages|INTEGER|1||0
+7|stage_history|TEXT|1|'[]'|0
+8|created_at|DATETIME|1|datetime('now')|0
+9|updated_at|DATETIME|1|datetime('now')|0
+Error: in prepare, no such column: stage
+  SELECT id,bead_id,stage,changed_at FROM bead_stages WHERE bead_id='cortex-y6s'
+                    ^--- error here
+
+thinking
+**Planning schema for stage history**
+exec
+/usr/bin/zsh -lc "sqlite3 ~/.local/share/cortex/cortex.db \"SELECT id,bead_id,project,workflow,current_stage,stage_index,total_stages,stage_history,updated_at FROM bead_stages WHERE bead_id='cortex-y6s' ORDER BY id DESC;\"" in /home/ubuntu/projects/cortex succeeded in 51ms:
+
+
+thinking
+**Assessing stage progression handling**
+exec
+/usr/bin/zsh -lc "sed -n '1,280p' internal/scheduler/pipeline.go" in /home/ubuntu/projects/cortex succeeded in 51ms:
+package scheduler
+
+import (
+	"log/slog"
+
+	"github.com/antigravity-dev/cortex/internal/beads"
+)
+
+// CheckChildUnblock checks if completing a bead has unblocked new children.
+// Returns the newly unblocked beads that can be dispatched immediately.
+func CheckChildUnblock(completedBeadID string, beadsDir string, logger *slog.Logger) []beads.Bead {
+	beadList, err := beads.ListBeads(beadsDir)
+	if err != nil {
+		logger.Error("failed to list beads for unblock check", "error", err)
+		return nil
+	}
+
+	graph := beads.BuildDepGraph(beadList)
+	ready := beads.FilterUnblockedOpen(beadList, graph)
+
+
+thinking
+**Checking unused function**
+exec
+/usr/bin/zsh -lc "rg -n \"AutoCloseEpics\\(|CheckChildUnblock\\(\" -S" in /home/ubuntu/projects/cortex succeeded in 51ms:
+internal/scheduler/pipeline.go:11:func CheckChildUnblock(completedBeadID string, beadsDir string, logger *slog.Logger) []beads.Bead {
+internal/scheduler/pipeline.go:51:func AutoCloseEpics(beadsDir string, logger *slog.Logger) {
