@@ -13,16 +13,16 @@ import (
 
 // ProjectBacklog represents the backlog for a single project
 type ProjectBacklog struct {
-	ProjectName     string        `json:"project_name"`
-	BeadsDir        string        `json:"beads_dir"`
-	Workspace       string        `json:"workspace"`
-	Priority        int           `json:"priority"`
-	UnrefinedBeads  []beads.Bead  `json:"unrefined_beads"`
-	RefinedBeads    []beads.Bead  `json:"refined_beads"`
-	AllBeads        []beads.Bead  `json:"all_beads"`
-	ReadyToWork     []beads.Bead  `json:"ready_to_work"`
-	TotalEstimate   int           `json:"total_estimate_minutes"`
-	CapacityPercent int           `json:"capacity_percent"`
+	ProjectName     string       `json:"project_name"`
+	BeadsDir        string       `json:"beads_dir"`
+	Workspace       string       `json:"workspace"`
+	Priority        int          `json:"priority"`
+	UnrefinedBeads  []beads.Bead `json:"unrefined_beads"`
+	RefinedBeads    []beads.Bead `json:"refined_beads"`
+	AllBeads        []beads.Bead `json:"all_beads"`
+	ReadyToWork     []beads.Bead `json:"ready_to_work"`
+	TotalEstimate   int          `json:"total_estimate_minutes"`
+	CapacityPercent int          `json:"capacity_percent"`
 }
 
 // CrossProjectDependency represents a dependency between projects
@@ -37,23 +37,23 @@ type CrossProjectDependency struct {
 
 // PortfolioBacklog aggregates backlogs from all projects for multi-team sprint planning
 type PortfolioBacklog struct {
-	ProjectBacklogs      map[string]ProjectBacklog        `json:"project_backlogs"`
-	CrossProjectDeps     []CrossProjectDependency         `json:"cross_project_deps"`
-	TotalBeadCount       int                              `json:"total_bead_count"`
-	TotalEstimateMinutes int                              `json:"total_estimate_minutes"`
-	CapacityBudgets      map[string]int                   `json:"capacity_budgets"`
-	Summary              PortfolioSummary                 `json:"summary"`
+	ProjectBacklogs      map[string]ProjectBacklog `json:"project_backlogs"`
+	CrossProjectDeps     []CrossProjectDependency  `json:"cross_project_deps"`
+	TotalBeadCount       int                       `json:"total_bead_count"`
+	TotalEstimateMinutes int                       `json:"total_estimate_minutes"`
+	CapacityBudgets      map[string]int            `json:"capacity_budgets"`
+	Summary              PortfolioSummary          `json:"summary"`
 }
 
 // PortfolioSummary provides high-level statistics about the portfolio
 type PortfolioSummary struct {
-	ActiveProjects        int                  `json:"active_projects"`
-	TotalOpenBeads        int                  `json:"total_open_beads"`
-	TotalRefinedBeads     int                  `json:"total_refined_beads"`
-	TotalUnrefinedBeads   int                  `json:"total_unrefined_beads"`
-	TotalReadyToWork      int                  `json:"total_ready_to_work"`
-	CrossProjectBlockers  int                  `json:"cross_project_blockers"`
-	ProjectsByPriority    []string             `json:"projects_by_priority"`
+	ActiveProjects       int      `json:"active_projects"`
+	TotalOpenBeads       int      `json:"total_open_beads"`
+	TotalRefinedBeads    int      `json:"total_refined_beads"`
+	TotalUnrefinedBeads  int      `json:"total_unrefined_beads"`
+	TotalReadyToWork     int      `json:"total_ready_to_work"`
+	CrossProjectBlockers int      `json:"cross_project_blockers"`
+	ProjectsByPriority   []string `json:"projects_by_priority"`
 }
 
 // GatherPortfolioBacklogs collects backlog data from all enabled projects for multi-team sprint planning
@@ -93,9 +93,9 @@ func GatherPortfolioBacklogs(ctx context.Context, cfg *config.Config, logger *sl
 
 	for _, name := range projectNames {
 		project := cfg.Projects[name]
-		
+
 		logger.Debug("gathering backlog", "project", name, "beads_dir", project.BeadsDir)
-		
+
 		backlog, err := gatherProjectBacklog(ctx, name, project, crossGraph, logger)
 		if err != nil {
 			logger.Error("failed to gather project backlog", "project", name, "error", err)
@@ -125,7 +125,7 @@ func GatherPortfolioBacklogs(ctx context.Context, cfg *config.Config, logger *sl
 // gatherProjectBacklog collects backlog data for a single project
 func gatherProjectBacklog(ctx context.Context, projectName string, project config.Project, crossGraph *beads.CrossProjectGraph, logger *slog.Logger) (*ProjectBacklog, error) {
 	beadsDir := config.ExpandHome(project.BeadsDir)
-	
+
 	// List all beads for the project
 	allBeads, err := beads.ListBeadsCtx(ctx, beadsDir)
 	if err != nil {
@@ -150,7 +150,7 @@ func gatherProjectBacklog(ctx context.Context, projectName string, project confi
 	// Categorize beads
 	backlog.RefinedBeads = filterRefinedBeads(backlog.AllBeads)
 	backlog.UnrefinedBeads = filterUnrefinedBeads(backlog.AllBeads)
-	
+
 	// Find beads ready to work (unblocked by dependencies)
 	backlog.ReadyToWork = beads.FilterUnblockedCrossProject(backlog.AllBeads, localGraph, crossGraph)
 
@@ -214,7 +214,7 @@ func filterUnrefinedBeads(openBeads []beads.Bead) []beads.Bead {
 // extractCrossProjectDependencies finds all cross-project dependencies in the graph
 func extractCrossProjectDependencies(crossGraph *beads.CrossProjectGraph, projects map[string]config.Project) []CrossProjectDependency {
 	var deps []CrossProjectDependency
-	
+
 	for projectName, projectBeads := range crossGraph.Projects {
 		for _, bead := range projectBeads {
 			if bead.Status != "open" {
@@ -266,8 +266,8 @@ func extractCrossProjectDependencies(crossGraph *beads.CrossProjectGraph, projec
 // generatePortfolioSummary creates high-level statistics about the portfolio
 func generatePortfolioSummary(portfolio *PortfolioBacklog) PortfolioSummary {
 	summary := PortfolioSummary{
-		ActiveProjects:      len(portfolio.ProjectBacklogs),
-		ProjectsByPriority:  make([]string, 0, len(portfolio.ProjectBacklogs)),
+		ActiveProjects:     len(portfolio.ProjectBacklogs),
+		ProjectsByPriority: make([]string, 0, len(portfolio.ProjectBacklogs)),
 	}
 
 	// Collect project names sorted by priority
@@ -276,7 +276,7 @@ func generatePortfolioSummary(portfolio *PortfolioBacklog) PortfolioSummary {
 		priority int
 	}
 	var projects []projectPrio
-	
+
 	for name, backlog := range portfolio.ProjectBacklogs {
 		projects = append(projects, projectPrio{name: name, priority: backlog.Priority})
 		summary.TotalOpenBeads += len(backlog.AllBeads)
@@ -289,7 +289,7 @@ func generatePortfolioSummary(portfolio *PortfolioBacklog) PortfolioSummary {
 	sort.Slice(projects, func(i, j int) bool {
 		return projects[i].priority < projects[j].priority
 	})
-	
+
 	for _, p := range projects {
 		summary.ProjectsByPriority = append(summary.ProjectsByPriority, p.name)
 	}
@@ -315,13 +315,13 @@ func GetProjectCapacityBudget(portfolio *PortfolioBacklog, projectName string) i
 // GetCrossProjectBlockersForProject returns all unresolved cross-project dependencies blocking a project
 func GetCrossProjectBlockersForProject(portfolio *PortfolioBacklog, projectName string) []CrossProjectDependency {
 	var blockers []CrossProjectDependency
-	
+
 	for _, dep := range portfolio.CrossProjectDeps {
 		if dep.SourceProject == projectName && !dep.IsResolved {
 			blockers = append(blockers, dep)
 		}
 	}
-	
+
 	return blockers
 }
 

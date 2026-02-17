@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -563,6 +564,7 @@ func (s *Scheduler) processSingleDoDCheck(ctx context.Context, projectName strin
 	failuresText := strings.Join(result.Failures, "; ")
 	if err := s.store.RecordDoDResult(0, bead.ID, projectName, result.Passed, failuresText, string(checkResultsJson)); err != nil {
 		s.logger.Error("failed to record DoD result", "project", projectName, "bead", bead.ID, "error", err)
+		// Don't fail the entire process if recording fails - continue with DoD result handling
 	}
 
 	if result.Passed {
@@ -598,8 +600,22 @@ func (s *Scheduler) transitionBeadToCoding(ctx context.Context, projectName stri
 	cmd := exec.CommandContext(ctx, "bd", "update", bead.ID, "--set-labels", "stage:coding")
 	cmd.Dir = projectRoot
 	
+	// Capture both stdout and stderr for better error reporting
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	
 	if err := cmd.Run(); err != nil {
-		s.logger.Error("failed to transition bead to coding", "project", projectName, "bead", bead.ID, "error", err)
+		s.logger.Error("failed to transition bead to coding", 
+			"project", projectName, 
+			"bead", bead.ID, 
+			"error", err,
+			"output", output.String())
+		
+		// Record the failure but don't panic - log and continue
+		_ = s.store.RecordHealthEventWithDispatch("dod_transition_failed", 
+			fmt.Sprintf("project %s bead %s failed to transition to coding: %s", projectName, bead.ID, err), 
+			0, bead.ID)
 		return
 	}
 
@@ -611,13 +627,18 @@ func (s *Scheduler) transitionBeadToCoding(ctx context.Context, projectName stri
 
 // handleOpsQaCompletion checks if a completed dispatch was ops/qa work and transitions to DoD if configured
 func (s *Scheduler) handleOpsQaCompletion(ctx context.Context, dispatch store.Dispatch) {
-	// Check if this was an ops agent dispatch
-	if dispatch.AgentID == "" || !strings.HasSuffix(dispatch.AgentID, "-ops") {
+	// Check if this was an ops or qa agent dispatch
+	if dispatch.AgentID == "" || (!strings.HasSuffix(dispatch.AgentID, "-ops") && !strings.HasSuffix(dispatch.AgentID, "-qa")) {
 		return
 	}
 
-	// Extract project name from agent ID (format: "projectname-ops")
-	projectName := strings.TrimSuffix(dispatch.AgentID, "-ops")
+	// Extract project name from agent ID (format: "projectname-ops" or "projectname-qa")
+	projectName := dispatch.AgentID
+	if strings.HasSuffix(projectName, "-ops") {
+		projectName = strings.TrimSuffix(projectName, "-ops")
+	} else if strings.HasSuffix(projectName, "-qa") {
+		projectName = strings.TrimSuffix(projectName, "-qa")
+	}
 	project, exists := s.cfg.Projects[projectName]
 	if !exists || !project.Enabled {
 		return
@@ -671,8 +692,22 @@ func (s *Scheduler) transitionBeadToDod(ctx context.Context, projectName string,
 	cmd := exec.CommandContext(ctx, "bd", "update", bead.ID, "--set-labels", "stage:dod")
 	cmd.Dir = projectRoot
 	
+	// Capture both stdout and stderr for better error reporting
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	
 	if err := cmd.Run(); err != nil {
-		s.logger.Error("failed to transition bead to DoD", "project", projectName, "bead", bead.ID, "error", err)
+		s.logger.Error("failed to transition bead to DoD", 
+			"project", projectName, 
+			"bead", bead.ID, 
+			"error", err,
+			"output", output.String())
+		
+		// Record the failure but don't panic - log and continue
+		_ = s.store.RecordHealthEventWithDispatch("dod_transition_failed", 
+			fmt.Sprintf("project %s bead %s failed to transition to DoD stage: %s", projectName, bead.ID, err), 
+			0, bead.ID)
 		return
 	}
 

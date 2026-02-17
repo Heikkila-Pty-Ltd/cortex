@@ -36,10 +36,10 @@ type DoDResult struct {
 
 // CheckResult contains the result of running a single DoD check command.
 type CheckResult struct {
-	Command  string // the command that was executed
-	ExitCode int    // process exit code
-	Output   string // truncated stdout/stderr output
-	Passed   bool   // true if the check passed
+	Command  string        // the command that was executed
+	ExitCode int           // process exit code
+	Output   string        // truncated stdout/stderr output
+	Passed   bool          // true if the check passed
 	Duration time.Duration // how long the command took
 }
 
@@ -91,11 +91,11 @@ func (d *DoDChecker) Check(ctx context.Context, workspace string, bead beads.Bea
 		if err != nil {
 			return nil, fmt.Errorf("running check %q: %w", check, err)
 		}
-		
+
 		result.Checks = append(result.Checks, *checkResult)
 		if !checkResult.Passed {
 			result.Passed = false
-			result.Failures = append(result.Failures, 
+			result.Failures = append(result.Failures,
 				fmt.Sprintf("Command failed: %s (exit %d)", check, checkResult.ExitCode))
 		}
 	}
@@ -114,13 +114,13 @@ func (d *DoDChecker) Check(ctx context.Context, workspace string, bead beads.Bea
 func (d *DoDChecker) validateBeadRequirements(bead beads.Bead, result *DoDResult) error {
 	if d.requireEstimate && bead.EstimateMinutes <= 0 {
 		result.Passed = false
-		result.Failures = append(result.Failures, 
+		result.Failures = append(result.Failures,
 			fmt.Sprintf("Bead %s missing estimate (required by DoD)", bead.ID))
 	}
 
 	if d.requireAcceptance && strings.TrimSpace(bead.Acceptance) == "" {
 		result.Passed = false
-		result.Failures = append(result.Failures, 
+		result.Failures = append(result.Failures,
 			fmt.Sprintf("Bead %s missing acceptance criteria (required by DoD)", bead.ID))
 	}
 
@@ -130,13 +130,13 @@ func (d *DoDChecker) validateBeadRequirements(bead beads.Bead, result *DoDResult
 // runCheck executes a single DoD check command in the workspace.
 func (d *DoDChecker) runCheck(ctx context.Context, workspace, command string) (*CheckResult, error) {
 	start := time.Now()
-	
+
 	// Parse command into command and args
 	parts := strings.Fields(command)
 	if len(parts) == 0 {
 		return nil, fmt.Errorf("empty command")
 	}
-	
+
 	cmd := exec.CommandContext(ctx, parts[0], parts[1:]...)
 	cmd.Dir = workspace
 
@@ -146,14 +146,14 @@ func (d *DoDChecker) runCheck(ctx context.Context, workspace, command string) (*
 
 	err := cmd.Run()
 	duration := time.Since(start)
-	
+
 	exitCode := 0
 	if err != nil {
 		// Check if context was cancelled/timed out
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("command cancelled: %w", ctx.Err())
 		}
-		
+
 		if exitError, ok := err.(*exec.ExitError); ok {
 			exitCode = exitError.ExitCode()
 		} else {
@@ -197,7 +197,7 @@ func (d *DoDChecker) checkCoverage(ctx context.Context, workspace string, result
 	start := time.Now()
 	err := cmd.Run()
 	duration := time.Since(start)
-	
+
 	outputStr := output.String()
 	if len(outputStr) > 2000 {
 		outputStr = outputStr[:2000] + "\n... [truncated]"
@@ -229,7 +229,7 @@ func (d *DoDChecker) checkCoverage(ctx context.Context, workspace string, result
 	coverage, err := d.parseCoverage(output.String())
 	if err != nil {
 		result.Passed = false
-		result.Failures = append(result.Failures, 
+		result.Failures = append(result.Failures,
 			fmt.Sprintf("Failed to parse coverage: %v", err))
 		checkResult.Passed = false
 		result.Checks = append(result.Checks, checkResult)
@@ -239,7 +239,7 @@ func (d *DoDChecker) checkCoverage(ctx context.Context, workspace string, result
 	// Check against minimum threshold
 	if coverage < float64(d.coverageMin) {
 		result.Passed = false
-		result.Failures = append(result.Failures, 
+		result.Failures = append(result.Failures,
 			fmt.Sprintf("Coverage %.1f%% below minimum %d%%", coverage, d.coverageMin))
 		checkResult.Passed = false
 		checkResult.Output += fmt.Sprintf("\nCoverage: %.1f%% (minimum: %d%%)", coverage, d.coverageMin)
@@ -253,7 +253,7 @@ func (d *DoDChecker) checkCoverage(ctx context.Context, workspace string, result
 // Looks for patterns like "coverage: 85.2% of statements" or "total: (statements) 85.2%".
 func (d *DoDChecker) parseCoverage(output string) (float64, error) {
 	scanner := bufio.NewScanner(strings.NewReader(output))
-	
+
 	// Look for total coverage line first
 	totalCoverageRe := regexp.MustCompile(`total:\s*\(statements\)\s*(\d+\.?\d*)%`)
 	for scanner.Scan() {
@@ -267,12 +267,12 @@ func (d *DoDChecker) parseCoverage(output string) (float64, error) {
 			return coverage, nil
 		}
 	}
-	
+
 	// Fall back to individual package coverage if no total found
 	scanner = bufio.NewScanner(strings.NewReader(output))
 	coverageRe := regexp.MustCompile(`coverage:\s*(\d+\.?\d*)%\s+of\s+statements`)
 	var coverages []float64
-	
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		matches := coverageRe.FindStringSubmatch(line)
@@ -284,11 +284,11 @@ func (d *DoDChecker) parseCoverage(output string) (float64, error) {
 			coverages = append(coverages, coverage)
 		}
 	}
-	
+
 	if len(coverages) == 0 {
 		return 0, fmt.Errorf("no coverage information found in output")
 	}
-	
+
 	// Calculate average coverage across packages
 	var sum float64
 	for _, c := range coverages {

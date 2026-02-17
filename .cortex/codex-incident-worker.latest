@@ -1,6 +1,6 @@
-timestamp: 2026-02-18T07:58:48+10:00
+timestamp: 2026-02-18T08:51:23+10:00
 open_auto_bugs: 0
 running_count: 1
-failed_15m: 3
+failed_15m: 5
 codex_escalation_enabled: 1
 poll_sec: 300

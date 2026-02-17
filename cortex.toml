@@ -14,6 +14,16 @@ beads_dir = "~/projects/cortex/.beads"
 workspace = "~/projects/cortex"
 priority = 0
 
+[projects.cortex.dod]
+checks = [
+    "go test ./...",
+    "go vet ./...",
+    "golangci-lint run --timeout=5m",
+]
+coverage_min = 70
+require_estimate = true
+require_acceptance = true
+
 [projects.hg-website]
 enabled = true
 beads_dir = "~/projects/hg-website/.beads"

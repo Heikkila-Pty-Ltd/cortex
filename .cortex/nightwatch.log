@@ -105,3 +105,16 @@
 [2026-02-18T07:35:45+10:00] checkpoint running=1 completed_15m=7 failed_15m=4 usage_5h=85/150 usage_weekly=257/2000
 [2026-02-18T07:50:46+10:00] NUDGE: Repeated failure signature 3x/15m: gateway connect failed: Error: gateway closed (1000):
 [2026-02-18T07:50:46+10:00] checkpoint running=1 completed_15m=1 failed_15m=4 usage_5h=85/150 usage_weekly=262/2000
+[2026-02-18T08:05:46+10:00] NUDGE: Repeated failure signature 2x/15m: gateway connect failed: Error: gateway closed (1000):
+[2026-02-18T08:05:46+10:00] checkpoint running=2 completed_15m=1 failed_15m=2 usage_5h=77/150 usage_weekly=266/2000
+[2026-02-18T08:20:47+10:00] NUDGE: Repeated failure signature 6x/15m: gateway connect failed: Error: gateway closed (1000):
+[2026-02-18T08:20:48+10:00] checkpoint running=2 completed_15m=2 failed_15m=7 usage_5h=73/150 usage_weekly=275/2000
+[2026-02-18T08:35:48+10:00] reconciled dead running dispatch id=1293 bead=cortex-xhk.9.2 pane=1 resp={"dispatch_id":1293,"status":"cancelled"}
+[2026-02-18T08:35:48+10:00] reconciled dead running dispatch id=1294 bead=cortex-xhk.9.1 pane=1 resp={"dispatch_id":1294,"status":"cancelled"}
+[2026-02-18T08:35:48+10:00] NUDGE: Reconciled 2 dead-running dispatch(es)
+[2026-02-18T08:35:48+10:00] filed bead bug key=dead-running-80259e42b3ac571fea798e337698ffb1ec44554f issue=cortex-dby title=Auto: multiple dead-running dispatches reconciled (2)
+[2026-02-18T08:35:49+10:00] NUDGE: Filed bead cortex-dby: Auto: multiple dead-running dispatches reconciled (2)
+[2026-02-18T08:35:49+10:00] NUDGE: Repeated failure signature 9x/15m: gateway connect failed: Error: gateway closed (1000):
+[2026-02-18T08:35:49+10:00] checkpoint running=1 completed_15m=2 failed_15m=9 usage_5h=85/150 usage_weekly=287/2000
+[2026-02-18T08:50:49+10:00] NUDGE: Repeated failure signature 5x/15m: gateway connect failed: Error: gateway closed (1000):
+[2026-02-18T08:50:49+10:00] checkpoint running=1 completed_15m=2 failed_15m=5 usage_5h=92/150 usage_weekly=294/2000

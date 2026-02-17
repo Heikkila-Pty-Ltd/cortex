@@ -33,3 +33,7 @@
 {"ts":"2026-02-17T21:20:45Z","running_count":2,"completed_15m":5,"failed_15m":0,"cancelled_15m":0,"usage_5h":88,"cap_5h":150,"usage_weekly":247,"cap_weekly":2000}
 {"ts":"2026-02-17T21:35:45Z","running_count":1,"completed_15m":7,"failed_15m":4,"cancelled_15m":0,"usage_5h":85,"cap_5h":150,"usage_weekly":257,"cap_weekly":2000}
 {"ts":"2026-02-17T21:50:46Z","running_count":1,"completed_15m":1,"failed_15m":4,"cancelled_15m":0,"usage_5h":85,"cap_5h":150,"usage_weekly":262,"cap_weekly":2000}
+{"ts":"2026-02-17T22:05:46Z","running_count":2,"completed_15m":1,"failed_15m":2,"cancelled_15m":0,"usage_5h":77,"cap_5h":150,"usage_weekly":266,"cap_weekly":2000}
+{"ts":"2026-02-17T22:20:47Z","running_count":2,"completed_15m":2,"failed_15m":7,"cancelled_15m":0,"usage_5h":73,"cap_5h":150,"usage_weekly":275,"cap_weekly":2000}
+{"ts":"2026-02-17T22:35:49Z","running_count":1,"completed_15m":2,"failed_15m":9,"cancelled_15m":2,"usage_5h":85,"cap_5h":150,"usage_weekly":287,"cap_weekly":2000}
+{"ts":"2026-02-17T22:50:49Z","running_count":1,"completed_15m":2,"failed_15m":5,"cancelled_15m":0,"usage_5h":92,"cap_5h":150,"usage_weekly":294,"cap_weekly":2000}
