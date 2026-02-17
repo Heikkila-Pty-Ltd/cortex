@@ -45,6 +45,24 @@ tier = "premium"
 authed = true
 model = "kimi-k2"
 
+[providers.codex-spark]
+tier = "fast"
+authed = true
+model = "gpt-5.3-codex-spark"
+cli = "codex"
+
+[providers.codex]
+tier = "balanced"
+authed = true
+model = "gpt-5.3-codex"
+cli = "codex"
+
+[providers.codex-max]
+tier = "premium"
+authed = true
+model = "gpt-5.1-codex-max"
+cli = "codex"
+
 [providers.cerebras]
 tier = "fast"
 authed = false
@@ -56,9 +74,9 @@ authed = false
 model = "llama-4-scout"
 
 [tiers]
-fast = ["cerebras", "groq"]
-balanced = ["claude-max20", "openai-pro"]
-premium = ["google-pro", "kimi"]
+fast = ["codex-spark", "cerebras", "groq"]
+balanced = ["codex", "claude-max20", "openai-pro"]
+premium = ["codex-max", "google-pro", "kimi"]
 
 [health]
 check_interval = "2m"
@@ -79,6 +97,13 @@ prompt_mode = "stdin"
 args = ["--print"]
 model_flag = "--model"
 approval_flags = ["--dangerously-skip-permissions"]
+
+[dispatch.cli.codex]
+cmd = "codex"
+prompt_mode = "stdin"
+args = ["exec", "--full-auto"]
+model_flag = "-m"
+approval_flags = []
 
 [dispatch.cli.aider]
 cmd = "aider"
