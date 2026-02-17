@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -40,6 +41,7 @@ type Config struct {
 	Learner    Learner                    `toml:"learner"`
 	API        API                        `toml:"api"`
 	Dispatch   Dispatch                   `toml:"dispatch"`
+	Chief      Chief                      `toml:"chief"`
 }
 
 type General struct {
@@ -65,9 +67,10 @@ type Project struct {
 }
 
 type RateLimits struct {
-	Window5hCap       int `toml:"window_5h_cap"`
-	WeeklyCap         int `toml:"weekly_cap"`
-	WeeklyHeadroomPct int `toml:"weekly_headroom_pct"`
+	Window5hCap       int            `toml:"window_5h_cap"`
+	WeeklyCap         int            `toml:"weekly_cap"`
+	WeeklyHeadroomPct int            `toml:"weekly_headroom_pct"`
+	Budget            map[string]int `toml:"budget"` // project -> percentage allocation
 }
 
 type Provider struct {
@@ -116,7 +119,15 @@ type Learner struct {
 }
 
 type API struct {
-	Bind string `toml:"bind"`
+	Bind     string    `toml:"bind"`
+	Security APISecurity `toml:"security"`
+}
+
+type APISecurity struct {
+	Enabled        bool     `toml:"enabled"`        // Enable auth for control endpoints
+	AllowedTokens  []string `toml:"allowed_tokens"` // Valid API tokens for auth
+	RequireLocalOnly bool    `toml:"require_local_only"` // Only allow local connections when auth disabled
+	AuditLog       string   `toml:"audit_log"`      // Path to audit log file
 }
 
 type Dispatch struct {
@@ -161,6 +172,13 @@ type DispatchGit struct {
 type DispatchTmux struct {
 	HistoryLimit  int    `toml:"history_limit"`  // default 50000
 	SessionPrefix string `toml:"session_prefix"` // default "cortex-"
+}
+
+type Chief struct {
+	Enabled    bool   `toml:"enabled"`     // Enable Chief Scrum Master
+	MatrixRoom string `toml:"matrix_room"` // Matrix room for coordination
+	Model      string `toml:"model"`       // Model to use (defaults to premium)
+	AgentID    string `toml:"agent_id"`    // Agent identifier (defaults to "cortex-chief-scrum")
 }
 
 // Load reads and validates a Cortex TOML configuration file.
@@ -285,6 +303,35 @@ func applyDefaults(cfg *Config) {
 		}
 		cfg.Projects[name] = project
 	}
+
+	// API security defaults
+	if !cfg.API.Security.Enabled && cfg.API.Bind != "" && !isLocalBind(cfg.API.Bind) {
+		// Default to requiring local-only when security is disabled and binding to non-local
+		cfg.API.Security.RequireLocalOnly = true
+	}
+
+	// Chief defaults
+	if cfg.Chief.Model == "" {
+		cfg.Chief.Model = "claude-opus-4-6" // Default to premium tier
+	}
+	if cfg.Chief.AgentID == "" {
+		cfg.Chief.AgentID = "cortex-chief-scrum"
+	}
+}
+
+// isLocalBind checks if a bind address is local (localhost, 127.0.0.1, or unix socket)
+func isLocalBind(bind string) bool {
+	if bind == "" {
+		return true
+	}
+	if bind[0] == '/' || bind[0] == '@' {
+		// Unix socket
+		return true
+	}
+	if strings.HasPrefix(bind, "localhost:") || strings.HasPrefix(bind, "127.0.0.1:") || strings.HasPrefix(bind, ":") {
+		return true
+	}
+	return false
 }
 
 func validate(cfg *Config) error {
@@ -356,6 +403,48 @@ func validate(cfg *Config) error {
 		}
 	}
 
+	// Validate rate limit budget configuration
+	if cfg.RateLimits.Budget != nil && len(cfg.RateLimits.Budget) > 0 {
+		total := 0
+		for project, percentage := range cfg.RateLimits.Budget {
+			if percentage < 0 {
+				return fmt.Errorf("budget for project %q cannot be negative: %d", project, percentage)
+			}
+			if percentage > 100 {
+				return fmt.Errorf("budget for project %q cannot exceed 100%%: %d", project, percentage)
+			}
+			total += percentage
+		}
+		if total != 100 {
+			return fmt.Errorf("rate limit budget percentages must sum to 100, got %d", total)
+		}
+	}
+
+	// Validate API security configuration
+	if cfg.API.Security.Enabled {
+		if len(cfg.API.Security.AllowedTokens) == 0 {
+			return fmt.Errorf("api security enabled but no allowed_tokens configured")
+		}
+		for i, token := range cfg.API.Security.AllowedTokens {
+			if len(token) < 16 {
+				return fmt.Errorf("api security token %d is too short (minimum 16 characters)", i)
+			}
+		}
+		if cfg.API.Security.AuditLog != "" {
+			dir := ExpandHome(filepath.Dir(cfg.API.Security.AuditLog))
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return fmt.Errorf("cannot create audit log directory %q: %w", dir, err)
+			}
+		}
+	}
+
+	// Validate Chief configuration
+	if cfg.Chief.Enabled {
+		if cfg.Chief.MatrixRoom == "" {
+			return fmt.Errorf("chief scrum master enabled but no matrix_room configured")
+		}
+	}
+
 	return nil
 }
 
@@ -372,4 +461,13 @@ func ExpandHome(path string) string {
 		return filepath.Join(home, path[1:])
 	}
 	return path
+}
+
+// GetProjectBudget returns the budget percentage allocated to a project.
+// If no budget is configured or the project is not in the budget, returns 0.
+func (rl *RateLimits) GetProjectBudget(project string) int {
+	if rl.Budget == nil {
+		return 0
+	}
+	return rl.Budget[project]
 }
