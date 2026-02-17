@@ -35,8 +35,8 @@ func GenerateWeeklyRetro(s *store.Store) (*RetroReport, error) {
 	cutoff := time.Now().Add(-window).UTC().Format(time.DateTime)
 	err := s.DB().QueryRow(`
 		SELECT COUNT(*),
-			SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END),
-			SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),
+			COALESCE(SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), 0),
 			AVG(CASE WHEN status='completed' THEN duration_s ELSE NULL END)
 		FROM dispatches WHERE dispatched_at >= ?
 	`, cutoff).Scan(&report.TotalDispatches, &report.Completed, &report.Failed, &avgDur)

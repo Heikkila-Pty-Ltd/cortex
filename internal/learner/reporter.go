@@ -17,7 +17,7 @@ import (
 type Reporter struct {
 	cfg        config.Reporter
 	store      *store.Store
-	dispatcher *dispatch.Dispatcher
+	dispatcher dispatch.DispatcherInterface
 	logger     *slog.Logger
 
 	mu        sync.Mutex
@@ -25,7 +25,7 @@ type Reporter struct {
 }
 
 // NewReporter creates a new Reporter.
-func NewReporter(cfg config.Reporter, s *store.Store, d *dispatch.Dispatcher, logger *slog.Logger) *Reporter {
+func NewReporter(cfg config.Reporter, s *store.Store, d dispatch.DispatcherInterface, logger *slog.Logger) *Reporter {
 	return &Reporter{
 		cfg:        cfg,
 		store:      s,
@@ -78,7 +78,7 @@ func (r *Reporter) appendRecommendations(b *strings.Builder) {
 	}
 
 	fmt.Fprintf(b, "\n## 🧠 System Recommendations\n\n")
-	
+
 	highConfidenceCount := 0
 	for _, rec := range recommendations {
 		if rec.Confidence >= 70.0 {
@@ -87,13 +87,13 @@ func (r *Reporter) appendRecommendations(b *strings.Builder) {
 			if rec.Confidence >= 85.0 {
 				confidence = "High"
 			}
-			
-			fmt.Fprintf(b, "- **%s Confidence**: %s\n", 
+
+			fmt.Fprintf(b, "- **%s Confidence**: %s\n",
 				confidence, rec.SuggestedAction)
 			fmt.Fprintf(b, "  *%s*\n\n", rec.Rationale)
 		}
 	}
-	
+
 	if highConfidenceCount == 0 {
 		fmt.Fprintf(b, "No high-confidence recommendations at this time.\n\n")
 	} else {
