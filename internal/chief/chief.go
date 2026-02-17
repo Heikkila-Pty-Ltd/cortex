@@ -10,6 +10,7 @@ import (
 	"github.com/antigravity-dev/cortex/internal/beads"
 	"github.com/antigravity-dev/cortex/internal/config"
 	"github.com/antigravity-dev/cortex/internal/dispatch"
+	"github.com/antigravity-dev/cortex/internal/portfolio"
 	"github.com/antigravity-dev/cortex/internal/store"
 )
 
@@ -290,18 +291,107 @@ func (c *Chief) buildCeremonyPrompt(ctx context.Context, template string) string
 
 // buildMultiTeamPlanningPrompt creates the multi-team sprint planning prompt
 func (c *Chief) buildMultiTeamPlanningPrompt(ctx context.Context) string {
+	// **GATHER PORTFOLIO CONTEXT** - This is the missing integration!
+	c.logger.Info("gathering portfolio context for multi-team planning")
+	
+	portfolioData, err := portfolio.GatherPortfolioBacklogs(ctx, c.cfg, c.logger)
+	if err != nil {
+		c.logger.Error("failed to gather portfolio backlogs", "error", err)
+		// Continue with basic prompt if gathering fails
+		return c.buildBasicMultiTeamPlanningPrompt(ctx)
+	}
+
+	c.logger.Info("portfolio context gathered successfully",
+		"active_projects", portfolioData.Summary.ActiveProjects,
+		"total_beads", portfolioData.Summary.TotalOpenBeads,
+		"cross_project_blockers", portfolioData.Summary.CrossProjectBlockers)
+
+	// Build enriched prompt with actual portfolio data
+	promptBuilder := fmt.Sprintf(`# Multi-Team Sprint Planning Ceremony
+
+You are the **Chief Scrum Master** conducting a unified sprint planning across all projects.
+
+## Portfolio Context (Pre-gathered)
+
+**Active Projects:** %d
+**Total Open Beads:** %d (Refined: %d, Unrefined: %d, Ready: %d)
+**Cross-Project Blockers:** %d
+
+### Project Priorities (High to Low)
+`, portfolioData.Summary.ActiveProjects,
+		portfolioData.Summary.TotalOpenBeads,
+		portfolioData.Summary.TotalRefinedBeads,
+		portfolioData.Summary.TotalUnrefinedBeads,
+		portfolioData.Summary.TotalReadyToWork,
+		portfolioData.Summary.CrossProjectBlockers)
+
+	// Add project details
+	for _, projectName := range portfolioData.Summary.ProjectsByPriority {
+		if backlog, exists := portfolioData.ProjectBacklogs[projectName]; exists {
+			budget := portfolioData.CapacityBudgets[projectName]
+			promptBuilder += fmt.Sprintf("- **%s** (Priority %d, Budget: %d%%): %d beads (%d ready), ~%d min\n",
+				projectName, backlog.Priority, budget, len(backlog.AllBeads), 
+				len(backlog.ReadyToWork), backlog.TotalEstimate)
+		}
+	}
+
+	// Add cross-project dependencies
+	if len(portfolioData.CrossProjectDeps) > 0 {
+		promptBuilder += "\n### Cross-Project Dependencies\n"
+		for _, dep := range portfolioData.CrossProjectDeps {
+			status := "✅ RESOLVED"
+			if !dep.IsResolved {
+				status = "🚫 BLOCKING"
+			}
+			promptBuilder += fmt.Sprintf("- %s:%s → %s:%s %s\n",
+				dep.SourceProject, dep.SourceBeadID,
+				dep.TargetProject, dep.TargetBeadID, status)
+		}
+	}
+
+	// Add strategic guidance
+	promptBuilder += `
+
+## Your Mission
+
+1. **Review Portfolio Context Above** ✅ (already gathered)
+
+2. **Strategic Allocation** (your LLM reasoning):
+   - Prioritize projects based on cross-project dependencies
+   - Balance capacity across high-priority work
+   - Identify provider tier conflicts and suggest staggering
+   - Balance technical debt vs features across portfolio
+
+3. **Deliver Unified Plan**:
+   - Record allocations in store using the allocator
+   - Update rate limit budgets if rebalancing needed
+   - Send coordination summary to Matrix room (if configured)
+   - Ensure this runs BEFORE individual project sprint planning
+
+## Context
+- **Timing**: Sprint start, before per-project scrum master planning  
+- **Priority**: Use premium/Opus tier reasoning for strategic decisions
+- **Available Tools**: Use Chief SM allocator functions to record decisions
+
+Execute strategic allocation and unified planning now.`
+
+	return promptBuilder
+}
+
+// buildBasicMultiTeamPlanningPrompt creates a fallback prompt when portfolio gathering fails
+func (c *Chief) buildBasicMultiTeamPlanningPrompt(ctx context.Context) string {
 	return `# Multi-Team Sprint Planning Ceremony
 
 You are the **Chief Scrum Master** conducting a unified sprint planning across all projects.
 
+⚠️ **Note**: Portfolio context gathering failed. You'll need to gather project backlogs manually.
+
 ## Your Mission
 
-1. **Gather Portfolio Context** (code before LLM dispatch):
-   - Collect backlogs from all active projects
+1. **Gather Portfolio Context** (you must do this):
+   - Use tools to collect backlogs from all active projects
    - Build cross-project dependency graph  
    - Calculate per-project capacity budgets from rate_limits.budget
-   - Review provider performance profiles
-   - Check existing per-project sprint plans (if any)
 
 2. **Strategic Allocation** (your LLM reasoning):
    - Review cross-project dependencies: "Project B needs endpoint from Project A — prioritize A's endpoint bead"

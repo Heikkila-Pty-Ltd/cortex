@@ -37,3 +37,5 @@
 {"ts":"2026-02-17T22:20:47Z","running_count":2,"completed_15m":2,"failed_15m":7,"cancelled_15m":0,"usage_5h":73,"cap_5h":150,"usage_weekly":275,"cap_weekly":2000}
 {"ts":"2026-02-17T22:35:49Z","running_count":1,"completed_15m":2,"failed_15m":9,"cancelled_15m":2,"usage_5h":85,"cap_5h":150,"usage_weekly":287,"cap_weekly":2000}
 {"ts":"2026-02-17T22:50:49Z","running_count":1,"completed_15m":2,"failed_15m":5,"cancelled_15m":0,"usage_5h":92,"cap_5h":150,"usage_weekly":294,"cap_weekly":2000}
+{"ts":"2026-02-17T23:05:51Z","running_count":3,"completed_15m":3,"failed_15m":2,"cancelled_15m":0,"usage_5h":98,"cap_5h":150,"usage_weekly":301,"cap_weekly":2000}
+{"ts":"2026-02-17T23:20:51Z","running_count":2,"completed_15m":6,"failed_15m":12,"cancelled_15m":0,"usage_5h":107,"cap_5h":150,"usage_weekly":318,"cap_weekly":2000}

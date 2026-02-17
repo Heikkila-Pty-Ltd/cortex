@@ -64,3 +64,8 @@
 [2026-02-18T08:46:21+10:00] codex-worker escalation completed for cortex-8bc
 [2026-02-18T08:46:22+10:00] codex-worker closed cortex-dby (dead-running dispatches resolved)
 [2026-02-18T08:50:49+10:00] Repeated failure signature 5x/15m: gateway connect failed: Error: gateway closed (1000):
+[2026-02-18T09:05:50+10:00] Repeated failure signature 2x/15m: <none>
+[2026-02-18T09:09:26+10:00] codex-worker escalation completed for cortex-2h0
+[2026-02-18T09:20:51+10:00] Repeated failure signature 6x/15m: gateway connect failed: Error: gateway closed (1000):
+[2026-02-18T09:20:51+10:00] Repeated failure signature 6x/15m: <none>
+[2026-02-18T09:23:13+10:00] codex-worker escalation completed for cortex-dxh
