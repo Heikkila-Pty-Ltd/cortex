@@ -1,6 +1,10 @@
 package beads
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -133,5 +137,100 @@ func TestFilterUnblockedOpen_NoDeps(t *testing.T) {
 	}
 	if result[0].ID != "b" {
 		t.Errorf("expected b first (priority 1), got %s", result[0].ID)
+	}
+}
+
+func TestClaimBeadOwnershipCtx(t *testing.T) {
+	projectDir := t.TempDir()
+	beadsDir := filepath.Join(projectDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+	logPath := filepath.Join(projectDir, "args.log")
+
+	fakeBin := t.TempDir()
+	bdPath := filepath.Join(fakeBin, "bd")
+	script := "#!/bin/sh\n" +
+		"echo \"$@\" >> \"$BD_ARGS_LOG\"\n" +
+		"echo \"ok\"\n"
+	if err := os.WriteFile(bdPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake bd: %v", err)
+	}
+
+	t.Setenv("BD_ARGS_LOG", logPath)
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+	if err := ClaimBeadOwnershipCtx(context.Background(), beadsDir, "cortex-123"); err != nil {
+		t.Fatalf("ClaimBeadOwnershipCtx failed: %v", err)
+	}
+
+	args, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	got := string(args)
+	if !strings.Contains(got, "update cortex-123 --claim --status open") {
+		t.Fatalf("unexpected bd args: %q", got)
+	}
+}
+
+func TestClaimBeadOwnershipCtxAlreadyClaimed(t *testing.T) {
+	projectDir := t.TempDir()
+	beadsDir := filepath.Join(projectDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+
+	fakeBin := t.TempDir()
+	bdPath := filepath.Join(fakeBin, "bd")
+	script := "#!/bin/sh\n" +
+		"echo \"Error claiming $2: already claimed by Someone\"\n" +
+		"exit 0\n"
+	if err := os.WriteFile(bdPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake bd: %v", err)
+	}
+
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+	err := ClaimBeadOwnershipCtx(context.Background(), beadsDir, "cortex-123")
+	if err == nil {
+		t.Fatal("expected conflict error, got nil")
+	}
+	if !IsAlreadyClaimed(err) {
+		t.Fatalf("expected ErrBeadAlreadyClaimed, got: %v", err)
+	}
+}
+
+func TestReleaseBeadOwnershipCtx(t *testing.T) {
+	projectDir := t.TempDir()
+	beadsDir := filepath.Join(projectDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+	logPath := filepath.Join(projectDir, "args.log")
+
+	fakeBin := t.TempDir()
+	bdPath := filepath.Join(fakeBin, "bd")
+	script := "#!/bin/sh\n" +
+		"echo \"$@\" >> \"$BD_ARGS_LOG\"\n" +
+		"echo \"ok\"\n"
+	if err := os.WriteFile(bdPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake bd: %v", err)
+	}
+
+	t.Setenv("BD_ARGS_LOG", logPath)
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+	if err := ReleaseBeadOwnershipCtx(context.Background(), beadsDir, "cortex-456"); err != nil {
+		t.Fatalf("ReleaseBeadOwnershipCtx failed: %v", err)
+	}
+
+	args, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	got := string(args)
+	if !strings.Contains(got, "update cortex-456 --assignee= --status open") {
+		t.Fatalf("unexpected bd args: %q", got)
 	}
 }

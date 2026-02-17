@@ -46,9 +46,9 @@ func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterfac
 			if killErr != nil {
 				logger.Error("failed to kill stuck process", "handle", d.PID, "error", killErr)
 			}
-			s.RecordHealthEvent("stuck_killed", fmt.Sprintf("bead %s handle %d (%s) killed after timeout", d.BeadID, d.PID, dispatcher.GetHandleType()))
+			_ = s.RecordHealthEventWithDispatch("stuck_killed", fmt.Sprintf("bead %s handle %d (%s) killed after timeout", d.BeadID, d.PID, dispatcher.GetHandleType()), d.ID, d.BeadID)
 		} else {
-			s.RecordHealthEvent("stuck_dead", fmt.Sprintf("bead %s handle %d (%s) already dead", d.BeadID, d.PID, dispatcher.GetHandleType()))
+			_ = s.RecordHealthEventWithDispatch("stuck_dead", fmt.Sprintf("bead %s handle %d (%s) already dead", d.BeadID, d.PID, dispatcher.GetHandleType()), d.ID, d.BeadID)
 			logger.Warn("stuck dispatch already dead", "bead", d.BeadID, "handle", d.PID, "handle_type", dispatcher.GetHandleType())
 		}
 
@@ -85,7 +85,7 @@ func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterfac
 			})
 		} else {
 			logger.Error("max retries exceeded", "bead", d.BeadID, "retries", d.Retries)
-			s.RecordHealthEvent("max_retries", fmt.Sprintf("bead %s failed after %d retries", d.BeadID, d.Retries))
+			_ = s.RecordHealthEventWithDispatch("max_retries", fmt.Sprintf("bead %s failed after %d retries", d.BeadID, d.Retries), d.ID, d.BeadID)
 			
 			// Mark as permanently failed
 			s.UpdateDispatchStatus(d.ID, "failed", -1, duration)

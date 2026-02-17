@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/antigravity-dev/cortex/internal/dispatch"
 	"github.com/antigravity-dev/cortex/internal/store"
 )
 
@@ -37,6 +38,19 @@ func (f *fakeDispatcher) GetHandleType() string {
 
 func (f *fakeDispatcher) GetSessionName(handle int) string {
 	return ""
+}
+
+func (f *fakeDispatcher) GetProcessState(handle int) dispatch.ProcessState {
+	if f.alive {
+		return dispatch.ProcessState{
+			State:    "running",
+			ExitCode: -1,
+		}
+	}
+	return dispatch.ProcessState{
+		State:    "exited",
+		ExitCode: 0,
+	}
 }
 
 func newTestStore(t *testing.T) *store.Store {

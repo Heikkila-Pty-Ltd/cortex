@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/antigravity-dev/cortex/internal/config"
@@ -51,7 +52,8 @@ func (m *Monitor) Start(ctx context.Context) {
 			return
 		case <-ticker.C:
 			m.CheckGateway(ctx)
-			m.checkDispatchHealth()
+			// Dispatch lifecycle mutations (stuck/zombie) are owned by
+			// scheduler.RunTick to avoid duplicate writers.
 		}
 	}
 }
@@ -83,7 +85,9 @@ func (m *Monitor) CheckGateway(ctx context.Context) HealthStatus {
 
 	active, err := isUnitActive(ctx, m.cfg.GatewayUnit)
 	if err != nil {
+		status.GatewayUp = false
 		m.logger.Error("failed to check gateway status", "error", err)
+		_ = m.store.RecordHealthEvent("gateway_check_failed", fmt.Sprintf("failed to check %s: %v", m.cfg.GatewayUnit, err))
 		return status
 	}
 
@@ -94,31 +98,51 @@ func (m *Monitor) CheckGateway(ctx context.Context) HealthStatus {
 	status.GatewayUp = false
 	m.logger.Warn("gateway inactive, attempting restart", "unit", m.cfg.GatewayUnit)
 
+	restartSucceeded := false
+	var restartErr error
+
 	if err := restartUnit(ctx, m.cfg.GatewayUnit); err != nil {
+		restartErr = err
 		m.logger.Error("gateway restart failed, clearing stale locks", "error", err)
 		clearStaleLocks()
 
 		if err := restartUnit(ctx, m.cfg.GatewayUnit); err != nil {
+			restartErr = err
 			m.logger.Error("gateway restart failed after clearing locks", "error", err)
+		} else if up, checkErr := isUnitActive(ctx, m.cfg.GatewayUnit); checkErr != nil {
+			restartErr = checkErr
+			m.logger.Error("gateway post-restart status check failed", "error", checkErr)
+		} else if up {
+			restartSucceeded = true
 		}
+	} else if up, checkErr := isUnitActive(ctx, m.cfg.GatewayUnit); checkErr != nil {
+		restartErr = checkErr
+		m.logger.Error("gateway post-restart status check failed", "error", checkErr)
+	} else if up {
+		restartSucceeded = true
 	}
 
-	m.store.RecordHealthEvent("gateway_restart", fmt.Sprintf("restarted %s", m.cfg.GatewayUnit))
+	if restartSucceeded {
+		_ = m.store.RecordHealthEvent("gateway_restart_success", fmt.Sprintf("restarted %s", m.cfg.GatewayUnit))
+		status.GatewayUp = true
+	} else {
+		_ = m.store.RecordHealthEvent("gateway_restart_failed", fmt.Sprintf("failed to restart %s: %v", m.cfg.GatewayUnit, restartErr))
+	}
 
-	// Check restart count in rolling 1h window
+	// Check restart-failure count in rolling 1h window
 	events, err := m.store.GetRecentHealthEvents(1)
 	if err == nil {
-		restartCount := 0
+		restartFailures := 0
 		for _, e := range events {
-			if e.EventType == "gateway_restart" {
-				restartCount++
+			if e.EventType == "gateway_restart_failed" {
+				restartFailures++
 			}
 		}
-		status.RestartsInHr = restartCount
-		if restartCount >= 3 {
+		status.RestartsInHr = restartFailures
+		if restartFailures >= 3 {
 			status.Critical = true
-			m.logger.Error("gateway critical: 3+ restarts in 1h", "restarts", restartCount)
-			m.store.RecordHealthEvent("gateway_critical", fmt.Sprintf("%d restarts in 1h", restartCount))
+			m.logger.Error("gateway critical: 3+ restart failures in 1h", "restart_failures", restartFailures)
+			_ = m.store.RecordHealthEvent("gateway_critical", fmt.Sprintf("%d restart failures in 1h", restartFailures))
 		}
 	}
 
@@ -129,8 +153,19 @@ func isUnitActive(ctx context.Context, unit string) (bool, error) {
 	cmd := exec.CommandContext(ctx, "systemctl", "--user", "is-active", unit)
 	var out bytes.Buffer
 	cmd.Stdout = &out
+	cmd.Stderr = &out
 	err := cmd.Run()
-	return out.String() == "active\n", err
+	state := strings.TrimSpace(out.String())
+	switch state {
+	case "active":
+		return true, nil
+	case "inactive", "failed", "activating", "deactivating", "reloading":
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("systemctl is-active %s: %w (%s)", unit, err, state)
+	}
+	return false, nil
 }
 
 func restartUnit(ctx context.Context, unit string) error {

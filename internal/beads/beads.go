@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -47,6 +49,9 @@ type DepGraph struct {
 	edges   map[string][]string // bead -> depends on these
 	reverse map[string][]string // bead -> blocks these
 }
+
+// ErrBeadAlreadyClaimed indicates an ownership lock conflict while claiming a bead.
+var ErrBeadAlreadyClaimed = errors.New("bead already claimed")
 
 // Nodes returns the nodes map.
 func (g *DepGraph) Nodes() map[string]*Bead { return g.nodes }
@@ -165,6 +170,52 @@ func CloseBeadCtx(ctx context.Context, beadsDir, beadID string) error {
 		return fmt.Errorf("closing bead %s: %w", beadID, err)
 	}
 	return nil
+}
+
+// ClaimBeadOwnership atomically claims a bead as an ownership lock while preserving status=open.
+func ClaimBeadOwnership(beadsDir, beadID string) error {
+	return ClaimBeadOwnershipCtx(context.Background(), beadsDir, beadID)
+}
+
+// ClaimBeadOwnershipCtx is the context-aware version of ClaimBeadOwnership.
+func ClaimBeadOwnershipCtx(ctx context.Context, beadsDir, beadID string) error {
+	root := projectRoot(beadsDir)
+	out, err := runBD(ctx, root, "update", beadID, "--claim", "--status", "open")
+	if err != nil {
+		if isClaimConflict(err.Error()) {
+			return ErrBeadAlreadyClaimed
+		}
+		return fmt.Errorf("claiming bead ownership %s: %w", beadID, err)
+	}
+	if isClaimConflict(string(out)) {
+		return ErrBeadAlreadyClaimed
+	}
+	return nil
+}
+
+// ReleaseBeadOwnership clears assignee ownership lock and leaves bead status open.
+func ReleaseBeadOwnership(beadsDir, beadID string) error {
+	return ReleaseBeadOwnershipCtx(context.Background(), beadsDir, beadID)
+}
+
+// ReleaseBeadOwnershipCtx is the context-aware version of ReleaseBeadOwnership.
+func ReleaseBeadOwnershipCtx(ctx context.Context, beadsDir, beadID string) error {
+	root := projectRoot(beadsDir)
+	_, err := runBD(ctx, root, "update", beadID, "--assignee=", "--status", "open")
+	if err != nil {
+		return fmt.Errorf("releasing bead ownership %s: %w", beadID, err)
+	}
+	return nil
+}
+
+// IsAlreadyClaimed reports whether an error indicates a bead ownership lock conflict.
+func IsAlreadyClaimed(err error) bool {
+	return errors.Is(err, ErrBeadAlreadyClaimed)
+}
+
+func isClaimConflict(text string) bool {
+	s := strings.ToLower(text)
+	return strings.Contains(s, "already claimed") || strings.Contains(s, "error claiming")
 }
 
 // BuildDepGraph constructs a directed dependency graph from a slice of beads.

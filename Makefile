@@ -12,6 +12,9 @@ clean:
 test:
 	go test ./...
 
+test-race:
+	go test -race ./...
+
 service-install:
 	mkdir -p ~/.config/systemd/user/
 	cp cortex.service ~/.config/systemd/user/

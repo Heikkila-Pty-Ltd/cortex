@@ -66,7 +66,9 @@ func cleanZombiePIDs(s *store.Store, logger *slog.Logger) int {
 			continue
 		}
 
-		s.RecordHealthEvent("zombie_killed", fmt.Sprintf("orphaned openclaw pid %d", pid))
+		if err := s.RecordHealthEventWithDispatch("zombie_killed", fmt.Sprintf("orphaned openclaw pid %d", pid), 0, ""); err != nil {
+			logger.Error("failed to record zombie event", "pid", pid, "error", err)
+		}
 		killed++
 	}
 
@@ -94,12 +96,41 @@ func cleanZombieSessions(s *store.Store, logger *slog.Logger) int {
 				logger.Error("failed to kill dead session", "session", sessionName, "error", err)
 				continue
 			}
-			s.RecordHealthEvent("zombie_killed", fmt.Sprintf("dead session %s", sessionName))
+
+			d, err := s.GetLatestDispatchBySession(sessionName)
+			if err != nil {
+				logger.Debug("failed to correlate dead session to dispatch", "session", sessionName, "error", err)
+			}
+
+			eventType, details := classifyDeadSessionEvent(sessionName, d)
+			dispatchID := int64(0)
+			beadID := ""
+			if d != nil {
+				dispatchID = d.ID
+				beadID = d.BeadID
+			}
+
+			if err := s.RecordHealthEventWithDispatch(eventType, details, dispatchID, beadID); err != nil {
+				logger.Error("failed to record dead-session event", "session", sessionName, "event_type", eventType, "error", err)
+			}
 			killed++
 		}
 	}
 
 	return killed
+}
+
+func classifyDeadSessionEvent(sessionName string, d *store.Dispatch) (eventType, details string) {
+	if d == nil {
+		return "zombie_killed", fmt.Sprintf("dead session %s with no matching dispatch", sessionName)
+	}
+
+	switch d.Status {
+	case "completed", "failed", "cancelled", "interrupted", "retried", "pending_retry":
+		return "session_cleaned", fmt.Sprintf("cleaned dead session %s for dispatch %d bead %s status %s", sessionName, d.ID, d.BeadID, d.Status)
+	default:
+		return "zombie_killed", fmt.Sprintf("dead session %s linked to dispatch %d bead %s status %s", sessionName, d.ID, d.BeadID, d.Status)
+	}
 }
 
 func getOpenclawPIDs() ([]int, error) {
