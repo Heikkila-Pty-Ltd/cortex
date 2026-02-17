@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"testing"
+	"time"
 
 	"github.com/antigravity-dev/cortex/internal/beads"
 )
@@ -134,6 +135,92 @@ func TestHasActiveChurnEscalation(t *testing.T) {
 			got := hasActiveChurnEscalation(tt.issues, beadID)
 			if got != tt.want {
 				t.Fatalf("hasActiveChurnEscalation() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHasRecentChurnEscalation(t *testing.T) {
+	now := time.Now()
+	cutoff := now.Add(-churnWindow)
+	beadID := "cortex-c4j.3"
+	title := "Auto: churn guard blocked bead cortex-c4j.3 (6 dispatches/1h0m0s)"
+
+	tests := []struct {
+		name   string
+		issues []beads.Bead
+		want   bool
+	}{
+		{
+			name: "open matching bug is treated as recent escalation",
+			issues: []beads.Bead{
+				{
+					ID:     "cortex-open",
+					Type:   "bug",
+					Status: "open",
+					Title:  title,
+					Dependencies: []beads.BeadDependency{
+						{IssueID: "cortex-open", DependsOnID: beadID, Type: "discovered-from"},
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "recently closed matching bug suppresses duplicate escalation",
+			issues: []beads.Bead{
+				{
+					ID:        "cortex-closed-recent",
+					Type:      "bug",
+					Status:    "closed",
+					Title:     title,
+					UpdatedAt: now.Add(-10 * time.Minute),
+					Dependencies: []beads.BeadDependency{
+						{IssueID: "cortex-closed-recent", DependsOnID: beadID, Type: "discovered-from"},
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "stale closed bug does not suppress new escalation",
+			issues: []beads.Bead{
+				{
+					ID:        "cortex-closed-stale",
+					Type:      "bug",
+					Status:    "closed",
+					Title:     title,
+					UpdatedAt: now.Add(-2 * time.Hour),
+					Dependencies: []beads.BeadDependency{
+						{IssueID: "cortex-closed-stale", DependsOnID: beadID, Type: "discovered-from"},
+					},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "closed bug without updated_at falls back to created_at",
+			issues: []beads.Bead{
+				{
+					ID:        "cortex-created-fallback",
+					Type:      "bug",
+					Status:    "closed",
+					Title:     title,
+					CreatedAt: now.Add(-20 * time.Minute),
+					Dependencies: []beads.BeadDependency{
+						{IssueID: "cortex-created-fallback", DependsOnID: beadID, Type: "discovered-from"},
+					},
+				},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasRecentChurnEscalation(tt.issues, beadID, cutoff)
+			if got != tt.want {
+				t.Fatalf("hasRecentChurnEscalation() = %v, want %v", got, tt.want)
 			}
 		})
 	}

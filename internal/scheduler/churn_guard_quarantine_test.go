@@ -2,10 +2,12 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,6 +91,37 @@ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(
 	}
 }
 
+func TestIsChurnBlocked_SuppressesDuplicateEscalationWhenRecentClosedEscalationExists(t *testing.T) {
+	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+
+	const beadID = "cortex-duplicate-escalation"
+	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
+
+	createLog := filepath.Join(t.TempDir(), "create.log")
+	recentClosedEscalation := fmt.Sprintf(`[{
+  "id":"cortex-existing-escalation",
+  "issue_type":"bug",
+  "status":"closed",
+  "title":"Auto: churn guard blocked bead %s (6 dispatches/1h0m0s)",
+  "updated_at":"%s",
+  "dependencies":[{"issue_id":"cortex-existing-escalation","depends_on_id":"%s","type":"discovered-from"}]
+}]`, beadID, time.Now().Add(-10*time.Minute).UTC().Format(time.RFC3339Nano), beadID)
+	installFakeBDForChurnGuardTestWithList(t, recentClosedEscalation, createLog)
+
+	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "duplicate escalation test"}, "cortex", beadsDir)
+	if !blocked {
+		t.Fatal("expected bead to be blocked by churn guard")
+	}
+
+	data, err := os.ReadFile(createLog)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read create log: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "" {
+		t.Fatalf("expected no escalation create calls, got log: %q", string(data))
+	}
+}
+
 func newChurnGuardSchedulerHarness(t *testing.T) (*Scheduler, *store.Store, string) {
 	t.Helper()
 
@@ -114,21 +147,30 @@ func newChurnGuardSchedulerHarness(t *testing.T) (*Scheduler, *store.Store, stri
 func installFakeBDForChurnGuardTest(t *testing.T) {
 	t.Helper()
 
+	installFakeBDForChurnGuardTestWithList(t, "[]", os.DevNull)
+}
+
+func installFakeBDForChurnGuardTestWithList(t *testing.T, listJSON, createLogPath string) {
+	t.Helper()
+
 	fakeBin := t.TempDir()
 	bdPath := filepath.Join(fakeBin, "bd")
-	script := `#!/bin/sh
+	script := fmt.Sprintf(`#!/bin/sh
 case "$1" in
   list)
-    echo '[]'
+    cat <<'JSON'
+%s
+JSON
     ;;
   create)
+    echo "$*" >> %q
     echo 'cortex-churn-test'
     ;;
   *)
     echo 'ok'
     ;;
 esac
-`
+`, listJSON, createLogPath)
 	if err := os.WriteFile(bdPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake bd: %v", err)
 	}

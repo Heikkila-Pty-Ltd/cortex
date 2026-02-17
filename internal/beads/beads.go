@@ -37,6 +37,7 @@ type Bead struct {
 	Acceptance      string           `json:"acceptance_criteria"`
 	Design          string           `json:"design"`
 	CreatedAt       time.Time        `json:"created_at"`
+	UpdatedAt       time.Time        `json:"updated_at"`
 }
 
 // BeadDetail holds the full output of bd show --json.

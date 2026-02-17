@@ -26,20 +26,20 @@ import (
 
 // Scheduler is the core orchestration loop.
 type Scheduler struct {
-	cfg                   *config.Config
-	store                 *store.Store
-	rateLimiter           *dispatch.RateLimiter
-	dispatcher            dispatch.DispatcherInterface
-	logger                *slog.Logger
-	dryRun                bool
-	mu                    sync.Mutex
-	paused                bool
-	quarantine            map[string]time.Time
-	churnBlock            map[string]time.Time
-	epicBreakup           map[string]time.Time
-	ceremonyScheduler     *CeremonyScheduler
-	completionVerifier    *CompletionVerifier
-	lastCompletionCheck   time.Time
+	cfg                 *config.Config
+	store               *store.Store
+	rateLimiter         *dispatch.RateLimiter
+	dispatcher          dispatch.DispatcherInterface
+	logger              *slog.Logger
+	dryRun              bool
+	mu                  sync.Mutex
+	paused              bool
+	quarantine          map[string]time.Time
+	churnBlock          map[string]time.Time
+	epicBreakup         map[string]time.Time
+	ceremonyScheduler   *CeremonyScheduler
+	completionVerifier  *CompletionVerifier
+	lastCompletionCheck time.Time
 }
 
 const (
@@ -76,14 +76,14 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 		churnBlock:  make(map[string]time.Time),
 		epicBreakup: make(map[string]time.Time),
 	}
-	
+
 	// Initialize ceremony scheduler
 	scheduler.ceremonyScheduler = NewCeremonyScheduler(cfg, s, d, logger)
-	
+
 	// Initialize completion verifier
 	scheduler.completionVerifier = NewCompletionVerifier(s, logger.With("component", "completion_verifier"))
 	scheduler.completionVerifier.SetProjects(cfg.Projects)
-	
+
 	return scheduler
 }
 
@@ -584,9 +584,9 @@ func (s *Scheduler) processSingleDoDCheck(ctx context.Context, projectName strin
 		s.logger.Info("DoD checks passed, closing bead", "project", projectName, "bead", bead.ID)
 		s.closeBead(ctx, projectName, project, bead, "DoD checks passed")
 	} else {
-		s.logger.Warn("DoD checks failed, transitioning back to coding", 
-			"project", projectName, 
-			"bead", bead.ID, 
+		s.logger.Warn("DoD checks failed, transitioning back to coding",
+			"project", projectName,
+			"bead", bead.ID,
 			"failures", len(result.Failures))
 		failureMsg := "DoD checks failed: " + strings.Join(result.Failures, "; ")
 		s.transitionBeadToCoding(ctx, projectName, project, bead, failureMsg)
@@ -601,8 +601,8 @@ func (s *Scheduler) closeBead(ctx context.Context, projectName string, project c
 	}
 
 	s.logger.Info("bead closed", "project", projectName, "bead", bead.ID, "reason", reason)
-	_ = s.store.RecordHealthEventWithDispatch("bead_closed", 
-		fmt.Sprintf("project %s bead %s closed after DoD validation: %s", projectName, bead.ID, reason), 
+	_ = s.store.RecordHealthEventWithDispatch("bead_closed",
+		fmt.Sprintf("project %s bead %s closed after DoD validation: %s", projectName, bead.ID, reason),
 		0, bead.ID)
 }
 
@@ -612,29 +612,29 @@ func (s *Scheduler) transitionBeadToCoding(ctx context.Context, projectName stri
 	projectRoot := strings.TrimSuffix(project.BeadsDir, "/.beads")
 	cmd := exec.CommandContext(ctx, "bd", "update", bead.ID, "--set-labels", "stage:coding")
 	cmd.Dir = projectRoot
-	
+
 	// Capture both stdout and stderr for better error reporting
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
-	
+
 	if err := cmd.Run(); err != nil {
-		s.logger.Error("failed to transition bead to coding", 
-			"project", projectName, 
-			"bead", bead.ID, 
+		s.logger.Error("failed to transition bead to coding",
+			"project", projectName,
+			"bead", bead.ID,
 			"error", err,
 			"output", output.String())
-		
+
 		// Record the failure but don't panic - log and continue
-		_ = s.store.RecordHealthEventWithDispatch("dod_transition_failed", 
-			fmt.Sprintf("project %s bead %s failed to transition to coding: %s", projectName, bead.ID, err), 
+		_ = s.store.RecordHealthEventWithDispatch("dod_transition_failed",
+			fmt.Sprintf("project %s bead %s failed to transition to coding: %s", projectName, bead.ID, err),
 			0, bead.ID)
 		return
 	}
 
 	s.logger.Info("bead transitioned back to coding", "project", projectName, "bead", bead.ID, "reason", failureReason)
-	_ = s.store.RecordHealthEventWithDispatch("dod_failure", 
-		fmt.Sprintf("project %s bead %s DoD failed, returned to coding: %s", projectName, bead.ID, failureReason), 
+	_ = s.store.RecordHealthEventWithDispatch("dod_failure",
+		fmt.Sprintf("project %s bead %s DoD failed, returned to coding: %s", projectName, bead.ID, failureReason),
 		0, bead.ID)
 }
 
@@ -681,7 +681,7 @@ func (s *Scheduler) handleOpsQaCompletion(ctx context.Context, dispatch store.Di
 
 	// Check if bead is in stage:qa
 	if !hasIssueLabel(bead, "stage:qa") {
-		s.logger.Debug("ops completion but bead not in stage:qa, skipping DoD transition", 
+		s.logger.Debug("ops completion but bead not in stage:qa, skipping DoD transition",
 			"project", projectName, "bead", dispatch.BeadID)
 		return
 	}
@@ -704,29 +704,29 @@ func (s *Scheduler) transitionBeadToDod(ctx context.Context, projectName string,
 	projectRoot := strings.TrimSuffix(project.BeadsDir, "/.beads")
 	cmd := exec.CommandContext(ctx, "bd", "update", bead.ID, "--set-labels", "stage:dod")
 	cmd.Dir = projectRoot
-	
+
 	// Capture both stdout and stderr for better error reporting
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
-	
+
 	if err := cmd.Run(); err != nil {
-		s.logger.Error("failed to transition bead to DoD", 
-			"project", projectName, 
-			"bead", bead.ID, 
+		s.logger.Error("failed to transition bead to DoD",
+			"project", projectName,
+			"bead", bead.ID,
 			"error", err,
 			"output", output.String())
-		
+
 		// Record the failure but don't panic - log and continue
-		_ = s.store.RecordHealthEventWithDispatch("dod_transition_failed", 
-			fmt.Sprintf("project %s bead %s failed to transition to DoD stage: %s", projectName, bead.ID, err), 
+		_ = s.store.RecordHealthEventWithDispatch("dod_transition_failed",
+			fmt.Sprintf("project %s bead %s failed to transition to DoD stage: %s", projectName, bead.ID, err),
 			0, bead.ID)
 		return
 	}
 
 	s.logger.Info("bead transitioned to DoD stage for validation", "project", projectName, "bead", bead.ID)
-	_ = s.store.RecordHealthEventWithDispatch("ops_to_dod_transition", 
-		fmt.Sprintf("project %s bead %s transitioned to DoD stage after ops/qa completion", projectName, bead.ID), 
+	_ = s.store.RecordHealthEventWithDispatch("ops_to_dod_transition",
+		fmt.Sprintf("project %s bead %s transitioned to DoD stage after ops/qa completion", projectName, bead.ID),
 		0, bead.ID)
 }
 
@@ -1043,6 +1043,43 @@ func hasActiveChurnEscalation(issueList []beads.Bead, beadID string) bool {
 	return false
 }
 
+func hasRecentChurnEscalation(issueList []beads.Bead, beadID string, cutoff time.Time) bool {
+	if beadID == "" {
+		return false
+	}
+
+	titlePrefix := fmt.Sprintf("Auto: churn guard blocked bead %s ", beadID)
+	for _, issue := range issueList {
+		if normalizeIssueType(issue.Type) != "bug" {
+			continue
+		}
+		if !strings.HasPrefix(issue.Title, titlePrefix) {
+			continue
+		}
+		if !hasDiscoveredFromDependency(issue, beadID) {
+			continue
+		}
+
+		status := strings.ToLower(strings.TrimSpace(issue.Status))
+		if status != "closed" {
+			return true
+		}
+
+		lastUpdated := issue.UpdatedAt
+		if lastUpdated.IsZero() {
+			lastUpdated = issue.CreatedAt
+		}
+		if lastUpdated.IsZero() {
+			continue
+		}
+		if !lastUpdated.Before(cutoff) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func hasDiscoveredFromDependency(issue beads.Bead, beadID string) bool {
 	for _, dep := range issue.Dependencies {
 		if dep.DependsOnID == beadID && dep.Type == "discovered-from" {
@@ -1318,6 +1355,13 @@ func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, project
 			"type", bead.Type,
 			"dispatches_in_window", recent,
 			"window", churnWindow.String())
+	} else if hasRecentChurnEscalation(issueList, bead.ID, cutoff) {
+		s.logger.Warn("bead blocked by churn guard (recent escalation already recorded)",
+			"project", projectName,
+			"bead", bead.ID,
+			"type", bead.Type,
+			"dispatches_in_window", recent,
+			"window", churnWindow.String())
 	} else {
 		title := fmt.Sprintf("Auto: churn guard blocked bead %s (%d dispatches/%s)", bead.ID, recent, churnWindow)
 		description := fmt.Sprintf(
@@ -1538,38 +1582,38 @@ func (s *Scheduler) runHealthChecks() {
 // runCompletionVerification checks for beads that should be auto-closed based on git commits
 func (s *Scheduler) runCompletionVerification(ctx context.Context) {
 	now := time.Now()
-	
+
 	// Only run completion verification periodically
 	if !s.lastCompletionCheck.IsZero() && now.Sub(s.lastCompletionCheck) < completionCheckInterval {
 		return
 	}
-	
+
 	s.lastCompletionCheck = now
 	s.logger.Debug("running completion verification check")
-	
+
 	// Update projects in the verifier in case config changed
 	s.completionVerifier.SetProjects(s.cfg.Projects)
-	
+
 	// Run verification
 	results, err := s.completionVerifier.VerifyCompletion(ctx, s.cfg.Projects, completionLookbackDays)
 	if err != nil {
 		s.logger.Error("completion verification failed", "error", err)
 		return
 	}
-	
+
 	// Count and log summary
 	var totalCompleted, totalOrphaned, totalErrors int
 	for _, result := range results {
 		totalCompleted += len(result.CompletedBeads)
 		totalOrphaned += len(result.OrphanedCommits)
 		totalErrors += len(result.VerificationErrors)
-		
+
 		// Log details for projects with issues
 		if len(result.CompletedBeads) > 0 {
 			s.logger.Info("found beads that should be auto-closed",
 				"project", result.Project,
 				"count", len(result.CompletedBeads))
-				
+
 			for _, completed := range result.CompletedBeads {
 				s.logger.Info("bead should be closed",
 					"project", result.Project,
@@ -1579,12 +1623,12 @@ func (s *Scheduler) runCompletionVerification(ctx context.Context) {
 					"last_commit", completed.LastCommitAt.Format("2006-01-02 15:04:05"))
 			}
 		}
-		
+
 		if len(result.OrphanedCommits) > 0 {
 			s.logger.Warn("found orphaned commits referencing non-existent beads",
 				"project", result.Project,
 				"count", len(result.OrphanedCommits))
-				
+
 			for _, orphaned := range result.OrphanedCommits {
 				s.logger.Warn("orphaned commit",
 					"project", result.Project,
@@ -1593,7 +1637,7 @@ func (s *Scheduler) runCompletionVerification(ctx context.Context) {
 					"message", orphaned.Commit.Message)
 			}
 		}
-		
+
 		if len(result.VerificationErrors) > 0 {
 			for _, verErr := range result.VerificationErrors {
 				s.logger.Error("completion verification error",
@@ -1603,14 +1647,14 @@ func (s *Scheduler) runCompletionVerification(ctx context.Context) {
 			}
 		}
 	}
-	
+
 	if totalCompleted > 0 || totalOrphaned > 0 || totalErrors > 0 {
 		s.logger.Info("completion verification summary",
 			"completed_beads", totalCompleted,
 			"orphaned_commits", totalOrphaned,
 			"errors", totalErrors)
 	}
-	
+
 	// Auto-close completed beads if not in dry-run mode
 	if totalCompleted > 0 {
 		if err := s.completionVerifier.AutoCloseCompletedBeads(ctx, results, s.dryRun); err != nil {
