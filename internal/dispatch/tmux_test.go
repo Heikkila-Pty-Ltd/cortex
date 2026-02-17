@@ -65,7 +65,7 @@ func TestTmuxDispatcher_DispatchAndCapture(t *testing.T) {
 	d := NewTmuxDispatcher()
 	name := SessionName("test", "echo")
 
-	err := d.DispatchToSession(context.Background(), name, `sh -c 'echo hello-from-tmux'`, "/tmp", nil)
+	err := d.DispatchToSession(context.Background(), name, `sh -c 'echo hello-from-tmux; sleep 0.1'`, "/tmp", nil)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -104,13 +104,13 @@ func TestTmuxDispatcher_ExitCodeCapture(t *testing.T) {
 	d := NewTmuxDispatcher()
 	name := SessionName("test", "exitcode")
 
-	err := d.DispatchToSession(context.Background(), name, `sh -c 'exit 42'`, "/tmp", nil)
+	err := d.DispatchToSession(context.Background(), name, `sh -c 'sleep 0.2; exit 42'`, "/tmp", nil)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
 	defer KillSession(name)
 
-	time.Sleep(1 * time.Second)
+	time.Sleep(1500 * time.Millisecond)
 
 	status, exitCode := SessionStatus(name)
 	if status != "exited" {
@@ -127,7 +127,7 @@ func TestTmuxDispatcher_WorkDir(t *testing.T) {
 	d := NewTmuxDispatcher()
 	name := SessionName("test", "workdir")
 
-	err := d.DispatchToSession(context.Background(), name, `sh -c 'pwd'`, "/tmp", nil)
+	err := d.DispatchToSession(context.Background(), name, `sh -c 'pwd; sleep 0.1'`, "/tmp", nil)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestTmuxDispatcher_EnvVars(t *testing.T) {
 	env := map[string]string{
 		"CORTEX_TEST_VAR": "hello_cortex",
 	}
-	err := d.DispatchToSession(context.Background(), name, `sh -c 'echo VAR=$CORTEX_TEST_VAR'`, "/tmp", env)
+	err := d.DispatchToSession(context.Background(), name, `sh -c 'echo VAR=$CORTEX_TEST_VAR; sleep 0.1'`, "/tmp", env)
 	if err != nil {
 		t.Fatalf("Dispatch failed: %v", err)
 	}

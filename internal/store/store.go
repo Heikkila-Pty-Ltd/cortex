@@ -23,6 +23,7 @@ type Dispatch struct {
 	Provider          string
 	Tier              string
 	PID               int
+	SessionName       string
 	Prompt            string
 	DispatchedAt      time.Time
 	CompletedAt       sql.NullTime
@@ -72,7 +73,8 @@ CREATE TABLE IF NOT EXISTS dispatches (
 	agent_id TEXT NOT NULL,
 	provider TEXT NOT NULL,
 	tier TEXT NOT NULL,
-	pid INTEGER NOT NULL,
+	pid INTEGER NOT NULL DEFAULT 0,
+	session_name TEXT NOT NULL DEFAULT '',
 	prompt TEXT NOT NULL,
 	dispatched_at DATETIME NOT NULL DEFAULT (datetime('now')),
 	completed_at DATETIME,
@@ -137,7 +139,29 @@ func Open(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("store: create schema: %w", err)
 	}
 
+	// Run migrations for existing databases
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: migrate: %w", err)
+	}
+
 	return &Store{db: db}, nil
+}
+
+// migrate applies incremental schema migrations for existing databases.
+func migrate(db *sql.DB) error {
+	// Add session_name column if it doesn't exist (for databases created before this field was added)
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('dispatches') WHERE name = 'session_name'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check session_name column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE dispatches ADD COLUMN session_name TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add session_name column: %w", err)
+		}
+	}
+	return nil
 }
 
 // Close closes the database connection.
@@ -151,10 +175,10 @@ func (s *Store) DB() *sql.DB {
 }
 
 // RecordDispatch inserts a new dispatch record and returns its ID.
-func (s *Store) RecordDispatch(beadID, project, agent, provider, tier string, pid int, prompt string) (int64, error) {
+func (s *Store) RecordDispatch(beadID, project, agent, provider, tier string, handle int, sessionName, prompt string) (int64, error) {
 	res, err := s.db.Exec(
-		`INSERT INTO dispatches (bead_id, project, agent_id, provider, tier, pid, prompt) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		beadID, project, agent, provider, tier, pid, prompt,
+		`INSERT INTO dispatches (bead_id, project, agent_id, provider, tier, pid, session_name, prompt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		beadID, project, agent, provider, tier, handle, sessionName, prompt,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("store: record dispatch: %w", err)
@@ -174,15 +198,17 @@ func (s *Store) UpdateDispatchStatus(id int64, status string, exitCode int, dura
 	return nil
 }
 
+const dispatchCols = `id, bead_id, project, agent_id, provider, tier, pid, session_name, prompt, dispatched_at, completed_at, status, exit_code, duration_s, retries, escalated_from_tier`
+
 // GetRunningDispatches returns all dispatches with status 'running'.
 func (s *Store) GetRunningDispatches() ([]Dispatch, error) {
-	return s.queryDispatches(`SELECT id, bead_id, project, agent_id, provider, tier, pid, prompt, dispatched_at, completed_at, status, exit_code, duration_s, retries, escalated_from_tier FROM dispatches WHERE status = 'running'`)
+	return s.queryDispatches(`SELECT ` + dispatchCols + ` FROM dispatches WHERE status = 'running'`)
 }
 
 // GetStuckDispatches returns running dispatches older than the given timeout.
 func (s *Store) GetStuckDispatches(timeout time.Duration) ([]Dispatch, error) {
 	cutoff := time.Now().Add(-timeout).UTC().Format(time.DateTime)
-	return s.queryDispatches(`SELECT id, bead_id, project, agent_id, provider, tier, pid, prompt, dispatched_at, completed_at, status, exit_code, duration_s, retries, escalated_from_tier FROM dispatches WHERE status = 'running' AND dispatched_at < ?`, cutoff)
+	return s.queryDispatches(`SELECT `+dispatchCols+` FROM dispatches WHERE status = 'running' AND dispatched_at < ?`, cutoff)
 }
 
 func (s *Store) queryDispatches(query string, args ...any) ([]Dispatch, error) {
@@ -195,7 +221,7 @@ func (s *Store) queryDispatches(query string, args ...any) ([]Dispatch, error) {
 	var dispatches []Dispatch
 	for rows.Next() {
 		var d Dispatch
-		if err := rows.Scan(&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.ExitCode, &d.DurationS, &d.Retries, &d.EscalatedFromTier); err != nil {
+		if err := rows.Scan(&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName, &d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.ExitCode, &d.DurationS, &d.Retries, &d.EscalatedFromTier); err != nil {
 			return nil, fmt.Errorf("store: scan dispatch: %w", err)
 		}
 		dispatches = append(dispatches, d)

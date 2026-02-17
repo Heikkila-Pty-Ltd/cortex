@@ -15,6 +15,7 @@ type DispatcherInterface interface {
 	IsAlive(handle int) bool
 	Kill(handle int) error
 	GetHandleType() string // "pid" or "session"
+	GetSessionName(handle int) string // Returns session name for tmux dispatchers, empty for PID dispatchers
 }
 
 // Dispatcher launches and manages openclaw agent processes using PIDs.
@@ -102,6 +103,12 @@ func (d *Dispatcher) Kill(handle int) error {
 // GetHandleType implements DispatcherInterface.
 func (d *Dispatcher) GetHandleType() string {
 	return "pid"
+}
+
+// GetSessionName implements DispatcherInterface for PID-based dispatching.
+func (d *Dispatcher) GetSessionName(handle int) string {
+	// PID-based dispatchers don't have session names
+	return ""
 }
 
 // KillProcess sends SIGTERM, waits 5s, then SIGKILL if still alive.

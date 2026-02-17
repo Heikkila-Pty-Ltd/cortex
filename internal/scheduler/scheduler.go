@@ -200,14 +200,17 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		prompt := BuildPromptWithRole(item.bead, item.project, role)
 		thinkingLevel := dispatch.ThinkingLevel(currentTier)
 
-		pid, err := s.dispatcher.Dispatch(ctx, agent, prompt, provider.Model, thinkingLevel, config.ExpandHome(item.project.Workspace))
+		handle, err := s.dispatcher.Dispatch(ctx, agent, prompt, provider.Model, thinkingLevel, config.ExpandHome(item.project.Workspace))
 		if err != nil {
 			s.logger.Error("dispatch failed", "bead", item.bead.ID, "agent", agent, "error", err)
 			continue
 		}
 
-		// Record dispatch
-		_, err = s.store.RecordDispatch(item.bead.ID, item.name, agent, provider.Model, currentTier, pid, prompt)
+		// Get session name for tmux dispatchers (empty for PID dispatchers)
+		sessionName := s.dispatcher.GetSessionName(handle)
+
+		// Record dispatch with session name for crash-resilient tracking
+		_, err = s.store.RecordDispatch(item.bead.ID, item.name, agent, provider.Model, currentTier, handle, sessionName, prompt)
 		if err != nil {
 			s.logger.Error("failed to record dispatch", "bead", item.bead.ID, "error", err)
 			continue
@@ -235,7 +238,8 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			"stage", stage,
 			"provider", provider.Model,
 			"tier", currentTier,
-			"pid", pid,
+			"handle", handle,
+			"session", sessionName,
 		)
 		dispatched++
 	}
@@ -267,7 +271,8 @@ func (s *Scheduler) checkRunningDispatches() {
 	}
 
 	for _, d := range running {
-		if s.dispatcher.IsAlive(d.PID) {
+		alive := s.isDispatchAlive(d)
+		if alive {
 			continue
 		}
 
@@ -276,16 +281,18 @@ func (s *Scheduler) checkRunningDispatches() {
 		status := "completed"
 		exitCode := 0
 
-		// For tmux sessions, try to capture output before marking complete
-		if s.dispatcher.GetHandleType() == "session" {
-			sessionName := s.getSessionNameFromHandle(d.PID)
-			if sessionName != "" {
-				if output, err := dispatch.CaptureOutput(sessionName); err != nil {
-					s.logger.Warn("failed to capture output", "session", sessionName, "error", err)
-				} else if output != "" {
-					if err := s.store.CaptureOutput(d.ID, output); err != nil {
-						s.logger.Error("failed to store output", "dispatch_id", d.ID, "error", err)
-					}
+		// For tmux sessions, capture output and get exit code from the session
+		if d.SessionName != "" {
+			sessStatus, sessExit := dispatch.SessionStatus(d.SessionName)
+			if sessStatus == "exited" && sessExit != 0 {
+				status = "failed"
+				exitCode = sessExit
+			}
+			if output, err := dispatch.CaptureOutput(d.SessionName); err != nil {
+				s.logger.Warn("failed to capture output", "session", d.SessionName, "error", err)
+			} else if output != "" {
+				if err := s.store.CaptureOutput(d.ID, output); err != nil {
+					s.logger.Error("failed to store output", "dispatch_id", d.ID, "error", err)
 				}
 			}
 		}
@@ -293,9 +300,10 @@ func (s *Scheduler) checkRunningDispatches() {
 		s.logger.Info("dispatch completed",
 			"bead", d.BeadID,
 			"handle", d.PID,
-			"handle_type", s.dispatcher.GetHandleType(),
+			"session", d.SessionName,
 			"duration_s", duration,
 			"status", status,
+			"exit_code", exitCode,
 		)
 
 		if err := s.store.UpdateDispatchStatus(d.ID, status, exitCode, duration); err != nil {
@@ -304,10 +312,13 @@ func (s *Scheduler) checkRunningDispatches() {
 	}
 }
 
-// getSessionNameFromHandle attempts to get the session name for a tmux handle.
-// This is a placeholder - in a real implementation, the TmuxDispatcher would expose this.
-func (s *Scheduler) getSessionNameFromHandle(handle int) string {
-	// For now, we'll have to reconstruct this. In production, we'd want the
-	// dispatcher to expose a method to get session names by handle.
-	return ""
+// isDispatchAlive checks if a dispatch is still running using the best available method.
+// For tmux dispatches, it uses the stored session name (crash-resilient).
+// For PID dispatches, it falls back to the dispatcher's in-memory tracking.
+func (s *Scheduler) isDispatchAlive(d store.Dispatch) bool {
+	if d.SessionName != "" {
+		status, _ := dispatch.SessionStatus(d.SessionName)
+		return status == "running"
+	}
+	return s.dispatcher.IsAlive(d.PID)
 }

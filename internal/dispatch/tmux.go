@@ -143,23 +143,27 @@ func (d *TmuxDispatcher) DispatchToSession(
 
 	shellCmd := cmdBuf.String()
 
-	// tmux new-session -d -s <name> -c <workdir> '<command>'
-	//   \; set remain-on-exit on
-	//   \; set-option history-limit <N>
+	// Create the session first
 	args := []string{
 		"new-session",
 		"-d",
 		"-s", sessionName,
 		"-c", workDir,
 		shellCmd,
-		";", "set", "remain-on-exit", "on",
-		";", "set-option", "-t", sessionName, "history-limit", strconv.Itoa(d.historyLimit),
 	}
 
 	cmd := exec.CommandContext(ctx, "tmux", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("tmux dispatch %q: %w (%s)", sessionName, err, strings.TrimSpace(string(out)))
 	}
+
+	// Set remain-on-exit so session persists after command completion
+	// We need to do this immediately after session creation
+	exec.Command("tmux", "set", "-t", sessionName, "remain-on-exit", "on").Run()
+
+	// Set history limit for output capture
+	exec.Command("tmux", "set-option", "-t", sessionName, "history-limit", strconv.Itoa(d.historyLimit)).Run()
+
 	return nil
 }
 
@@ -193,6 +197,18 @@ func (d *TmuxDispatcher) Kill(handle int) error {
 // GetHandleType implements DispatcherInterface.
 func (d *TmuxDispatcher) GetHandleType() string {
 	return "session"
+}
+
+// GetSessionName implements DispatcherInterface for tmux-based dispatching.
+func (d *TmuxDispatcher) GetSessionName(handle int) string {
+	d.mu.RLock()
+	sessionName, ok := d.sessions[handle]
+	d.mu.RUnlock()
+	
+	if !ok {
+		return ""
+	}
+	return sessionName
 }
 
 // generateHandle creates a numeric handle for a session name and stores the mapping.

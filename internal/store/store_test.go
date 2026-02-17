@@ -22,7 +22,7 @@ func tempStore(t *testing.T) *Store {
 func TestOpenAndSchema(t *testing.T) {
 	s := tempStore(t)
 	// Verify tables exist by inserting a row
-	_, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 12345, "do stuff")
+	_, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 12345, "", "do stuff")
 	if err != nil {
 		t.Fatalf("RecordDispatch failed: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestOpenAndSchema(t *testing.T) {
 func TestRecordAndGetDispatches(t *testing.T) {
 	s := tempStore(t)
 
-	id, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "prompt1")
+	id, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "prompt1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestIsBeadDispatched(t *testing.T) {
 		t.Error("bead should not be dispatched yet")
 	}
 
-	_, err = s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "prompt")
+	_, err = s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "prompt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestIsBeadDispatched(t *testing.T) {
 func TestGetStuckDispatches(t *testing.T) {
 	s := tempStore(t)
 
-	_, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "prompt")
+	_, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "prompt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestIsAgentBusy(t *testing.T) {
 		t.Error("agent should not be busy yet")
 	}
 
-	_, err = s.RecordDispatch("bead-1", "proj", "proj-coder", "cerebras", "fast", 100, "prompt")
+	_, err = s.RecordDispatch("bead-1", "proj", "proj-coder", "cerebras", "fast", 100, "", "prompt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestCaptureAndGetOutput(t *testing.T) {
 	s := tempStore(t)
 
 	// Create a dispatch first
-	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "test prompt")
+	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "test prompt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestCaptureOutputSizeLimit(t *testing.T) {
 	s := tempStore(t)
 
 	// Create a dispatch first
-	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "test prompt")
+	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "test prompt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +297,7 @@ func TestCaptureOutputTail(t *testing.T) {
 	s := tempStore(t)
 
 	// Create a dispatch first
-	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "test prompt")
+	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "test prompt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,6 +324,33 @@ func TestCaptureOutputTail(t *testing.T) {
 	expectedTail := strings.Join(lines[50:], "\n")
 	if tail != expectedTail {
 		t.Errorf("tail mismatch:\nexpected last 100 lines\ngot: %s", tail[:100]+"...")
+	}
+}
+
+func TestSessionNameStorage(t *testing.T) {
+	s := tempStore(t)
+
+	// Record dispatch with session name
+	id, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 42, "ctx-proj-bead1-12345", "prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id == 0 {
+		t.Fatal("expected non-zero dispatch ID")
+	}
+
+	running, err := s.GetRunningDispatches()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(running) != 1 {
+		t.Fatalf("expected 1 running, got %d", len(running))
+	}
+	if running[0].SessionName != "ctx-proj-bead1-12345" {
+		t.Errorf("expected session name ctx-proj-bead1-12345, got %q", running[0].SessionName)
+	}
+	if running[0].PID != 42 {
+		t.Errorf("expected PID 42, got %d", running[0].PID)
 	}
 }
 
