@@ -313,6 +313,35 @@ func IsSessionAlive(sessionName string) bool {
 	return err == nil
 }
 
+// HasLiveSession checks if an agent has any running (pane not dead) tmux session
+// matching the cortex session naming pattern. This catches cases where the DB
+// shows no running dispatches but a tmux session is still actively executing.
+func HasLiveSession(agent string) bool {
+	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return false
+	}
+	// Look for sessions matching this agent's pattern: ctx-cortex-*-{agent}-*
+	// Agent names look like "cortex-coder", "hg-website-reviewer"
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, SessionPrefix) {
+			continue
+		}
+		if !strings.Contains(line, agent) {
+			continue
+		}
+		// Found a matching session — check if the pane is still alive
+		status, _ := SessionStatus(line)
+		if status == "running" {
+			return true
+		}
+	}
+	return false
+}
+
 // SessionStatus returns the state of the command inside the tmux session.
 //
 // Returns:

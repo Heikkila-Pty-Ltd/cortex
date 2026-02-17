@@ -236,6 +236,13 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			continue
 		}
 
+		// Check for live tmux sessions — even if DB says agent is free,
+		// a previous dispatch's tmux session may still be running.
+		if dispatch.HasLiveSession(agent) {
+			s.logger.Debug("agent has live tmux session, skipping", "agent", agent, "bead", item.bead.ID)
+			continue
+		}
+
 		// Detect complexity -> tier
 		tier := DetectComplexity(item.bead)
 
