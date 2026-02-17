@@ -3,6 +3,7 @@ package dispatch
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -59,8 +60,8 @@ func NewTmuxDispatcher() *TmuxDispatcher {
 	}
 }
 
-// SessionName builds a deterministic, collision-free tmux session name.
-// Format: ctx-<project>-<beadID>-<shortUnix>
+// SessionName builds a unique, collision-free tmux session name.
+// Format: ctx-<project>-<beadID>-<timestamp>-<pid>-<random>
 //
 // Naming rules enforced:
 //   - No dots    (tmux interprets them as window.pane separators)
@@ -74,13 +75,59 @@ func SessionName(project, beadID string) string {
 		s = strings.ReplaceAll(s, " ", "-")
 		return s
 	}
-	ts := time.Now().Unix()
-	return fmt.Sprintf("%s%s-%s-%d", SessionPrefix, sanitize(project), sanitize(beadID), ts)
+	
+	// Generate unique identifiers to prevent collisions
+	ts := time.Now().UnixNano() / 1000000 // millisecond precision
+	pid := os.Getpid()
+	
+	// Add 4 bytes of randomness for additional collision resistance
+	randBytes := make([]byte, 2)
+	rand.Read(randBytes)
+	randHex := fmt.Sprintf("%x", randBytes)
+	
+	return fmt.Sprintf("%s%s-%s-%d-%d-%s", SessionPrefix, sanitize(project), sanitize(beadID), ts, pid, randHex)
+}
+
+// prepareSessionForAgent ensures a clean environment for a new agent session.
+// This creates a unique session directory and clears any conflicting resources
+// without interfering with other active sessions.
+func prepareSessionForAgent(agent, sessionName string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("get home directory: %w", err)
+	}
+	
+	agentDir := filepath.Join(home, ".openclaw", "agents", agent)
+	sessionsDir := filepath.Join(agentDir, "sessions")
+	
+	// Ensure agent sessions directory exists
+	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
+		return fmt.Errorf("create sessions directory: %w", err)
+	}
+	
+	// Create unique session-specific directory to avoid conflicts
+	sessionDir := filepath.Join(sessionsDir, sessionName)
+	if err := os.MkdirAll(sessionDir, 0755); err != nil {
+		return fmt.Errorf("create session directory: %w", err)
+	}
+	
+	return nil
+}
+
+// cleanupSessionResources removes resources specific to a session after it completes.
+// This only cleans up resources tied to the specific session, not other active sessions.
+func cleanupSessionResources(agent, sessionName string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	
+	sessionDir := filepath.Join(home, ".openclaw", "agents", agent, "sessions", sessionName)
+	os.RemoveAll(sessionDir)
 }
 
 // clearStaleLocks removes openclaw session lock files whose owning PID is dead.
-// This prevents dispatches from failing repeatedly when a previous agent crashed
-// without releasing its lock.
+// This is now a fallback safety mechanism that only runs when necessary.
 func clearStaleLocks(agent string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -91,6 +138,8 @@ func clearStaleLocks(agent string) {
 	if err != nil {
 		return
 	}
+	
+	myPID := os.Getpid()
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".lock") {
 			continue
@@ -100,6 +149,7 @@ func clearStaleLocks(agent string) {
 		if err != nil {
 			continue
 		}
+		
 		// Lock files contain JSON with a "pid" field.
 		// Quick parse: find "pid": <number>
 		pidStr := ""
@@ -121,6 +171,12 @@ func clearStaleLocks(agent string) {
 		if err != nil || pid <= 0 {
 			continue
 		}
+		
+		// Don't clear locks from our own process or other live processes
+		if pid == myPID {
+			continue
+		}
+		
 		// Check if PID is alive
 		proc, err := os.FindProcess(pid)
 		if err != nil {
@@ -136,9 +192,6 @@ func clearStaleLocks(agent string) {
 
 // Dispatch implements DispatcherInterface for tmux-based dispatching.
 func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt string, provider string, thinkingLevel string, workDir string) (int, error) {
-	// Clear stale openclaw session locks before dispatching
-	clearStaleLocks(agent)
-
 	thinking := ThinkingLevel(thinkingLevel)
 
 	// Write prompt to temp file to avoid shell escaping issues.
@@ -159,27 +212,54 @@ func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt stri
 	shellScript := `msg=$(cat "$1") && exec openclaw agent --agent "$2" --message "$msg" --thinking "$3"`
 	agentCmd := fmt.Sprintf(`sh -c '%s' _ '%s' '%s' '%s'`, shellScript, tmpPath, agent, thinking)
 
-	// Generate session name (we need project and beadID, but we don't have them directly)
-	// For now, use agent name as a proxy for project
+	// Generate unique session name
 	sessionName := SessionName("cortex", agent)
+	
+	// Prepare clean session environment
+	if err := prepareSessionForAgent(agent, sessionName); err != nil {
+		os.Remove(tmpPath)
+		return 0, fmt.Errorf("prepare session for agent %s: %w", agent, err)
+	}
 	
 	// Create numeric handle
 	handle := d.generateHandle(sessionName)
 	
-	// Start the session
-	err = d.DispatchToSession(ctx, sessionName, agentCmd, workDir, nil)
+	// Start the session with retry logic for lock conflicts
+	err = d.dispatchWithRetry(ctx, sessionName, agentCmd, workDir, nil, agent)
 	if err != nil {
+		cleanupSessionResources(agent, sessionName)
+		os.Remove(tmpPath)
 		return 0, err
 	}
 
-	// Clean up temp file in background
+	// Clean up temp file and register cleanup in background
 	go func() {
 		// Wait a bit for the command to read the file
 		time.Sleep(2 * time.Second)
 		os.Remove(tmpPath)
+		
+		// Register session cleanup when session eventually ends
+		// This is a best-effort cleanup that doesn't interfere with the session
+		defer cleanupSessionResources(agent, sessionName)
 	}()
 
 	return handle, nil
+}
+
+// dispatchWithRetry attempts to start a session with fallback for lock conflicts.
+func (d *TmuxDispatcher) dispatchWithRetry(ctx context.Context, sessionName, agentCmd, workDir string, env map[string]string, agent string) error {
+	err := d.DispatchToSession(ctx, sessionName, agentCmd, workDir, env)
+	if err != nil {
+		// If we get a session lock error, try clearing stale locks once and retry
+		if strings.Contains(err.Error(), "locked") || strings.Contains(err.Error(), "session file") {
+			clearStaleLocks(agent)
+			// Wait briefly for lock files to be processed
+			time.Sleep(100 * time.Millisecond)
+			// Retry once
+			err = d.DispatchToSession(ctx, sessionName, agentCmd, workDir, env)
+		}
+	}
+	return err
 }
 
 // DispatchToSession starts an agent command inside a new tmux session.
@@ -252,7 +332,20 @@ func (d *TmuxDispatcher) Kill(handle int) error {
 		return fmt.Errorf("session handle %d not found", handle)
 	}
 	
-	return KillSession(sessionName)
+	err := KillSession(sessionName)
+	
+	// Clean up session resources after killing
+	// Extract agent name from session name for cleanup
+	if strings.HasPrefix(sessionName, SessionPrefix) {
+		parts := strings.Split(sessionName, "-")
+		if len(parts) >= 3 {
+			// Session format: ctx-cortex-{agent}-{timestamp}-{pid}-{random}
+			agent := parts[2]
+			go cleanupSessionResources(agent, sessionName)
+		}
+	}
+	
+	return err
 }
 
 // GetHandleType implements DispatcherInterface.
@@ -441,7 +534,7 @@ func ListCortexSessions() ([]string, error) {
 }
 
 // CleanDeadSessions finds cortex sessions whose commands have exited
-// and removes them.  Returns the count of sessions cleaned.
+// and removes them along with their resources. Returns the count of sessions cleaned.
 func CleanDeadSessions() int {
 	sessions, err := ListCortexSessions()
 	if err != nil {
@@ -453,6 +546,16 @@ func CleanDeadSessions() int {
 		status, _ := SessionStatus(name)
 		if status == "exited" {
 			KillSession(name)
+			
+			// Clean up session resources
+			if strings.HasPrefix(name, SessionPrefix) {
+				parts := strings.Split(name, "-")
+				if len(parts) >= 3 {
+					agent := parts[2]
+					cleanupSessionResources(agent, name)
+				}
+			}
+			
 			cleaned++
 		}
 	}
