@@ -19,6 +19,15 @@ func openclawCommandArgs(tmpPath, agent, thinking, provider string) []string {
 	return []string{"-c", openclawShellScript(), "_", tmpPath, agent, thinking, provider}
 }
 
+func normalizeThinkingLevel(thinkingOrTier string) string {
+	switch thinkingOrTier {
+	case "off", "low", "high":
+		return thinkingOrTier
+	default:
+		return ThinkingLevel(thinkingOrTier)
+	}
+}
+
 // DispatcherInterface defines the common interface for dispatching agents.
 type DispatcherInterface interface {
 	Dispatch(ctx context.Context, agent string, prompt string, provider string, thinkingLevel string, workDir string) (int, error)
@@ -52,7 +61,7 @@ func ThinkingLevel(tier string) string {
 
 // Dispatch starts an openclaw agent process in the background and returns its PID.
 func (d *Dispatcher) Dispatch(ctx context.Context, agent string, prompt string, provider string, thinkingLevel string, workDir string) (pid int, err error) {
-	thinking := ThinkingLevel(thinkingLevel)
+	thinking := normalizeThinkingLevel(thinkingLevel)
 
 	// Write prompt to temp file to avoid shell escaping issues.
 	tmpFile, err := os.CreateTemp("", "cortex-prompt-*.txt")
