@@ -135,6 +135,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 	// Check running dispatches first
 	s.checkRunningDispatches()
 
+	// Process pending retries with backoff
+	s.processPendingRetries(ctx)
+
 	// Collect all ready beads across enabled projects
 	var allReady []struct {
 		bead    beads.Bead
@@ -484,4 +487,134 @@ func (s *Scheduler) isDispatchAlive(d store.Dispatch) bool {
 		return status == "running"
 	}
 	return s.dispatcher.IsAlive(d.PID)
+}
+
+// processPendingRetries handles dispatches marked for retry with exponential backoff.
+func (s *Scheduler) processPendingRetries(ctx context.Context) {
+	retries, err := s.store.GetPendingRetryDispatches()
+	if err != nil {
+		s.logger.Error("failed to get pending retries", "error", err)
+		return
+	}
+
+	if len(retries) == 0 {
+		return
+	}
+
+	s.logger.Debug("processing pending retries", "count", len(retries))
+
+	for _, retry := range retries {
+		// Check if enough time has passed for retry using backoff logic
+		if !dispatch.ShouldRetry(retry.CompletedAt.Time, retry.Retries, 
+			s.cfg.General.RetryBackoffBase.Duration, s.cfg.General.RetryMaxDelay.Duration) {
+			s.logger.Debug("retry backoff not elapsed", 
+				"bead", retry.BeadID, 
+				"retries", retry.Retries, 
+				"next_retry_in", dispatch.BackoffDelay(retry.Retries, 
+					s.cfg.General.RetryBackoffBase.Duration, s.cfg.General.RetryMaxDelay.Duration) - time.Since(retry.CompletedAt.Time))
+			continue
+		}
+
+		// Check if we've exceeded max retries
+		if retry.Retries >= s.cfg.General.MaxRetries {
+			s.logger.Warn("max retries exceeded, marking as failed", 
+				"bead", retry.BeadID, "retries", retry.Retries, "max_retries", s.cfg.General.MaxRetries)
+			
+			// Update status to failed permanently
+			duration := time.Since(retry.DispatchedAt).Seconds()
+			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
+				s.logger.Error("failed to update over-retry dispatch", "id", retry.ID, "error", err)
+			}
+			continue
+		}
+
+		// Check if bead is already being worked on
+		already, err := s.store.IsBeadDispatched(retry.BeadID)
+		if err != nil {
+			s.logger.Error("failed to check bead dispatch status", "bead", retry.BeadID, "error", err)
+			continue
+		}
+		if already {
+			s.logger.Debug("bead already being worked on, skipping retry", "bead", retry.BeadID)
+			continue
+		}
+
+		// Check agent availability
+		busy, err := s.store.IsAgentBusy(retry.Project, retry.AgentID)
+		if err != nil {
+			s.logger.Error("failed to check agent busy", "agent", retry.AgentID, "error", err)
+			continue
+		}
+		if busy {
+			s.logger.Debug("agent busy, deferring retry", "agent", retry.AgentID, "bead", retry.BeadID)
+			continue
+		}
+
+		// Find the project config
+		project, exists := s.cfg.Projects[retry.Project]
+		if !exists || !project.Enabled {
+			s.logger.Warn("project not found or disabled, failing retry", 
+				"project", retry.Project, "bead", retry.BeadID)
+			
+			duration := time.Since(retry.DispatchedAt).Seconds()
+			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
+				s.logger.Error("failed to update retry status", "id", retry.ID, "error", err)
+			}
+			continue
+		}
+
+		// Attempt to re-dispatch
+		s.logger.Info("retrying dispatch", 
+			"bead", retry.BeadID, 
+			"attempt", retry.Retries+1, 
+			"agent", retry.AgentID,
+			"delay", time.Since(retry.CompletedAt.Time))
+
+		// Create feature branch if needed
+		workspace := config.ExpandHome(project.Workspace)
+		if project.UseBranches {
+			if err := git.EnsureFeatureBranchWithBase(workspace, retry.BeadID, project.BaseBranch, project.BranchPrefix); err != nil {
+				s.logger.Error("failed to create feature branch for retry", "bead", retry.BeadID, "error", err)
+				continue
+			}
+		}
+
+		// Re-use the original prompt
+		handle, err := s.dispatcher.Dispatch(ctx, retry.AgentID, retry.Prompt, retry.Provider, dispatch.ThinkingLevel(retry.Tier), workspace)
+		if err != nil {
+			s.logger.Error("retry dispatch failed", "bead", retry.BeadID, "error", err)
+			
+			// Mark as failed since retry dispatch itself failed
+			duration := time.Since(retry.DispatchedAt).Seconds()
+			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
+				s.logger.Error("failed to update failed retry", "id", retry.ID, "error", err)
+			}
+			continue
+		}
+
+		// Get session name for tmux dispatchers
+		sessionName := s.dispatcher.GetSessionName(handle)
+
+		// Record new dispatch for the retry
+		newDispatchID, err := s.store.RecordDispatch(
+			retry.BeadID, retry.Project, retry.AgentID, retry.Provider, retry.Tier, 
+			handle, sessionName, retry.Prompt, retry.LogPath, retry.Branch, retry.Backend)
+		if err != nil {
+			s.logger.Error("failed to record retry dispatch", "bead", retry.BeadID, "error", err)
+			continue
+		}
+
+		// Mark the original dispatch as retried (superseded by the new one)
+		duration := time.Since(retry.DispatchedAt).Seconds()
+		if err := s.store.UpdateDispatchStatus(retry.ID, "retried", 0, duration); err != nil {
+			s.logger.Error("failed to update retry status", "id", retry.ID, "error", err)
+		}
+
+		s.logger.Info("dispatch retry successful", 
+			"bead", retry.BeadID, 
+			"old_dispatch_id", retry.ID,
+			"new_dispatch_id", newDispatchID, 
+			"handle", handle, 
+			"session", sessionName)
+	}
 }

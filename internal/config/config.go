@@ -41,12 +41,14 @@ type Config struct {
 }
 
 type General struct {
-	TickInterval Duration `toml:"tick_interval"`
-	MaxPerTick   int      `toml:"max_per_tick"`
-	StuckTimeout Duration `toml:"stuck_timeout"`
-	MaxRetries   int      `toml:"max_retries"`
-	LogLevel     string   `toml:"log_level"`
-	StateDB      string   `toml:"state_db"`
+	TickInterval    Duration `toml:"tick_interval"`
+	MaxPerTick      int      `toml:"max_per_tick"`
+	StuckTimeout    Duration `toml:"stuck_timeout"`
+	MaxRetries      int      `toml:"max_retries"`
+	RetryBackoffBase Duration `toml:"retry_backoff_base"`
+	RetryMaxDelay   Duration `toml:"retry_max_delay"`
+	LogLevel        string   `toml:"log_level"`
+	StateDB         string   `toml:"state_db"`
 }
 
 type Project struct {
@@ -167,6 +169,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.General.MaxRetries == 0 {
 		cfg.General.MaxRetries = 2
+	}
+	if cfg.General.RetryBackoffBase.Duration == 0 {
+		cfg.General.RetryBackoffBase.Duration = 2 * time.Minute
+	}
+	if cfg.General.RetryMaxDelay.Duration == 0 {
+		cfg.General.RetryMaxDelay.Duration = 30 * time.Minute
 	}
 	if cfg.General.LogLevel == "" {
 		cfg.General.LogLevel = "info"
