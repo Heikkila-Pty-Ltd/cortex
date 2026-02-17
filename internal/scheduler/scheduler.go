@@ -543,7 +543,7 @@ func (s *Scheduler) processSingleDoDCheck(ctx context.Context, projectName strin
 	s.logger.Info("processing DoD check", "project", projectName, "bead", bead.ID)
 
 	// Create DoD checker from project config
-	dodChecker := NewDoDChecker(project.DoD)
+	dodChecker := NewDoDCheckerFromConfig(project.DoD)
 	if !dodChecker.IsEnabled() {
 		s.logger.Debug("DoD checking not configured, auto-closing bead", "project", projectName, "bead", bead.ID)
 		s.closeBead(ctx, projectName, project, bead, "DoD checking not configured")
@@ -653,7 +653,7 @@ func (s *Scheduler) handleOpsQaCompletion(ctx context.Context, dispatch store.Di
 	}
 
 	// Check if DoD is configured for this project
-	dodChecker := NewDoDChecker(project.DoD)
+	dodChecker := NewDoDCheckerFromConfig(project.DoD)
 	if !dodChecker.IsEnabled() {
 		s.logger.Debug("DoD not configured, auto-closing bead", "project", projectName, "bead", dispatch.BeadID)
 		s.closeBead(ctx, projectName, project, bead, "DoD not configured, auto-close after ops/qa")
@@ -1207,6 +1207,18 @@ func isExecutableIssueType(issueType string) bool {
 }
 
 func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, projectName string, beadsDir string) bool {
+	// Failure quarantine is a stronger signal than churn counting.
+	// If a bead is already quarantined for consecutive failures, suppress churn escalation noise.
+	if s.isFailureQuarantined(bead.ID) {
+		s.logger.Warn("bead blocked by failure quarantine (churn escalation suppressed)",
+			"project", projectName,
+			"bead", bead.ID,
+			"type", bead.Type,
+			"threshold", failureQuarantineThreshold,
+			"window", failureQuarantineWindow.String())
+		return true
+	}
+
 	history, err := s.store.GetDispatchesByBead(bead.ID)
 	if err != nil {
 		s.logger.Error("failed to evaluate churn guard", "bead", bead.ID, "error", err)
