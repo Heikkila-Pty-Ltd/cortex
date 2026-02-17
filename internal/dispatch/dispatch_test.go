@@ -92,8 +92,10 @@ func TestOpenclawShellScript_UsesExplicitSessionID(t *testing.T) {
 	script := openclawShellScript()
 	checks := []string{
 		`session_id="ctx-$$-$(date +%s)"`,
-		`--session-id "$session_id" --message "$msg"`,
-		`openclaw agent --agent "$agent" --session-id "$session_id" --thinking "$thinking"`,
+		`--session-id "$session_id"`,
+		`--message "$(cat "$msg_file")"`,
+		`--agent "$(cat "$agent_file")"`,
+		`--thinking "$(cat "$thinking_file")"`,
 	}
 	for _, check := range checks {
 		if !strings.Contains(script, check) {

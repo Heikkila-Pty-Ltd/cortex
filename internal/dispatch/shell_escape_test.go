@@ -207,3 +207,102 @@ func TestShellEscapeRealWorldFailures(t *testing.T) {
 		})
 	}
 }
+
+// Test the specific failure cases mentioned in cortex-lxg
+func TestShellEscapeFailureRegression(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		errorPattern string // The pattern that would cause shell errors
+	}{
+		{
+			name:         "unterminated_quote",
+			input:        `Message with "unterminated quote`,
+			errorPattern: "Unterminated quoted string",
+		},
+		{
+			name:         "unexpected_parentheses",
+			input:        `Command (with unexpected) parentheses`,
+			errorPattern: "unexpected",
+		},
+		{
+			name:         "bad_fd_number",
+			input:        `Redirect 2>&1 and handle stderr`,
+			errorPattern: "Bad fd number",
+		},
+		{
+			name:         "complex_shell_injection",
+			input:        `'; rm -rf /; echo 'pwned`,
+			errorPattern: "command injection",
+		},
+		{
+			name:         "model_flag_confusion",
+			input:        `--model gpt-4 as part of prompt`,
+			errorPattern: "unknown option '--model'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			escaped := ShellEscape(tt.input)
+			
+			// Verify the escaped version is properly quoted
+			if !isSafeForShell(tt.input) && 
+			   (!strings.HasPrefix(escaped, "'") || !strings.HasSuffix(escaped, "'")) {
+				t.Errorf("unsafe input %q should be quoted, got %q", tt.input, escaped)
+			}
+			
+			// For properly escaped strings, dangerous patterns should be inside quotes
+			// Only check for unquoted dangerous patterns (outside of single quotes)
+			if !isSafeForShell(tt.input) && (strings.HasPrefix(escaped, "'") && strings.HasSuffix(escaped, "'")) {
+				// If it's properly single-quoted, check that the quote structure is correct
+				// Count single quotes - should be even for proper escaping
+				singleQuoteCount := strings.Count(escaped, "'")
+				if singleQuoteCount%2 != 0 {
+					t.Errorf("escaped version has unmatched single quotes: %q", escaped)
+				}
+			} else if isSafeForShell(tt.input) {
+				// Safe inputs should remain unquoted and identical
+				if escaped != tt.input {
+					t.Errorf("safe input %q should not be modified, got %q", tt.input, escaped)
+				}
+			}
+		})
+	}
+}
+
+// Test environment variable name validation for security
+func TestIsValidEnvVarName(t *testing.T) {
+	validNames := []string{
+		"VALID_VAR",
+		"valid_var",
+		"_UNDERSCORE_START",
+		"VAR123",
+		"API_KEY",
+		"PATH",
+		"HOME",
+	}
+
+	invalidNames := []string{
+		"123_INVALID",     // starts with number
+		"INVALID-VAR",     // contains dash
+		"INVALID.VAR",     // contains dot
+		"INVALID VAR",     // contains space
+		"INVALID@VAR",     // contains @
+		"",                // empty
+		"INVALID$VAR",     // contains $
+		"INVALID;VAR",     // contains semicolon
+	}
+
+	for _, name := range validNames {
+		if !isValidEnvVarName(name) {
+			t.Errorf("isValidEnvVarName(%q) should be true", name)
+		}
+	}
+
+	for _, name := range invalidNames {
+		if isValidEnvVarName(name) {
+			t.Errorf("isValidEnvVarName(%q) should be false", name)
+		}
+	}
+}
