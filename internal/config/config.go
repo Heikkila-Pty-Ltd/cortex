@@ -385,6 +385,11 @@ func validate(cfg *Config) error {
 		if err := validateSprintPlanningConfig(projectName, p); err != nil {
 			return fmt.Errorf("project %q sprint planning config: %w", projectName, err)
 		}
+		
+		// Validate DoD configuration when provided
+		if err := validateDoDConfig(projectName, p.DoD); err != nil {
+			return fmt.Errorf("project %q DoD config: %w", projectName, err)
+		}
 	}
 	if !hasEnabled {
 		return fmt.Errorf("at least one project must be enabled")
@@ -571,6 +576,22 @@ func validateSprintPlanningConfig(projectName string, project Project) error {
 			return fmt.Errorf("backlog_threshold (%d) should be at least as large as sprint_capacity (%d)", project.BacklogThreshold, project.SprintCapacity)
 		}
 	}
+	
+	return nil
+}
+
+// validateDoDConfig validates Definition of Done configuration for a project.
+func validateDoDConfig(projectName string, dod DoDConfig) error {
+	// Validate coverage_min range
+	if dod.CoverageMin < 0 {
+		return fmt.Errorf("coverage_min cannot be negative: %d", dod.CoverageMin)
+	}
+	if dod.CoverageMin > 100 {
+		return fmt.Errorf("coverage_min cannot exceed 100: %d", dod.CoverageMin)
+	}
+	
+	// Note: Empty checks array is valid - DoD can be coverage-only or flags-only
+	// Note: All string commands in checks are valid - we can't validate arbitrary commands
 	
 	return nil
 }

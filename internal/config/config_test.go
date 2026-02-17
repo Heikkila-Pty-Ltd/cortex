@@ -1057,3 +1057,237 @@ workspace = "/tmp/sprint-test"
 	}
 }
 
+// DoD Configuration Tests
+
+func TestLoadDoDConfigValid(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.dod-project]
+enabled = true
+beads_dir = "/tmp/dod-test/.beads"
+workspace = "/tmp/dod-test"
+priority = 1
+
+[projects.dod-project.dod]
+checks = [
+    "go test ./...",
+    "go vet ./...",
+    "golangci-lint run"
+]
+coverage_min = 80
+require_estimate = true
+require_acceptance = true
+`
+	path := writeTestConfig(t, cfg)
+	config, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected valid DoD config to load: %v", err)
+	}
+
+	project := config.Projects["dod-project"]
+	dod := project.DoD
+
+	if len(dod.Checks) != 3 {
+		t.Errorf("expected 3 DoD checks, got %d", len(dod.Checks))
+	}
+
+	expectedChecks := []string{"go test ./...", "go vet ./...", "golangci-lint run"}
+	for i, expected := range expectedChecks {
+		if i >= len(dod.Checks) || dod.Checks[i] != expected {
+			t.Errorf("expected check[%d] to be %q, got %q", i, expected, dod.Checks[i])
+		}
+	}
+
+	if dod.CoverageMin != 80 {
+		t.Errorf("expected coverage_min 80, got %d", dod.CoverageMin)
+	}
+
+	if !dod.RequireEstimate {
+		t.Error("expected require_estimate to be true")
+	}
+
+	if !dod.RequireAcceptance {
+		t.Error("expected require_acceptance to be true")
+	}
+}
+
+func TestLoadDoDConfigBackwardCompatibility(t *testing.T) {
+	// Test that projects without DoD config work normally (backward compatibility)
+	path := writeTestConfig(t, validConfig)
+	config, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected config without DoD to load: %v", err)
+	}
+
+	project := config.Projects["test"]
+	dod := project.DoD
+
+	if len(dod.Checks) != 0 {
+		t.Errorf("expected empty DoD checks, got %d", len(dod.Checks))
+	}
+
+	if dod.CoverageMin != 0 {
+		t.Errorf("expected coverage_min 0, got %d", dod.CoverageMin)
+	}
+
+	if dod.RequireEstimate {
+		t.Error("expected require_estimate to be false by default")
+	}
+
+	if dod.RequireAcceptance {
+		t.Error("expected require_acceptance to be false by default")
+	}
+}
+
+func TestLoadDoDConfigPartial(t *testing.T) {
+	// Test that partial DoD configuration is valid
+	tests := []struct {
+		name   string
+		config string
+		verify func(t *testing.T, dod DoDConfig)
+	}{
+		{
+			name: "only_checks",
+			config: `
+[projects.dod-project.dod]
+checks = ["go test ./..."]
+`,
+			verify: func(t *testing.T, dod DoDConfig) {
+				if len(dod.Checks) != 1 || dod.Checks[0] != "go test ./..." {
+					t.Errorf("expected checks [\"go test ./...\"], got %v", dod.Checks)
+				}
+				if dod.CoverageMin != 0 {
+					t.Errorf("expected default coverage_min 0, got %d", dod.CoverageMin)
+				}
+			},
+		},
+		{
+			name: "only_coverage",
+			config: `
+[projects.dod-project.dod]
+coverage_min = 90
+`,
+			verify: func(t *testing.T, dod DoDConfig) {
+				if dod.CoverageMin != 90 {
+					t.Errorf("expected coverage_min 90, got %d", dod.CoverageMin)
+				}
+				if len(dod.Checks) != 0 {
+					t.Errorf("expected empty checks, got %v", dod.Checks)
+				}
+			},
+		},
+		{
+			name: "only_flags",
+			config: `
+[projects.dod-project.dod]
+require_estimate = true
+require_acceptance = false
+`,
+			verify: func(t *testing.T, dod DoDConfig) {
+				if !dod.RequireEstimate {
+					t.Error("expected require_estimate to be true")
+				}
+				if dod.RequireAcceptance {
+					t.Error("expected require_acceptance to be false")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig + fmt.Sprintf(`
+
+[projects.dod-project]
+enabled = true
+beads_dir = "/tmp/dod-test/.beads"
+workspace = "/tmp/dod-test"
+priority = 1
+
+%s
+`, tt.config)
+			path := writeTestConfig(t, cfg)
+			config, err := Load(path)
+			if err != nil {
+				t.Fatalf("expected partial DoD config to be valid: %v", err)
+			}
+
+			project := config.Projects["dod-project"]
+			tt.verify(t, project.DoD)
+		})
+	}
+}
+
+func TestLoadDoDConfigInvalidCoverageMin(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.dod-project]
+enabled = true
+beads_dir = "/tmp/dod-test/.beads"
+workspace = "/tmp/dod-test"
+
+[projects.dod-project.dod]
+coverage_min = -1
+`
+	path := writeTestConfig(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for negative coverage_min")
+	}
+	
+	if !strings.Contains(err.Error(), "coverage_min cannot be negative") {
+		t.Errorf("expected negative coverage validation error, got: %v", err)
+	}
+}
+
+func TestLoadDoDConfigExcessiveCoverageMin(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.dod-project]
+enabled = true
+beads_dir = "/tmp/dod-test/.beads"
+workspace = "/tmp/dod-test"
+
+[projects.dod-project.dod]
+coverage_min = 101
+`
+	path := writeTestConfig(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for coverage_min > 100")
+	}
+	
+	if !strings.Contains(err.Error(), "coverage_min cannot exceed 100") {
+		t.Errorf("expected excessive coverage validation error, got: %v", err)
+	}
+}
+
+func TestLoadDoDConfigEmptyChecks(t *testing.T) {
+	// Test that empty checks array is valid (DoD can be coverage-only or flags-only)
+	cfg := validConfig + `
+
+[projects.dod-project]
+enabled = true
+beads_dir = "/tmp/dod-test/.beads"
+workspace = "/tmp/dod-test"
+
+[projects.dod-project.dod]
+checks = []
+coverage_min = 80
+require_estimate = true
+`
+	path := writeTestConfig(t, cfg)
+	config, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected empty checks to be valid: %v", err)
+	}
+
+	dod := config.Projects["dod-project"].DoD
+	if len(dod.Checks) != 0 {
+		t.Errorf("expected empty checks, got %v", dod.Checks)
+	}
+	if dod.CoverageMin != 80 {
+		t.Errorf("expected coverage_min 80, got %d", dod.CoverageMin)
+	}
+}
+
