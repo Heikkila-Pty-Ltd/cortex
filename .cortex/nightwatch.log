@@ -67,3 +67,8 @@
 [2026-02-18T04:20:18+10:00] restarting cortex service
 [2026-02-18T04:20:23+10:00] NUDGE: Repeated failure signature 6x/15m: error: required option '-m, --message <text>' not specified
 [2026-02-18T04:20:23+10:00] checkpoint running=0 completed_15m=3 failed_15m=6 usage_5h=145/150 usage_weekly=210/2000
+[2026-02-18T04:35:23+10:00] detected repeated '-m/--message' failures in last 15m (2); forcing restart
+[2026-02-18T04:35:23+10:00] NUDGE: Detected repeated '-m/--message' failures (2/15m); restarting Cortex
+[2026-02-18T04:35:23+10:00] restarting cortex service
+[2026-02-18T04:35:28+10:00] NUDGE: Repeated failure signature 2x/15m: error: required option '-m, --message <text>' not specified
+[2026-02-18T04:35:28+10:00] checkpoint running=0 completed_15m=4 failed_15m=2 usage_5h=149/150 usage_weekly=216/2000

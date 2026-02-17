@@ -32,3 +32,6 @@
 [2026-02-18T04:20:18+10:00] Detected repeated '-m/--message' failures (6/15m); restarting Cortex
 [2026-02-18T04:20:23+10:00] Repeated failure signature 6x/15m: error: required option '-m, --message <text>' not specified
 [2026-02-18T04:22:53+10:00] codex-worker escalation completed for cortex-cm5
+[2026-02-18T04:35:23+10:00] codex-worker escalation completed for cortex-32o
+[2026-02-18T04:35:23+10:00] Detected repeated '-m/--message' failures (2/15m); restarting Cortex
+[2026-02-18T04:35:28+10:00] Repeated failure signature 2x/15m: error: required option '-m, --message <text>' not specified

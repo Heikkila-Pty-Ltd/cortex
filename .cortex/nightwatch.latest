@@ -1,9 +1,9 @@
-timestamp: 2026-02-18T04:20:23+10:00
+timestamp: 2026-02-18T04:35:28+10:00
 running_count: 0
-completed_15m: 3
-failed_15m: 6
+completed_15m: 4
+failed_15m: 2
 cancelled_15m: 0
-usage_5h: 145/150
-usage_weekly: 210/2000
+usage_5h: 149/150
+usage_weekly: 216/2000
 top_failures_15m:
-error: required option '-m, --message <text>' not specified x6
+error: required option '-m, --message <text>' not specified x2
