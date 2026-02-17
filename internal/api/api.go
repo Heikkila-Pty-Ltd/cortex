@@ -13,7 +13,9 @@ import (
 
 	"github.com/antigravity-dev/cortex/internal/config"
 	"github.com/antigravity-dev/cortex/internal/dispatch"
+	"github.com/antigravity-dev/cortex/internal/scheduler"
 	"github.com/antigravity-dev/cortex/internal/store"
+	"github.com/antigravity-dev/cortex/internal/team"
 )
 
 // Server is the HTTP API server.
@@ -44,6 +46,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/projects", s.handleProjects)
 	mux.HandleFunc("/projects/", s.handleProjectDetail)
 	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/teams", s.handleTeams)
+	mux.HandleFunc("/teams/", s.handleTeamDetail)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 
 	s.httpServer = &http.Server{
@@ -216,4 +220,52 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&b, "cortex_uptime_seconds %.0f\n", time.Since(s.startTime).Seconds())
 
 	w.Write([]byte(b.String()))
+}
+
+// GET /teams — list teams for all enabled projects
+func (s *Server) handleTeams(w http.ResponseWriter, r *http.Request) {
+	type teamInfo struct {
+		Project string           `json:"project"`
+		Agents  []team.AgentInfo `json:"agents"`
+	}
+
+	var teams []teamInfo
+	for name, proj := range s.cfg.Projects {
+		if !proj.Enabled {
+			continue
+		}
+		agents, err := team.ListTeam(name, scheduler.AllRoles)
+		if err != nil {
+			s.logger.Error("failed to list team", "project", name, "error", err)
+			continue
+		}
+		teams = append(teams, teamInfo{Project: name, Agents: agents})
+	}
+	writeJSON(w, teams)
+}
+
+// GET /teams/{project} — list team for a specific project
+func (s *Server) handleTeamDetail(w http.ResponseWriter, r *http.Request) {
+	project := strings.TrimPrefix(r.URL.Path, "/teams/")
+	if project == "" {
+		s.handleTeams(w, r)
+		return
+	}
+
+	proj, ok := s.cfg.Projects[project]
+	if !ok || !proj.Enabled {
+		writeError(w, http.StatusNotFound, "project not found or not enabled")
+		return
+	}
+
+	agents, err := team.ListTeam(project, scheduler.AllRoles)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list team")
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"project": project,
+		"agents":  agents,
+	})
 }

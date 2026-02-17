@@ -11,8 +11,69 @@ import (
 
 var filePathRe = regexp.MustCompile(`(?:^|\s)((?:src|internal|cmd|pkg|lib|app|public|templates|static|test|tests|scripts)/[\w./-]+|[\w-]+\.(?:go|ts|tsx|js|jsx|py|rs|rb|java|vue|svelte|css|scss|html|sql|yaml|yml|toml|json|md|sh))`)
 
+// stageInstructions maps roles to stage-specific prompt instructions.
+var stageInstructions = map[string]func(bead beads.Bead) string{
+	"scrum": func(b beads.Bead) string {
+		return fmt.Sprintf(`## Instructions (Scrum Master)
+1. Review and refine the task description
+2. Add or improve acceptance criteria using: bd update %s --acceptance="..."
+3. Break down if too large — create sub-tasks with bd create
+4. Transition to planning: bd update %s --labels stage:planning
+5. Unassign yourself: bd update %s --assignee=""
+`, b.ID, b.ID, b.ID)
+	},
+	"planner": func(b beads.Bead) string {
+		return fmt.Sprintf(`## Instructions (Planner)
+1. Read the task description and acceptance criteria carefully
+2. Create an implementation plan with design notes: bd update %s --design="..."
+3. Identify files to create or modify, list them in the design
+4. Estimate effort if not set
+5. Transition to ready: bd update %s --labels stage:ready
+6. Unassign yourself: bd update %s --assignee=""
+`, b.ID, b.ID, b.ID)
+	},
+	"coder": func(b beads.Bead) string {
+		shortTitle := b.Title
+		if len(shortTitle) > 50 {
+			shortTitle = shortTitle[:50]
+		}
+		return fmt.Sprintf(`## Instructions (Coder)
+1. Read the acceptance criteria and design notes carefully
+2. Implement in the files listed (create if needed)
+3. Run tests if they exist
+4. Commit with message: feat(%s): %s
+5. Transition to review: bd update %s --labels stage:review
+6. Unassign yourself: bd update %s --assignee=""
+7. Push: git push
+`, b.ID, shortTitle, b.ID, b.ID)
+	},
+	"reviewer": func(b beads.Bead) string {
+		return fmt.Sprintf(`## Instructions (Reviewer)
+1. Review the code changes against acceptance criteria
+2. Check for correctness, style, and test coverage
+3. If approved: transition to QA: bd update %s --labels stage:qa
+4. If changes needed: add review notes and transition back: bd update %s --labels stage:coding
+5. Unassign yourself: bd update %s --assignee=""
+`, b.ID, b.ID, b.ID)
+	},
+	"ops": func(b beads.Bead) string {
+		return fmt.Sprintf(`## Instructions (QA/Ops)
+1. Run the full test suite
+2. Verify acceptance criteria are met
+3. If all tests pass: bd close %s
+4. If tests fail: add failure notes and transition back: bd update %s --labels stage:coding
+5. Unassign yourself: bd update %s --assignee=""
+`, b.ID, b.ID, b.ID)
+	},
+}
+
 // BuildPrompt constructs the prompt sent to an openclaw agent.
 func BuildPrompt(bead beads.Bead, project config.Project) string {
+	return BuildPromptWithRole(bead, project, "")
+}
+
+// BuildPromptWithRole constructs a role-aware prompt sent to an openclaw agent.
+func BuildPromptWithRole(bead beads.Bead, project config.Project, role string) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "You are working on project in %s.\n\n", project.Workspace)
@@ -27,17 +88,24 @@ func BuildPrompt(bead beads.Bead, project config.Project) string {
 		fmt.Fprintf(&b, "## Design Notes\n%s\n\n", bead.Design)
 	}
 
-	b.WriteString("## Instructions\n")
-	b.WriteString("1. Read the acceptance criteria carefully\n")
-	b.WriteString("2. Implement in the files listed (create if needed)\n")
-	b.WriteString("3. Run tests if they exist\n")
-	shortTitle := bead.Title
-	if len(shortTitle) > 50 {
-		shortTitle = shortTitle[:50]
+	// Use stage-specific instructions if role is known
+	if fn, ok := stageInstructions[role]; ok {
+		b.WriteString(fn(bead))
+	} else {
+		// Generic fallback (original behavior)
+		b.WriteString("## Instructions\n")
+		b.WriteString("1. Read the acceptance criteria carefully\n")
+		b.WriteString("2. Implement in the files listed (create if needed)\n")
+		b.WriteString("3. Run tests if they exist\n")
+		shortTitle := bead.Title
+		if len(shortTitle) > 50 {
+			shortTitle = shortTitle[:50]
+		}
+		fmt.Fprintf(&b, "4. Commit with message: feat(%s): %s\n", bead.ID, shortTitle)
+		fmt.Fprintf(&b, "5. When done, run: bd close %s\n", bead.ID)
+		b.WriteString("6. Push: git push\n")
 	}
-	fmt.Fprintf(&b, "4. Commit with message: feat(%s): %s\n", bead.ID, shortTitle)
-	fmt.Fprintf(&b, "5. When done, run: bd close %s\n", bead.ID)
-	b.WriteString("6. Push: git push\n\n")
+	b.WriteString("\n")
 
 	files := extractFilePaths(bead.Description)
 	if len(files) > 0 {

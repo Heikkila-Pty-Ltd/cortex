@@ -155,6 +155,49 @@ func TestGetStuckDispatches(t *testing.T) {
 	}
 }
 
+func TestIsAgentBusy(t *testing.T) {
+	s := tempStore(t)
+
+	busy, err := s.IsAgentBusy("proj", "proj-coder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if busy {
+		t.Error("agent should not be busy yet")
+	}
+
+	_, err = s.RecordDispatch("bead-1", "proj", "proj-coder", "cerebras", "fast", 100, "prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	busy, err = s.IsAgentBusy("proj", "proj-coder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !busy {
+		t.Error("agent should be busy")
+	}
+
+	// Different agent in same project should not be busy
+	busy, err = s.IsAgentBusy("proj", "proj-reviewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if busy {
+		t.Error("different agent should not be busy")
+	}
+
+	// Same agent in different project should not be busy
+	busy, err = s.IsAgentBusy("other-proj", "proj-coder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if busy {
+		t.Error("agent in different project should not be busy")
+	}
+}
+
 func TestConcurrentAccess(t *testing.T) {
 	s := tempStore(t)
 

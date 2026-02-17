@@ -42,6 +42,59 @@ func TestBuildPrompt(t *testing.T) {
 	}
 }
 
+func TestBuildPromptWithRole(t *testing.T) {
+	bead := beads.Bead{
+		ID:          "test-001",
+		Title:       "Test task",
+		Description: "A test task description",
+		Acceptance:  "Must pass",
+	}
+	proj := config.Project{
+		Workspace: "/tmp/test",
+	}
+
+	tests := []struct {
+		role     string
+		contains []string
+	}{
+		{
+			role:     "scrum",
+			contains: []string{"Scrum Master", "acceptance criteria", "stage:planning", "Unassign"},
+		},
+		{
+			role:     "planner",
+			contains: []string{"Planner", "implementation plan", "stage:ready", "Unassign"},
+		},
+		{
+			role:     "coder",
+			contains: []string{"Coder", "Implement", "stage:review", "git push"},
+		},
+		{
+			role:     "reviewer",
+			contains: []string{"Reviewer", "Review the code", "stage:qa", "stage:coding"},
+		},
+		{
+			role:     "ops",
+			contains: []string{"QA/Ops", "test suite", "bd close", "stage:coding"},
+		},
+		{
+			role:     "", // empty role = generic fallback
+			contains: []string{"Instructions", "bd close test-001", "git push"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run("role_"+tt.role, func(t *testing.T) {
+			prompt := BuildPromptWithRole(bead, proj, tt.role)
+			for _, check := range tt.contains {
+				if !strings.Contains(prompt, check) {
+					t.Errorf("prompt for role %q missing %q", tt.role, check)
+				}
+			}
+		})
+	}
+}
+
 func TestExtractFilePaths(t *testing.T) {
 	text := "Edit internal/config/config.go and src/main.ts, also update scripts/build.sh"
 	paths := extractFilePaths(text)

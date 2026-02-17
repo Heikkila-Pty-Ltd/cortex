@@ -269,3 +269,16 @@ func (s *Store) IsBeadDispatched(beadID string) (bool, error) {
 	}
 	return count > 0, nil
 }
+
+// IsAgentBusy checks if an agent has a running dispatch for the given project.
+func (s *Store) IsAgentBusy(project, agent string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM dispatches WHERE project = ? AND agent_id = ? AND status = 'running'`,
+		project, agent,
+	).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("store: check agent busy: %w", err)
+	}
+	return count > 0, nil
+}

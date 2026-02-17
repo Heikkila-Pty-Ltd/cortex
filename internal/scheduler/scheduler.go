@@ -10,6 +10,7 @@ import (
 	"github.com/antigravity-dev/cortex/internal/config"
 	"github.com/antigravity-dev/cortex/internal/dispatch"
 	"github.com/antigravity-dev/cortex/internal/store"
+	"github.com/antigravity-dev/cortex/internal/team"
 )
 
 // Scheduler is the core orchestration loop.
@@ -88,6 +89,15 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 	})
 
 	for _, np := range projects {
+		// Auto-spawn team for each enabled project
+		model := s.defaultModel()
+		created, err := team.EnsureTeam(np.name, config.ExpandHome(np.proj.Workspace), model, AllRoles, s.logger)
+		if err != nil {
+			s.logger.Error("failed to ensure team", "project", np.name, "error", err)
+		} else if len(created) > 0 {
+			s.logger.Info("team agents created", "project", np.name, "agents", created)
+		}
+
 		beadList, err := beads.ListBeads(config.ExpandHome(np.proj.BeadsDir))
 		if err != nil {
 			s.logger.Error("failed to list beads", "project", np.name, "error", err)
@@ -132,9 +142,21 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			continue
 		}
 
-		// Infer role - skip epics
+		// Infer role - skip epics and done
 		role := InferRole(item.bead)
 		if role == "skip" {
+			continue
+		}
+
+		// Check agent-busy guard: one dispatch per agent per project per tick
+		agent := ResolveAgent(item.name, role)
+		busy, err := s.store.IsAgentBusy(item.name, agent)
+		if err != nil {
+			s.logger.Error("failed to check agent busy", "agent", agent, "error", err)
+			continue
+		}
+		if busy {
+			s.logger.Debug("agent busy, skipping", "agent", agent, "bead", item.bead.ID)
 			continue
 		}
 
@@ -174,9 +196,8 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			continue
 		}
 
-		// Build prompt and dispatch
-		prompt := BuildPrompt(item.bead, item.project)
-		agent := ResolveAgent(item.name, role)
+		// Build prompt with role awareness and dispatch
+		prompt := BuildPromptWithRole(item.bead, item.project, role)
 		thinkingLevel := dispatch.ThinkingLevel(currentTier)
 
 		pid, err := s.dispatcher.Dispatch(ctx, agent, prompt, provider.Model, thinkingLevel, config.ExpandHome(item.project.Workspace))
@@ -197,10 +218,21 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			s.rateLimiter.RecordAuthedDispatch(provider.Model, agent, item.bead.ID)
 		}
 
+		// Determine stage for logging
+		stage := ""
+		for _, label := range item.bead.Labels {
+			if len(label) > 6 && label[:6] == "stage:" {
+				stage = label
+				break
+			}
+		}
+
 		s.logger.Info("dispatched",
 			"bead", item.bead.ID,
 			"project", item.name,
 			"agent", agent,
+			"role", role,
+			"stage", stage,
 			"provider", provider.Model,
 			"tier", currentTier,
 			"pid", pid,
@@ -209,6 +241,21 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 	}
 
 	s.logger.Info("tick complete", "dispatched", dispatched, "ready", len(allReady))
+}
+
+// defaultModel returns the model from the first balanced provider, or falls back to any provider.
+func (s *Scheduler) defaultModel() string {
+	// Prefer balanced tier
+	for _, name := range s.cfg.Tiers.Balanced {
+		if p, ok := s.cfg.Providers[name]; ok {
+			return p.Model
+		}
+	}
+	// Fallback to any provider
+	for _, p := range s.cfg.Providers {
+		return p.Model
+	}
+	return "claude-sonnet-4-20250514"
 }
 
 // checkRunningDispatches polls running dispatches and marks completed/failed.
