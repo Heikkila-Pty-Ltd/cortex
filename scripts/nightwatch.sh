@@ -186,12 +186,31 @@ reconcile_dead_running_dispatches() {
 
   while IFS='|' read -r id bead session; do
     [[ -z "${id:-}" ]] && continue
+    
+    # Check session health with additional context
     pane="$(tmux display-message -t "$session" -p '#{pane_dead}' 2>/dev/null || echo gone)"
-    if [[ "$pane" == "1" || "$pane" == "gone" ]]; then
-      resp="$(curl -fsS -X POST "$API/dispatches/$id/cancel" 2>/dev/null || true)"
-      log "reconciled dead running dispatch id=$id bead=$bead pane=$pane resp=${resp:-<none>}"
-      recon_details+="- dispatch $id bead $bead pane=$pane session=$session"$'\n'
+    session_exists="$(tmux has-session -t "$session" 2>/dev/null && echo exists || echo missing)"
+    
+    if [[ "$pane" == "1" || "$pane" == "gone" || "$session_exists" == "missing" ]]; then
+      # Attempt to cancel via API with retry
+      resp=""
+      for attempt in 1 2; do
+        resp="$(curl -fsS -X POST "$API/dispatches/$id/cancel" 2>/dev/null || true)"
+        if [[ -n "$resp" ]]; then
+          break
+        fi
+        sleep 1
+      done
+      
+      log "reconciled dead running dispatch id=$id bead=$bead pane=$pane session_exists=$session_exists resp=${resp:-<retry_failed>}"
+      recon_details+="- dispatch $id bead $bead pane=$pane session=$session (exists=$session_exists)"$'\n'
       reconciled=$((reconciled + 1))
+      
+      # Clean up dead session if it still exists but is zombie
+      if [[ "$pane" == "1" && "$session_exists" == "exists" ]]; then
+        tmux kill-session -t "$session" 2>/dev/null || true
+        log "cleaned up zombie session: $session"
+      fi
     fi
   done <<< "$rows"
 
