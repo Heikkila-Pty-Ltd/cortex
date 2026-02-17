@@ -259,6 +259,7 @@ func (s *Scheduler) defaultModel() string {
 }
 
 // checkRunningDispatches polls running dispatches and marks completed/failed.
+// For tmux-based dispatches, it also captures output when a session completes.
 func (s *Scheduler) checkRunningDispatches() {
 	running, err := s.store.GetRunningDispatches()
 	if err != nil {
@@ -267,26 +268,80 @@ func (s *Scheduler) checkRunningDispatches() {
 	}
 
 	for _, d := range running {
-		if dispatch.IsProcessAlive(d.PID) {
+		// Check if this is a tmux session (newer format) or PID (legacy)
+		sessionName := s.tryParseSessionName(d.BeadID)
+		
+		var isAlive bool
+		var exitCode int
+		
+		if sessionName != "" {
+			// Tmux-based dispatch
+			status, code := dispatch.SessionStatus(sessionName)
+			switch status {
+			case "running":
+				isAlive = true
+			case "exited":
+				isAlive = false
+				exitCode = code
+			case "gone":
+				isAlive = false
+				exitCode = -1
+			}
+		} else {
+			// PID-based dispatch (legacy)
+			isAlive = dispatch.IsProcessAlive(d.PID)
+			if !isAlive {
+				exitCode = 0 // Can't get exit code from orphaned PID
+			}
+		}
+
+		if isAlive {
 			continue
 		}
 
-		// Process is dead - determine status
+		// Process/session is dead - capture output and update status
 		duration := time.Since(d.DispatchedAt).Seconds()
 		status := "completed"
-		exitCode := 0
+		if exitCode != 0 {
+			status = "failed"
+		}
 
-		// We can't easily get the exit code from a PID we didn't wait on,
-		// so we mark as completed. The health module handles stuck/failed detection.
+		// Capture output for tmux sessions
+		if sessionName != "" {
+			if output, err := dispatch.CaptureOutput(sessionName); err != nil {
+				s.logger.Warn("failed to capture output", "session", sessionName, "error", err)
+			} else if output != "" {
+				if err := s.store.CaptureOutput(d.ID, output); err != nil {
+					s.logger.Error("failed to store output", "dispatch_id", d.ID, "error", err)
+				}
+			}
+		}
+
 		s.logger.Info("dispatch completed",
 			"bead", d.BeadID,
 			"pid", d.PID,
+			"session", sessionName,
 			"duration_s", duration,
 			"status", status,
+			"exit_code", exitCode,
 		)
 
 		if err := s.store.UpdateDispatchStatus(d.ID, status, exitCode, duration); err != nil {
 			s.logger.Error("failed to update dispatch status", "id", d.ID, "error", err)
 		}
 	}
+}
+
+// tryParseSessionName attempts to extract a tmux session name from a bead ID.
+// Returns empty string if this doesn't look like a session name.
+func (s *Scheduler) tryParseSessionName(beadID string) string {
+	// Try to construct session name from project and bead ID
+	// This is a heuristic since we don't store session names directly
+	for projectName := range s.cfg.Projects {
+		sessionName := dispatch.SessionName(projectName, beadID)
+		if dispatch.IsSessionAlive(sessionName) {
+			return sessionName
+		}
+	}
+	return ""
 }

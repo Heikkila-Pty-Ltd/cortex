@@ -1,7 +1,9 @@
 package store
 
 import (
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -218,5 +220,124 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 	if count != 10 {
 		t.Errorf("expected 10, got %d", count)
+	}
+}
+
+func TestCaptureAndGetOutput(t *testing.T) {
+	s := tempStore(t)
+
+	// Create a dispatch first
+	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "test prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	testOutput := "line 1\nline 2\nline 3\nresult: success"
+	
+	// Capture output
+	err = s.CaptureOutput(dispatchID, testOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Retrieve full output
+	output, err := s.GetOutput(dispatchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != testOutput {
+		t.Errorf("expected %q, got %q", testOutput, output)
+	}
+
+	// Retrieve tail
+	tail, err := s.GetOutputTail(dispatchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tail != testOutput {
+		t.Errorf("expected %q, got %q", testOutput, tail)
+	}
+}
+
+func TestCaptureOutputSizeLimit(t *testing.T) {
+	s := tempStore(t)
+
+	// Create a dispatch first
+	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "test prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a large output (over 500KB)
+	const maxOutputBytes = 500 * 1024
+	// Create large string efficiently
+	largeOutput := strings.Repeat("A", maxOutputBytes+1000)
+	
+	// Add some newlines to test truncation logic
+	largeOutput = "initial\nlines\n" + largeOutput + "\nfinal\nline"
+
+	// Capture output
+	err = s.CaptureOutput(dispatchID, largeOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Retrieve output - should be truncated
+	output, err := s.GetOutput(dispatchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	
+	if len(output) > maxOutputBytes {
+		t.Errorf("output not properly truncated: got %d bytes, max %d", len(output), maxOutputBytes)
+	}
+}
+
+func TestCaptureOutputTail(t *testing.T) {
+	s := tempStore(t)
+
+	// Create a dispatch first
+	dispatchID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "test prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create output with more than 100 lines
+	lines := make([]string, 150)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %d", i+1)
+	}
+	testOutput := strings.Join(lines, "\n")
+	
+	// Capture output
+	err = s.CaptureOutput(dispatchID, testOutput)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Retrieve tail - should be last 100 lines
+	tail, err := s.GetOutputTail(dispatchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	
+	expectedTail := strings.Join(lines[50:], "\n")
+	if tail != expectedTail {
+		t.Errorf("tail mismatch:\nexpected last 100 lines\ngot: %s", tail[:100]+"...")
+	}
+}
+
+func TestGetOutputNotFound(t *testing.T) {
+	s := tempStore(t)
+
+	// Try to get output for non-existent dispatch
+	_, err := s.GetOutput(99999)
+	if err == nil {
+		t.Error("expected error for non-existent dispatch")
+	}
+
+	_, err = s.GetOutputTail(99999)
+	if err == nil {
+		t.Error("expected error for non-existent dispatch")
 	}
 }

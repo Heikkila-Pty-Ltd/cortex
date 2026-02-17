@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -53,6 +54,16 @@ type TickMetric struct {
 	Stuck      int
 }
 
+// DispatchOutput represents captured output from an agent dispatch.
+type DispatchOutput struct {
+	ID          int64
+	DispatchID  int64
+	CapturedAt  time.Time
+	Output      string
+	OutputTail  string
+	OutputBytes int64
+}
+
 const schema = `
 CREATE TABLE IF NOT EXISTS dispatches (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,9 +110,19 @@ CREATE TABLE IF NOT EXISTS tick_metrics (
 	stuck INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS dispatch_output (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	dispatch_id INTEGER NOT NULL REFERENCES dispatches(id),
+	captured_at DATETIME NOT NULL DEFAULT (datetime('now')),
+	output TEXT NOT NULL,
+	output_tail TEXT NOT NULL,
+	output_bytes INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_dispatches_status ON dispatches(status);
 CREATE INDEX IF NOT EXISTS idx_dispatches_bead ON dispatches(bead_id);
 CREATE INDEX IF NOT EXISTS idx_usage_provider ON provider_usage(provider, dispatched_at);
+CREATE INDEX IF NOT EXISTS idx_dispatch_output_dispatch ON dispatch_output(dispatch_id);
 `
 
 // Open creates or opens a SQLite database at the given path and ensures the schema exists.
@@ -281,4 +302,86 @@ func (s *Store) IsAgentBusy(project, agent string) (bool, error) {
 		return false, fmt.Errorf("store: check agent busy: %w", err)
 	}
 	return count > 0, nil
+}
+
+// CaptureOutput captures and stores agent output from a completed dispatch.
+// Output is truncated to 500KB max. The tail contains the last 100 lines.
+func (s *Store) CaptureOutput(dispatchID int64, output string) error {
+	const maxOutputBytes = 500 * 1024 // 500KB
+
+	outputBytes := int64(len(output))
+	
+	// Truncate output if too large
+	if outputBytes > maxOutputBytes {
+		// Find a reasonable truncation point (avoid breaking mid-line)
+		truncated := output[len(output)-maxOutputBytes:]
+		if newlineIdx := strings.Index(truncated, "\n"); newlineIdx != -1 {
+			output = truncated[newlineIdx+1:]
+		} else {
+			output = truncated
+		}
+		outputBytes = int64(len(output))
+	}
+
+	// Extract last 100 lines for tail
+	outputTail := extractTail(output, 100)
+
+	_, err := s.db.Exec(
+		`INSERT INTO dispatch_output (dispatch_id, output, output_tail, output_bytes) VALUES (?, ?, ?, ?)`,
+		dispatchID, output, outputTail, outputBytes,
+	)
+	if err != nil {
+		return fmt.Errorf("store: capture output: %w", err)
+	}
+	return nil
+}
+
+// GetOutput retrieves the full captured output for a dispatch.
+func (s *Store) GetOutput(dispatchID int64) (string, error) {
+	var output string
+	err := s.db.QueryRow(
+		`SELECT output FROM dispatch_output WHERE dispatch_id = ? ORDER BY captured_at DESC LIMIT 1`,
+		dispatchID,
+	).Scan(&output)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("store: no output found for dispatch %d", dispatchID)
+		}
+		return "", fmt.Errorf("store: get output: %w", err)
+	}
+	return output, nil
+}
+
+// GetOutputTail retrieves the tail (last 100 lines) of captured output for a dispatch.
+func (s *Store) GetOutputTail(dispatchID int64) (string, error) {
+	var outputTail string
+	err := s.db.QueryRow(
+		`SELECT output_tail FROM dispatch_output WHERE dispatch_id = ? ORDER BY captured_at DESC LIMIT 1`,
+		dispatchID,
+	).Scan(&outputTail)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", fmt.Errorf("store: no output found for dispatch %d", dispatchID)
+		}
+		return "", fmt.Errorf("store: get output tail: %w", err)
+	}
+	return outputTail, nil
+}
+
+// extractTail returns the last N lines from text.
+func extractTail(text string, lines int) string {
+	if text == "" {
+		return ""
+	}
+	
+	// Split into lines
+	allLines := strings.Split(text, "\n")
+	
+	// Return the last N lines
+	if len(allLines) <= lines {
+		return text
+	}
+	
+	tailLines := allLines[len(allLines)-lines:]
+	return strings.Join(tailLines, "\n")
 }
