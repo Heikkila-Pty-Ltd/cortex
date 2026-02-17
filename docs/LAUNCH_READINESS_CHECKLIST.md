@@ -175,11 +175,14 @@ Artifacts are written as JSON + Markdown in `artifacts/launch/burnin/`.
 
 Must exist:
 
-- scheduler pause/resume and safe maintenance
-- stuck dispatch triage
-- gateway outage/restart response
-- rollback to prior known-good config
-- backup/restore of SQLite state DB
+- scheduler pause/resume and safe maintenance → [SCHEDULER_PAUSE_RESUME_RUNBOOK.md](SCHEDULER_PAUSE_RESUME_RUNBOOK.md)
+- stuck dispatch triage → [STUCK_DISPATCH_RUNBOOK.md](STUCK_DISPATCH_RUNBOOK.md)  
+- gateway outage/restart response → [artifacts/launch/runbooks/gateway-incident-tabletop-drill-20260218.md](../artifacts/launch/runbooks/gateway-incident-tabletop-drill-20260218.md)
+- rollback to prior known-good config → [artifacts/launch/runbooks/rollback-tabletop-drill-20260218.md](../artifacts/launch/runbooks/rollback-tabletop-drill-20260218.md)
+- backup/restore of SQLite state DB → [artifacts/launch/runbooks/backup-restore-drill-20260218.md](../artifacts/launch/runbooks/backup-restore-drill-20260218.md)
+
+**Tabletop Drill Evidence:**
+- Scheduler maintenance procedures validated: [scheduler-maintenance-tabletop-drill-20260218.md](../artifacts/launch/runbooks/scheduler-maintenance-tabletop-drill-20260218.md)
 
 ### 7) Release Packaging
 
