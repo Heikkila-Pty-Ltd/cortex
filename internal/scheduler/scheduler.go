@@ -9,6 +9,7 @@ import (
 	"github.com/antigravity-dev/cortex/internal/beads"
 	"github.com/antigravity-dev/cortex/internal/config"
 	"github.com/antigravity-dev/cortex/internal/dispatch"
+	"github.com/antigravity-dev/cortex/internal/learner"
 	"github.com/antigravity-dev/cortex/internal/store"
 	"github.com/antigravity-dev/cortex/internal/team"
 )
@@ -330,6 +331,23 @@ func (s *Scheduler) checkRunningDispatches() {
 
 		if err := s.store.UpdateDispatchStatus(d.ID, status, exitCode, duration); err != nil {
 			s.logger.Error("failed to update dispatch status", "id", d.ID, "error", err)
+		}
+
+		// Run failure diagnostics on captured output
+		if status == "failed" {
+			if output, err := s.store.GetOutput(d.ID); err == nil && output != "" {
+				if diag := learner.DiagnoseFailure(output); diag != nil {
+					if err := s.store.UpdateFailureDiagnosis(d.ID, diag.Category, diag.Summary); err != nil {
+						s.logger.Error("failed to store failure diagnosis", "dispatch_id", d.ID, "error", err)
+					} else {
+						s.logger.Warn("dispatch failure diagnosed",
+							"bead", d.BeadID,
+							"category", diag.Category,
+							"summary", diag.Summary,
+						)
+					}
+				}
+			}
 		}
 	}
 }

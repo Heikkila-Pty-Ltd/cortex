@@ -37,6 +37,7 @@ type Config struct {
 	Health     Health              `toml:"health"`
 	Reporter   Reporter            `toml:"reporter"`
 	API        API                 `toml:"api"`
+	Dispatch   Dispatch            `toml:"dispatch"`
 }
 
 type General struct {
@@ -65,6 +66,7 @@ type Provider struct {
 	Tier              string  `toml:"tier"`
 	Authed            bool    `toml:"authed"`
 	Model             string  `toml:"model"`
+	CLI               string  `toml:"cli"`
 	CostInputPerMtok  float64 `toml:"cost_input_per_mtok"`
 	CostOutputPerMtok float64 `toml:"cost_output_per_mtok"`
 }
@@ -89,6 +91,50 @@ type Reporter struct {
 
 type API struct {
 	Bind string `toml:"bind"`
+}
+
+type Dispatch struct {
+	CLI              map[string]CLIConfig `toml:"cli"`
+	Routing          DispatchRouting      `toml:"routing"`
+	Timeouts         DispatchTimeouts     `toml:"timeouts"`
+	Git              DispatchGit          `toml:"git"`
+	Tmux             DispatchTmux         `toml:"tmux"`
+	LogDir           string               `toml:"log_dir"`
+	LogRetentionDays int                  `toml:"log_retention_days"`
+}
+
+type CLIConfig struct {
+	Cmd           string   `toml:"cmd"`
+	PromptMode    string   `toml:"prompt_mode"` // "stdin", "file", "arg"
+	Args          []string `toml:"args"`
+	ModelFlag     string   `toml:"model_flag"`     // e.g. "--model"
+	ApprovalFlags []string `toml:"approval_flags"` // e.g. ["--dangerously-skip-permissions"]
+}
+
+type DispatchRouting struct {
+	FastBackend     string `toml:"fast_backend"`     // "headless_cli", "tmux"
+	BalancedBackend string `toml:"balanced_backend"`
+	PremiumBackend  string `toml:"premium_backend"`
+	CommsBackend    string `toml:"comms_backend"`
+	RetryBackend    string `toml:"retry_backend"` // backend for retries
+}
+
+type DispatchTimeouts struct {
+	Fast     Duration `toml:"fast"`     // default 15m
+	Balanced Duration `toml:"balanced"` // default 45m
+	Premium  Duration `toml:"premium"`  // default 120m
+}
+
+type DispatchGit struct {
+	BranchPrefix            string `toml:"branch_prefix"`              // default "cortex/"
+	BranchCleanupDays       int    `toml:"branch_cleanup_days"`        // default 7
+	MergeStrategy           string `toml:"merge_strategy"`             // "merge", "squash", "rebase"
+	MaxConcurrentPerProject int    `toml:"max_concurrent_per_project"` // default 3
+}
+
+type DispatchTmux struct {
+	HistoryLimit  int    `toml:"history_limit"`  // default 50000
+	SessionPrefix string `toml:"session_prefix"` // default "cortex-"
 }
 
 // Load reads and validates a Cortex TOML configuration file.
@@ -130,6 +176,44 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.RateLimits.WeeklyHeadroomPct == 0 {
 		cfg.RateLimits.WeeklyHeadroomPct = 80
+	}
+
+	// Dispatch timeouts
+	if cfg.Dispatch.Timeouts.Fast.Duration == 0 {
+		cfg.Dispatch.Timeouts.Fast.Duration = 15 * time.Minute
+	}
+	if cfg.Dispatch.Timeouts.Balanced.Duration == 0 {
+		cfg.Dispatch.Timeouts.Balanced.Duration = 45 * time.Minute
+	}
+	if cfg.Dispatch.Timeouts.Premium.Duration == 0 {
+		cfg.Dispatch.Timeouts.Premium.Duration = 120 * time.Minute
+	}
+
+	// Dispatch Git
+	if cfg.Dispatch.Git.BranchPrefix == "" {
+		cfg.Dispatch.Git.BranchPrefix = "cortex/"
+	}
+	if cfg.Dispatch.Git.BranchCleanupDays == 0 {
+		cfg.Dispatch.Git.BranchCleanupDays = 7
+	}
+	if cfg.Dispatch.Git.MergeStrategy == "" {
+		cfg.Dispatch.Git.MergeStrategy = "squash"
+	}
+	if cfg.Dispatch.Git.MaxConcurrentPerProject == 0 {
+		cfg.Dispatch.Git.MaxConcurrentPerProject = 3
+	}
+
+	// Dispatch Tmux
+	if cfg.Dispatch.Tmux.HistoryLimit == 0 {
+		cfg.Dispatch.Tmux.HistoryLimit = 50000
+	}
+	if cfg.Dispatch.Tmux.SessionPrefix == "" {
+		cfg.Dispatch.Tmux.SessionPrefix = "cortex-"
+	}
+
+	// Dispatch log retention
+	if cfg.Dispatch.LogRetentionDays == 0 {
+		cfg.Dispatch.LogRetentionDays = 30
 	}
 }
 

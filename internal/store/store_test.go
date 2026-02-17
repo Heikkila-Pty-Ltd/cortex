@@ -530,6 +530,7 @@ func TestInterruptRunningDispatches(t *testing.T) {
 	err = s.db.QueryRow(`SELECT `+dispatchCols+` FROM dispatches WHERE id = ?`, id2).Scan(
 		&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName,
 		&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.ExitCode, &d.DurationS, &d.Retries, &d.EscalatedFromTier,
+		&d.FailureCategory, &d.FailureSummary,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -539,5 +540,39 @@ func TestInterruptRunningDispatches(t *testing.T) {
 	}
 	if !d.CompletedAt.Valid {
 		t.Error("expected completed_at to be set")
+	}
+}
+
+func TestUpdateFailureDiagnosis(t *testing.T) {
+	s := tempStore(t)
+
+	id, err := s.RecordDispatch("bead-diag", "proj", "agent1", "provider1", "fast", 100, "", "prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mark as failed
+	if err := s.UpdateDispatchStatus(id, "failed", 1, 30.0); err != nil {
+		t.Fatal(err)
+	}
+
+	// Store diagnosis
+	if err := s.UpdateFailureDiagnosis(id, "test_failure", "--- FAIL: TestFoo (0.01s)"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify via GetDispatchesByBead
+	dispatches, err := s.GetDispatchesByBead("bead-diag")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dispatches) != 1 {
+		t.Fatalf("expected 1 dispatch, got %d", len(dispatches))
+	}
+	if dispatches[0].FailureCategory != "test_failure" {
+		t.Errorf("expected category 'test_failure', got %q", dispatches[0].FailureCategory)
+	}
+	if dispatches[0].FailureSummary != "--- FAIL: TestFoo (0.01s)" {
+		t.Errorf("expected summary '--- FAIL: TestFoo (0.01s)', got %q", dispatches[0].FailureSummary)
 	}
 }

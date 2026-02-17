@@ -32,6 +32,8 @@ type Dispatch struct {
 	DurationS         float64
 	Retries           int
 	EscalatedFromTier string
+	FailureCategory   string
+	FailureSummary    string
 }
 
 // HealthEvent represents a recorded health event.
@@ -193,6 +195,27 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// Add failure diagnosis columns if they don't exist
+	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('dispatches') WHERE name = 'failure_category'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check failure_category column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE dispatches ADD COLUMN failure_category TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add failure_category column: %w", err)
+		}
+	}
+
+	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('dispatches') WHERE name = 'failure_summary'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check failure_summary column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE dispatches ADD COLUMN failure_summary TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add failure_summary column: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -230,7 +253,7 @@ func (s *Store) UpdateDispatchStatus(id int64, status string, exitCode int, dura
 	return nil
 }
 
-const dispatchCols = `id, bead_id, project, agent_id, provider, tier, pid, session_name, prompt, dispatched_at, completed_at, status, exit_code, duration_s, retries, escalated_from_tier`
+const dispatchCols = `id, bead_id, project, agent_id, provider, tier, pid, session_name, prompt, dispatched_at, completed_at, status, exit_code, duration_s, retries, escalated_from_tier, failure_category, failure_summary`
 
 // GetRunningDispatches returns all dispatches with status 'running'.
 func (s *Store) GetRunningDispatches() ([]Dispatch, error) {
@@ -258,12 +281,24 @@ func (s *Store) queryDispatches(query string, args ...any) ([]Dispatch, error) {
 	var dispatches []Dispatch
 	for rows.Next() {
 		var d Dispatch
-		if err := rows.Scan(&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName, &d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.ExitCode, &d.DurationS, &d.Retries, &d.EscalatedFromTier); err != nil {
+		if err := rows.Scan(&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName, &d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.ExitCode, &d.DurationS, &d.Retries, &d.EscalatedFromTier, &d.FailureCategory, &d.FailureSummary); err != nil {
 			return nil, fmt.Errorf("store: scan dispatch: %w", err)
 		}
 		dispatches = append(dispatches, d)
 	}
 	return dispatches, rows.Err()
+}
+
+// UpdateFailureDiagnosis stores failure category and summary for a dispatch.
+func (s *Store) UpdateFailureDiagnosis(id int64, category, summary string) error {
+	_, err := s.db.Exec(
+		`UPDATE dispatches SET failure_category = ?, failure_summary = ? WHERE id = ?`,
+		category, summary, id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update failure diagnosis: %w", err)
+	}
+	return nil
 }
 
 // RecordProviderUsage records an authed provider dispatch for rate limiting.

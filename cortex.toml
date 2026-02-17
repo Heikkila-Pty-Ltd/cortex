@@ -72,3 +72,39 @@ weekly_retro_day = "Monday"
 
 [api]
 bind = "127.0.0.1:8900"
+
+[dispatch.cli.claude]
+cmd = "claude"
+prompt_mode = "stdin"
+args = ["--print"]
+model_flag = "--model"
+approval_flags = ["--dangerously-skip-permissions"]
+
+[dispatch.cli.aider]
+cmd = "aider"
+prompt_mode = "file"
+args = ["--yes-always"]
+model_flag = "--model"
+approval_flags = []
+
+[dispatch.routing]
+fast_backend = "headless_cli"
+balanced_backend = "tmux"
+premium_backend = "tmux"
+comms_backend = "headless_cli"
+retry_backend = "tmux"
+
+[dispatch.timeouts]
+fast = "15m"
+balanced = "45m"
+premium = "120m"
+
+[dispatch.git]
+branch_prefix = "cortex/"
+branch_cleanup_days = 7
+merge_strategy = "squash"
+max_concurrent_per_project = 3
+
+[dispatch.tmux]
+history_limit = 50000
+session_prefix = "cortex-"

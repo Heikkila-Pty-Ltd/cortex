@@ -288,16 +288,18 @@ func (s *Server) handleDispatchDetail(w http.ResponseWriter, r *http.Request) {
 
 	// Build response with dispatch details including output tails
 	type dispatchResponse struct {
-		ID            int64   `json:"id"`
-		Agent         string  `json:"agent"`
-		Provider      string  `json:"provider"`
-		Tier          string  `json:"tier"`
-		Status        string  `json:"status"`
-		ExitCode      int     `json:"exit_code"`
-		DurationS     float64 `json:"duration_s"`
-		DispatchedAt  string  `json:"dispatched_at"`
-		SessionName   string  `json:"session_name"`
-		OutputTail    string  `json:"output_tail"`
+		ID              int64   `json:"id"`
+		Agent           string  `json:"agent"`
+		Provider        string  `json:"provider"`
+		Tier            string  `json:"tier"`
+		Status          string  `json:"status"`
+		ExitCode        int     `json:"exit_code"`
+		DurationS       float64 `json:"duration_s"`
+		DispatchedAt    string  `json:"dispatched_at"`
+		SessionName     string  `json:"session_name"`
+		OutputTail      string  `json:"output_tail"`
+		FailureCategory string  `json:"failure_category,omitempty"`
+		FailureSummary  string  `json:"failure_summary,omitempty"`
 	}
 
 	var dispatchList []dispatchResponse
@@ -309,16 +311,18 @@ func (s *Server) handleDispatchDetail(w http.ResponseWriter, r *http.Request) {
 		}
 
 		dispatchList = append(dispatchList, dispatchResponse{
-			ID:           d.ID,
-			Agent:        d.AgentID,
-			Provider:     d.Provider,
-			Tier:         d.Tier,
-			Status:       d.Status,
-			ExitCode:     d.ExitCode,
-			DurationS:    d.DurationS,
-			DispatchedAt: d.DispatchedAt.Format(time.RFC3339),
-			SessionName:  d.SessionName,
-			OutputTail:   outputTail,
+			ID:              d.ID,
+			Agent:           d.AgentID,
+			Provider:        d.Provider,
+			Tier:            d.Tier,
+			Status:          d.Status,
+			ExitCode:        d.ExitCode,
+			DurationS:       d.DurationS,
+			DispatchedAt:    d.DispatchedAt.Format(time.RFC3339),
+			SessionName:     d.SessionName,
+			OutputTail:      outputTail,
+			FailureCategory: d.FailureCategory,
+			FailureSummary:  d.FailureSummary,
 		})
 	}
 
