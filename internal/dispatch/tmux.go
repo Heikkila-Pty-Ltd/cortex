@@ -75,16 +75,16 @@ func SessionName(project, beadID string) string {
 		s = strings.ReplaceAll(s, " ", "-")
 		return s
 	}
-	
+
 	// Generate unique identifiers to prevent collisions
 	ts := time.Now().UnixNano()
 	pid := os.Getpid()
-	
+
 	// Add 4 bytes of randomness for additional collision resistance
 	randBytes := make([]byte, 4)
 	rand.Read(randBytes)
 	randHex := fmt.Sprintf("%x", randBytes)
-	
+
 	return fmt.Sprintf("%s%s-%s-%d-%d-%s", SessionPrefix, sanitize(project), sanitize(beadID), ts, pid, randHex)
 }
 
@@ -96,21 +96,21 @@ func prepareSessionForAgent(agent, sessionName string) error {
 	if err != nil {
 		return fmt.Errorf("get home directory: %w", err)
 	}
-	
+
 	agentDir := filepath.Join(home, ".openclaw", "agents", agent)
 	sessionsDir := filepath.Join(agentDir, "sessions")
-	
+
 	// Ensure agent sessions directory exists
 	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
 		return fmt.Errorf("create sessions directory: %w", err)
 	}
-	
+
 	// Create unique session-specific directory to avoid conflicts
 	sessionDir := filepath.Join(sessionsDir, sessionName)
 	if err := os.MkdirAll(sessionDir, 0755); err != nil {
 		return fmt.Errorf("create session directory: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -121,7 +121,7 @@ func cleanupSessionResources(agent, sessionName string) {
 	if err != nil {
 		return
 	}
-	
+
 	sessionDir := filepath.Join(home, ".openclaw", "agents", agent, "sessions", sessionName)
 	os.RemoveAll(sessionDir)
 }
@@ -138,7 +138,7 @@ func clearStaleLocks(agent string) {
 	if err != nil {
 		return
 	}
-	
+
 	myPID := os.Getpid()
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".lock") {
@@ -149,7 +149,7 @@ func clearStaleLocks(agent string) {
 		if err != nil {
 			continue
 		}
-		
+
 		// Lock files contain JSON with a "pid" field.
 		// Quick parse: find "pid": <number>
 		pidStr := ""
@@ -171,12 +171,12 @@ func clearStaleLocks(agent string) {
 		if err != nil || pid <= 0 {
 			continue
 		}
-		
+
 		// Don't clear locks from our own process or other live processes
 		if pid == myPID {
 			continue
 		}
-		
+
 		// Check if PID is alive
 		proc, err := os.FindProcess(pid)
 		if err != nil {
@@ -190,8 +190,10 @@ func clearStaleLocks(agent string) {
 	}
 }
 
-func buildTmuxAgentCommand(tmpPath, agent, thinking, provider string) string {
-	return fmt.Sprintf("sh -c %q _ %q %q %q %q", openclawShellScript(), tmpPath, agent, thinking, provider)
+func buildTmuxAgentCommand(scriptPath, tmpPath, agent, thinking, provider string) string {
+	// Execute a temp script file instead of inline "sh -c ..." so prompt content
+	// and shell metacharacters cannot break outer-shell quoting in tmux.
+	return fmt.Sprintf("sh %q %q %q %q %q", scriptPath, tmpPath, agent, thinking, provider)
 }
 
 // Dispatch implements DispatcherInterface for tmux-based dispatching.
@@ -212,8 +214,28 @@ func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt stri
 	}
 	tmpFile.Close()
 
+	// Write helper script to a temp file so tmux doesn't need to inline complex
+	// shell via "sh -c ...", which is fragile around quoting.
+	scriptFile, err := os.CreateTemp("", "cortex-openclaw-*.sh")
+	if err != nil {
+		os.Remove(tmpPath)
+		return 0, fmt.Errorf("tmux dispatch: create temp script file: %w", err)
+	}
+	scriptPath := scriptFile.Name()
+	if _, err := scriptFile.WriteString(openclawShellScript()); err != nil {
+		scriptFile.Close()
+		os.Remove(tmpPath)
+		os.Remove(scriptPath)
+		return 0, fmt.Errorf("tmux dispatch: write temp script file: %w", err)
+	}
+	if err := scriptFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		os.Remove(scriptPath)
+		return 0, fmt.Errorf("tmux dispatch: close temp script file: %w", err)
+	}
+
 	// Build agent command
-	agentCmd := buildTmuxAgentCommand(tmpPath, agent, thinking, provider)
+	agentCmd := buildTmuxAgentCommand(scriptPath, tmpPath, agent, thinking, provider)
 
 	// Generate unique session name with collision detection
 	var sessionName string
@@ -225,32 +247,43 @@ func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt stri
 		// Brief sleep if we somehow collided
 		time.Sleep(10 * time.Millisecond)
 	}
-	
+
 	// Prepare clean session environment
 	if err := prepareSessionForAgent(agent, sessionName); err != nil {
 		os.Remove(tmpPath)
+		os.Remove(scriptPath)
 		return 0, fmt.Errorf("prepare session for agent %s: %w", agent, err)
 	}
-	
+
 	// Create numeric handle
 	handle := d.generateHandle(sessionName)
-	
+
 	// Start the session with retry logic for lock conflicts
 	err = d.dispatchWithRetry(ctx, sessionName, agentCmd, workDir, nil, agent)
 	if err != nil {
 		cleanupSessionResources(agent, sessionName)
 		os.Remove(tmpPath)
+		os.Remove(scriptPath)
 		return 0, err
 	}
 
 	// Clean up temp file and register cleanup in background
 	go func() {
-		// Wait a bit for the command to read the file
-		time.Sleep(2 * time.Second)
+		// Wait until the tmux session is no longer running before removing temp files.
+		// This avoids races where shell startup is delayed and script/prompt files
+		// are deleted too early.
+		deadline := time.Now().Add(4 * time.Hour)
+		for time.Now().Before(deadline) {
+			status, _ := SessionStatus(sessionName)
+			if status != "running" {
+				break
+			}
+			time.Sleep(2 * time.Second)
+		}
 		os.Remove(tmpPath)
-		
-		// Register session cleanup when session eventually ends
-		// This is a best-effort cleanup that doesn't interfere with the session
+		os.Remove(scriptPath)
+
+		// Register session cleanup when session eventually ends.
 		defer cleanupSessionResources(agent, sessionName)
 	}()
 
@@ -328,11 +361,11 @@ func (d *TmuxDispatcher) IsAlive(handle int) bool {
 	d.mu.RLock()
 	sessionName, ok := d.sessions[handle]
 	d.mu.RUnlock()
-	
+
 	if !ok {
 		return false
 	}
-	
+
 	status, _ := SessionStatus(sessionName)
 	return status == "running"
 }
@@ -342,13 +375,13 @@ func (d *TmuxDispatcher) Kill(handle int) error {
 	d.mu.RLock()
 	sessionName, ok := d.sessions[handle]
 	d.mu.RUnlock()
-	
+
 	if !ok {
 		return fmt.Errorf("session handle %d not found", handle)
 	}
-	
+
 	err := KillSession(sessionName)
-	
+
 	// Clean up session resources after killing
 	// Extract agent name from session name for cleanup
 	if strings.HasPrefix(sessionName, SessionPrefix) {
@@ -359,7 +392,7 @@ func (d *TmuxDispatcher) Kill(handle int) error {
 			go cleanupSessionResources(agent, sessionName)
 		}
 	}
-	
+
 	return err
 }
 
@@ -373,11 +406,51 @@ func (d *TmuxDispatcher) GetSessionName(handle int) string {
 	d.mu.RLock()
 	sessionName, ok := d.sessions[handle]
 	d.mu.RUnlock()
-	
+
 	if !ok {
 		return ""
 	}
 	return sessionName
+}
+
+// GetProcessState implements DispatcherInterface for tmux-based dispatching.
+func (d *TmuxDispatcher) GetProcessState(handle int) ProcessState {
+	sessionName := d.GetSessionName(handle)
+	if sessionName == "" {
+		return ProcessState{
+			State:      "unknown",
+			ExitCode:   -1,
+			OutputPath: "",
+		}
+	}
+	
+	status, exitCode := SessionStatus(sessionName)
+	
+	var state string
+	var outputPath string
+	
+	switch status {
+	case "running":
+		state = "running"
+		exitCode = -1
+	case "exited":
+		state = "exited"
+		// Output can be captured for tmux sessions even after they exit
+		// (as long as the session still exists)
+		outputPath = "" // tmux output is captured dynamically, not to files
+	case "gone":
+		state = "unknown" // Session disappeared, can't determine proper exit status
+		exitCode = -1
+	default:
+		state = "unknown"
+		exitCode = -1
+	}
+	
+	return ProcessState{
+		State:      state,
+		ExitCode:   exitCode,
+		OutputPath: outputPath,
+	}
 }
 
 // generateHandle creates a numeric handle for a session name and stores the mapping.
@@ -386,12 +459,12 @@ func (d *TmuxDispatcher) generateHandle(sessionName string) int {
 	h := fnv.New32a()
 	h.Write([]byte(sessionName))
 	handle := int(h.Sum32())
-	
+
 	// Store the mapping
 	d.mu.Lock()
 	d.sessions[handle] = sessionName
 	d.mu.Unlock()
-	
+
 	return handle
 }
 
@@ -401,7 +474,7 @@ func IsTmuxAvailable() bool {
 	if err != nil {
 		return false
 	}
-	
+
 	// Test if tmux server can be contacted
 	err = exec.Command("tmux", "list-sessions").Run()
 	// This will succeed if server exists, or fail with specific errors if no server but tmux works
@@ -494,7 +567,7 @@ func CaptureOutput(sessionName string) (string, error) {
 	out, err := exec.Command(
 		"tmux", "capture-pane",
 		"-t", sessionName,
-		"-p",  // print to stdout
+		"-p",      // print to stdout
 		"-S", "-", // from start of history
 	).Output()
 	if err != nil {
@@ -561,7 +634,7 @@ func CleanDeadSessions() int {
 		status, _ := SessionStatus(name)
 		if status == "exited" {
 			KillSession(name)
-			
+
 			// Clean up session resources
 			if strings.HasPrefix(name, SessionPrefix) {
 				parts := strings.Split(name, "-")
@@ -570,7 +643,7 @@ func CleanDeadSessions() int {
 					cleanupSessionResources(agent, name)
 				}
 			}
-			
+
 			cleaned++
 		}
 	}

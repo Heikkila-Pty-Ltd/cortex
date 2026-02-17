@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -29,7 +30,14 @@ type Scheduler struct {
 	dryRun      bool
 	mu          sync.Mutex
 	paused      bool
+	quarantine  map[string]time.Time
 }
+
+const (
+	failureQuarantineThreshold   = 3
+	failureQuarantineWindow      = 45 * time.Minute
+	failureQuarantineLogInterval = 10 * time.Minute
+)
 
 // New creates a new Scheduler with all dependencies.
 func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatch.DispatcherInterface, logger *slog.Logger, dryRun bool) *Scheduler {
@@ -40,6 +48,7 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 		dispatcher:  d,
 		logger:      logger,
 		dryRun:      dryRun,
+		quarantine:  make(map[string]time.Time),
 	}
 }
 
@@ -165,6 +174,12 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		return projects[i].proj.Priority < projects[j].proj.Priority
 	})
 
+	crossGraph, crossErr := beads.BuildCrossProjectGraph(ctx, s.cfg.Projects)
+	if crossErr != nil {
+		s.logger.Warn("failed to build cross-project dependency graph", "error", crossErr)
+		crossGraph = nil
+	}
+
 	for _, np := range projects {
 		// Auto-spawn team for each enabled project
 		model := s.defaultModel()
@@ -184,6 +199,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 
 		graph := beads.BuildDepGraph(beadList)
 		ready := beads.FilterUnblockedOpen(beadList, graph)
+		if crossGraph != nil {
+			ready = beads.FilterUnblockedCrossProject(beadList, graph, crossGraph)
+		}
 
 		// Enrich ready beads with bd show data (acceptance, design, estimate)
 		beads.EnrichBeads(ctx, beadsDir, ready)
@@ -232,6 +250,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		// Check agent-busy guard: one dispatch per agent per project per tick
 		agent := ResolveAgent(item.name, role)
 		if s.isDispatchCoolingDown(item.bead.ID, agent) {
+			continue
+		}
+		if s.isFailureQuarantined(item.bead.ID) {
 			continue
 		}
 
@@ -299,6 +320,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 
 		// Fetch PR diff if this is a reviewer dispatch
 		workspace := config.ExpandHome(item.project.Workspace)
+		beadsDir := config.ExpandHome(item.project.BeadsDir)
 		var prDiff string
 		if role == "reviewer" && item.project.UseBranches {
 			// Try to get PR number from last dispatch
@@ -336,10 +358,36 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			continue
 		}
 
+		if err := beads.ClaimBeadOwnershipCtx(ctx, beadsDir, item.bead.ID); err != nil {
+			if beads.IsAlreadyClaimed(err) {
+				s.logger.Debug("bead ownership lock unavailable, skipping", "bead", item.bead.ID)
+			} else {
+				s.logger.Warn("failed to claim bead ownership", "bead", item.bead.ID, "error", err)
+			}
+			continue
+		}
+		lockHeld := true
+		releaseLock := func(reason string) {
+			if !lockHeld {
+				return
+			}
+			if err := beads.ReleaseBeadOwnershipCtx(ctx, beadsDir, item.bead.ID); err != nil {
+				s.logger.Warn("failed to release bead ownership lock",
+					"bead", item.bead.ID,
+					"reason", reason,
+					"error", err,
+				)
+			} else {
+				s.logger.Debug("released bead ownership lock", "bead", item.bead.ID, "reason", reason)
+			}
+			lockHeld = false
+		}
+
 		// Create feature branch if branch workflow is enabled
 		if item.project.UseBranches {
 			if err := git.EnsureFeatureBranchWithBase(workspace, item.bead.ID, item.project.BaseBranch, item.project.BranchPrefix); err != nil {
 				s.logger.Error("failed to create feature branch", "bead", item.bead.ID, "error", err)
+				releaseLock("branch_setup_failed")
 				continue
 			}
 			s.logger.Debug("ensured feature branch", "bead", item.bead.ID, "branch", item.project.BranchPrefix+item.bead.ID)
@@ -373,6 +421,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		handle, err := s.dispatcher.Dispatch(ctx, agent, prompt, provider.Model, thinkingLevel, workspace)
 		if err != nil {
 			s.logger.Error("dispatch failed", "bead", item.bead.ID, "agent", agent, "error", err)
+			releaseLock("dispatch_launch_failed")
 			continue
 		}
 
@@ -383,6 +432,10 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		dispatchID, err := s.store.RecordDispatch(item.bead.ID, item.name, agent, provider.Model, currentTier, handle, sessionName, prompt, "", "", "")
 		if err != nil {
 			s.logger.Error("failed to record dispatch", "bead", item.bead.ID, "error", err)
+			if killErr := s.dispatcher.Kill(handle); killErr != nil {
+				s.logger.Warn("failed to terminate dispatch after record failure", "bead", item.bead.ID, "handle", handle, "error", killErr)
+			}
+			releaseLock("dispatch_record_failed")
 			continue
 		}
 		if err := s.store.UpdateDispatchStage(dispatchID, "running"); err != nil {
@@ -478,7 +531,7 @@ func (s *Scheduler) checkRunningDispatches() {
 			case "gone":
 				status = "failed"
 				exitCode = -1
-				finalStage = "gone"
+				finalStage = "failed_needs_check"
 				s.logger.Error("dispatch session disappeared - needs manual diagnosis",
 					"bead", d.BeadID,
 					"session", d.SessionName,
@@ -489,7 +542,7 @@ func (s *Scheduler) checkRunningDispatches() {
 				// Record detailed health event for tracking
 				healthDetails := fmt.Sprintf("bead %s session %s (agent=%s, provider=%s) disappeared after %.1fs - session may have crashed or been terminated externally",
 					d.BeadID, d.SessionName, d.AgentID, d.Provider, duration)
-				_ = s.store.RecordHealthEvent("dispatch_session_gone", healthDetails)
+				_ = s.store.RecordHealthEventWithDispatch("dispatch_session_gone", healthDetails, d.ID, d.BeadID)
 
 				// Set failure diagnosis for manual review
 				category := "session_disappeared"
@@ -513,6 +566,70 @@ func (s *Scheduler) checkRunningDispatches() {
 					}
 				}
 			}
+		} else {
+			// For PID dispatches, use the dispatcher's process state tracking
+			processState := s.dispatcher.GetProcessState(d.PID)
+			
+			switch processState.State {
+			case "running":
+				// This shouldn't happen since IsAlive returned false, but handle it
+				s.logger.Warn("process state inconsistency: IsAlive=false but GetProcessState=running", 
+					"bead", d.BeadID, "pid", d.PID)
+				continue // Skip this dispatch, will be processed next tick
+				
+			case "exited":
+				if processState.ExitCode == 0 {
+					status = "completed"
+					exitCode = 0
+					finalStage = "completed"
+				} else {
+					status = "failed"
+					exitCode = processState.ExitCode
+					finalStage = "failed"
+				}
+				
+				// Capture output if available
+				if processState.OutputPath != "" {
+					if outputBytes, err := os.ReadFile(processState.OutputPath); err != nil {
+						s.logger.Warn("failed to read process output", "pid", d.PID, "output_path", processState.OutputPath, "error", err)
+					} else if len(outputBytes) > 0 {
+						output := string(outputBytes)
+						if err := s.store.CaptureOutput(d.ID, output); err != nil {
+							s.logger.Error("failed to store process output", "dispatch_id", d.ID, "error", err)
+						}
+					}
+				}
+				
+			case "unknown":
+				// Process died but we couldn't determine exit status - treat as failure
+				status = "failed"
+				exitCode = -1
+				finalStage = "failed_needs_check"
+				
+				s.logger.Error("dispatch process state unknown - exit status unavailable",
+					"bead", d.BeadID,
+					"pid", d.PID,
+					"agent", d.AgentID,
+					"provider", d.Provider,
+					"duration_s", duration)
+
+				// Record health event for tracking
+				healthDetails := fmt.Sprintf("bead %s pid %d (agent=%s, provider=%s) died after %.1fs but exit status could not be determined - may indicate system instability",
+					d.BeadID, d.PID, d.AgentID, d.Provider, duration)
+				_ = s.store.RecordHealthEventWithDispatch("dispatch_pid_unknown_exit", healthDetails, d.ID, d.BeadID)
+
+				// Set failure diagnosis
+				category := "unknown_exit_state"
+				summary := fmt.Sprintf("Process %d died but exit code could not be captured. This may indicate the process was killed by the system (OOM killer, etc.) or tracking was lost.", d.PID)
+				if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
+					s.logger.Error("failed to store failure diagnosis for unknown exit", "dispatch_id", d.ID, "error", err)
+				}
+			}
+			
+			// Clean up process tracking info after we've extracted what we need
+			if pidDispatcher, ok := s.dispatcher.(*dispatch.Dispatcher); ok {
+				pidDispatcher.CleanupProcess(d.PID)
+			}
 		}
 
 		s.logger.Info("dispatch completed",
@@ -531,7 +648,7 @@ func (s *Scheduler) checkRunningDispatches() {
 				// Calculate and record cost for completed dispatches
 				output, _ := s.store.GetOutput(d.ID)
 				usage := cost.ExtractTokenUsage(output, d.Prompt)
-				
+
 				var inputPrice, outputPrice float64
 				// Lookup provider prices from config
 				for _, p := range s.cfg.Providers {
@@ -541,7 +658,7 @@ func (s *Scheduler) checkRunningDispatches() {
 						break
 					}
 				}
-				
+
 				totalCost := cost.CalculateCost(usage, inputPrice, outputPrice)
 				if err := s.store.RecordDispatchCost(d.ID, usage.Input, usage.Output, totalCost); err != nil {
 					s.logger.Error("failed to record dispatch cost", "dispatch_id", d.ID, "error", err)
@@ -585,6 +702,33 @@ func (s *Scheduler) isDispatchAlive(d store.Dispatch) bool {
 		return status == "running"
 	}
 	return s.dispatcher.IsAlive(d.PID)
+}
+
+func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+	if err != nil {
+		s.logger.Error("failed to evaluate failure quarantine", "bead", beadID, "error", err)
+		return false
+	}
+	if !quarantined {
+		delete(s.quarantine, beadID)
+		return false
+	}
+
+	now := time.Now()
+	last, seen := s.quarantine[beadID]
+	if !seen || now.Sub(last) >= failureQuarantineLogInterval {
+		s.quarantine[beadID] = now
+		s.logger.Warn("bead quarantined due to repeated failures",
+			"bead", beadID,
+			"threshold", failureQuarantineThreshold,
+			"window", failureQuarantineWindow.String(),
+		)
+		_ = s.store.RecordHealthEvent("bead_quarantined",
+			fmt.Sprintf("bead %s quarantined after %d consecutive failures in %s",
+				beadID, failureQuarantineThreshold, failureQuarantineWindow))
+	}
+	return true
 }
 
 // processPendingRetries handles dispatches marked for retry with exponential backoff.
