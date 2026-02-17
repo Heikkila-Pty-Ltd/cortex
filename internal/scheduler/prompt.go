@@ -12,8 +12,8 @@ import (
 var filePathRe = regexp.MustCompile(`(?:^|\s)((?:src|internal|cmd|pkg|lib|app|public|templates|static|test|tests|scripts)/[\w./-]+|[\w-]+\.(?:go|ts|tsx|js|jsx|py|rs|rb|java|vue|svelte|css|scss|html|sql|yaml|yml|toml|json|md|sh))`)
 
 // stageInstructions maps roles to stage-specific prompt instructions.
-var stageInstructions = map[string]func(bead beads.Bead, useBranches bool) string{
-	"scrum": func(b beads.Bead, useBranches bool) string {
+var stageInstructions = map[string]func(bead beads.Bead, useBranches bool, prDiff string) string{
+	"scrum": func(b beads.Bead, useBranches bool, prDiff string) string {
 		return fmt.Sprintf(`## Instructions (Scrum Master)
 1. Review and refine the task description
 2. Add or improve acceptance criteria using: bd update %s --acceptance="..."
@@ -22,7 +22,7 @@ var stageInstructions = map[string]func(bead beads.Bead, useBranches bool) strin
 5. Unassign yourself: bd update %s --assignee=""
 `, b.ID, b.ID, b.ID)
 	},
-	"planner": func(b beads.Bead, useBranches bool) string {
+	"planner": func(b beads.Bead, useBranches bool, prDiff string) string {
 		return fmt.Sprintf(`## Instructions (Planner)
 1. Read the task description and acceptance criteria carefully
 2. Create an implementation plan with design notes: bd update %s --design="..."
@@ -32,7 +32,7 @@ var stageInstructions = map[string]func(bead beads.Bead, useBranches bool) strin
 6. Unassign yourself: bd update %s --assignee=""
 `, b.ID, b.ID, b.ID)
 	},
-	"coder": func(b beads.Bead, useBranches bool) string {
+	"coder": func(b beads.Bead, useBranches bool, prDiff string) string {
 		shortTitle := b.Title
 		if len(shortTitle) > 50 {
 			shortTitle = shortTitle[:50]
@@ -51,16 +51,23 @@ var stageInstructions = map[string]func(bead beads.Bead, useBranches bool) strin
 %s
 `, b.ID, shortTitle, b.ID, b.ID, pushInstructions)
 	},
-	"reviewer": func(b beads.Bead, useBranches bool) string {
+	"reviewer": func(b beads.Bead, useBranches bool, prDiff string) string {
+		diffSection := ""
+		if prDiff != "" {
+			diffSection = fmt.Sprintf("\n## Pull Request Diff\nReview the following code changes carefully:\n\n```diff\n%s\n```\n", prDiff)
+		}
+
 		return fmt.Sprintf(`## Instructions (Reviewer)
 1. Review the code changes against acceptance criteria
-2. Check for correctness, style, and test coverage
+2. Check for correctness, style, and test coverage%s
 3. If approved: transition to QA: bd update %s --set-labels stage:qa
 4. If changes needed: add review notes and transition back: bd update %s --set-labels stage:coding
 5. Unassign yourself: bd update %s --assignee=""
-`, b.ID, b.ID, b.ID)
+
+Note: You can also use 'gh pr review --approve' or 'gh pr review --request-changes' if you have the PR number.
+`, diffSection, b.ID, b.ID, b.ID)
 	},
-	"ops": func(b beads.Bead, useBranches bool) string {
+	"ops": func(b beads.Bead, useBranches bool, prDiff string) string {
 		return fmt.Sprintf(`## Instructions (QA/Ops)
 1. Run the full test suite
 2. Verify acceptance criteria are met
@@ -78,11 +85,11 @@ func BuildPrompt(bead beads.Bead, project config.Project) string {
 
 // BuildPromptWithRole constructs a role-aware prompt sent to an openclaw agent.
 func BuildPromptWithRole(bead beads.Bead, project config.Project, role string) string {
-	return BuildPromptWithRoleBranches(bead, project, role, false)
+	return BuildPromptWithRoleBranches(bead, project, role, false, "")
 }
 
 // BuildPromptWithRoleBranches constructs a role-aware prompt with branch workflow support.
-func BuildPromptWithRoleBranches(bead beads.Bead, project config.Project, role string, useBranches bool) string {
+func BuildPromptWithRoleBranches(bead beads.Bead, project config.Project, role string, useBranches bool, prDiff string) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "You are working on project in %s.\n\n", project.Workspace)
@@ -99,7 +106,7 @@ func BuildPromptWithRoleBranches(bead beads.Bead, project config.Project, role s
 
 	// Use stage-specific instructions if role is known
 	if fn, ok := stageInstructions[role]; ok {
-		b.WriteString(fn(bead, useBranches))
+		b.WriteString(fn(bead, useBranches, prDiff))
 	} else {
 		// Generic fallback (original behavior)
 		b.WriteString("## Instructions\n")
