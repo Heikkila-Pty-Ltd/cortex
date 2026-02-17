@@ -158,6 +158,17 @@ CREATE TABLE IF NOT EXISTS tick_metrics (
 	stuck INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS dod_results (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	dispatch_id INTEGER NOT NULL REFERENCES dispatches(id),
+	bead_id TEXT NOT NULL,
+	project TEXT NOT NULL,
+	checked_at DATETIME NOT NULL DEFAULT (datetime('now')),
+	passed BOOLEAN NOT NULL DEFAULT 0,
+	failures TEXT NOT NULL DEFAULT '',
+	check_results TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS dispatch_output (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	dispatch_id INTEGER NOT NULL REFERENCES dispatches(id),
@@ -921,6 +932,18 @@ func (s *Store) RecordDispatchCost(dispatchID int64, inputTokens, outputTokens i
 	)
 	if err != nil {
 		return fmt.Errorf("store: record dispatch cost: %w", err)
+	}
+	return nil
+}
+
+// RecordDoDResult records the results of a Definition of Done check.
+func (s *Store) RecordDoDResult(dispatchID int64, beadID, project string, passed bool, failures string, checkResults string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO dod_results (dispatch_id, bead_id, project, passed, failures, check_results) VALUES (?, ?, ?, ?, ?, ?)`,
+		dispatchID, beadID, project, passed, failures, checkResults,
+	)
+	if err != nil {
+		return fmt.Errorf("store: record DoD result: %w", err)
 	}
 	return nil
 }

@@ -14,6 +14,7 @@ var stageRoles = map[string]string{
 	"stage:coding":   "coder",
 	"stage:review":   "reviewer",
 	"stage:qa":       "ops",
+	"stage:dod":      "skip", // DoD checking is handled by scheduler, not an agent
 	"stage:done":     "skip",
 }
 
@@ -25,7 +26,8 @@ var stageOrder = map[string]int{
 	"stage:coding":   3,
 	"stage:review":   4,
 	"stage:qa":       5,
-	"stage:done":     6,
+	"stage:dod":      6,
+	"stage:done":     7,
 }
 
 // AllRoles is the ordered set of roles used for team creation.

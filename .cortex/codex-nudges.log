@@ -53,3 +53,5 @@
 [2026-02-18T06:35:43+10:00] Repeated failure signature 2x/15m: <none>
 [2026-02-18T06:50:43+10:00] Repeated failure signature 2x/15m: <none>
 [2026-02-18T07:05:44+10:00] Repeated failure signature 2x/15m: <none>
+[2026-02-18T07:35:45+10:00] Repeated failure signature 4x/15m: gateway connect failed: Error: gateway closed (1000):
+[2026-02-18T07:50:46+10:00] Repeated failure signature 3x/15m: gateway connect failed: Error: gateway closed (1000):

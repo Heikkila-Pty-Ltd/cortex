@@ -2,9 +2,11 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"sync"
@@ -166,7 +168,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 	s.logger.Info("tick started")
 
 	// Check running dispatches first
-	s.checkRunningDispatches()
+	s.checkRunningDispatches(ctx)
 
 	// Process pending retries with backoff
 	s.processPendingRetries(ctx)
@@ -496,6 +498,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 	// Check and trigger ceremonies (runs after regular dispatches but within same tick)
 	s.checkCeremonies(ctx)
 
+	// Check for beads in DoD stage and process them
+	s.processDoDStage(ctx)
+
 	s.logger.Info("tick complete", "dispatched", dispatched, "ready", len(allReady))
 }
 
@@ -504,6 +509,177 @@ func (s *Scheduler) checkCeremonies(ctx context.Context) {
 	if s.ceremonyScheduler != nil {
 		s.ceremonyScheduler.CheckCeremonies(ctx)
 	}
+}
+
+// processDoDStage checks for beads in stage:dod and runs DoD validation
+func (s *Scheduler) processDoDStage(ctx context.Context) {
+	for projectName, project := range s.cfg.Projects {
+		if !project.Enabled {
+			continue
+		}
+
+		beadList, err := beads.ListBeads(project.BeadsDir)
+		if err != nil {
+			s.logger.Error("failed to list beads for DoD processing", "project", projectName, "error", err)
+			continue
+		}
+
+		// Find beads in stage:dod
+		dodBeads := make([]beads.Bead, 0)
+		for _, bead := range beadList {
+			if bead.Status == "open" && hasIssueLabel(bead, "stage:dod") {
+				dodBeads = append(dodBeads, bead)
+			}
+		}
+
+		for _, bead := range dodBeads {
+			s.processSingleDoDCheck(ctx, projectName, project, bead)
+		}
+	}
+}
+
+// processSingleDoDCheck runs DoD validation for a single bead
+func (s *Scheduler) processSingleDoDCheck(ctx context.Context, projectName string, project config.Project, bead beads.Bead) {
+	s.logger.Info("processing DoD check", "project", projectName, "bead", bead.ID)
+
+	// Create DoD checker from project config
+	dodChecker := NewDoDChecker(project.DoD)
+	if !dodChecker.IsEnabled() {
+		s.logger.Debug("DoD checking not configured, auto-closing bead", "project", projectName, "bead", bead.ID)
+		s.closeBead(ctx, projectName, project, bead, "DoD checking not configured")
+		return
+	}
+
+	// Run DoD checks
+	result, err := dodChecker.Check(ctx, project.Workspace, bead)
+	if err != nil {
+		s.logger.Error("DoD check failed with error", "project", projectName, "bead", bead.ID, "error", err)
+		s.transitionBeadToCoding(ctx, projectName, project, bead, fmt.Sprintf("DoD check error: %v", err))
+		return
+	}
+
+	// Record DoD result in store
+	checkResultsJson, _ := json.Marshal(result.Checks)
+	failuresText := strings.Join(result.Failures, "; ")
+	if err := s.store.RecordDoDResult(0, bead.ID, projectName, result.Passed, failuresText, string(checkResultsJson)); err != nil {
+		s.logger.Error("failed to record DoD result", "project", projectName, "bead", bead.ID, "error", err)
+	}
+
+	if result.Passed {
+		s.logger.Info("DoD checks passed, closing bead", "project", projectName, "bead", bead.ID)
+		s.closeBead(ctx, projectName, project, bead, "DoD checks passed")
+	} else {
+		s.logger.Warn("DoD checks failed, transitioning back to coding", 
+			"project", projectName, 
+			"bead", bead.ID, 
+			"failures", len(result.Failures))
+		failureMsg := "DoD checks failed: " + strings.Join(result.Failures, "; ")
+		s.transitionBeadToCoding(ctx, projectName, project, bead, failureMsg)
+	}
+}
+
+// closeBead closes a bead and transitions it to stage:done
+func (s *Scheduler) closeBead(ctx context.Context, projectName string, project config.Project, bead beads.Bead, reason string) {
+	if err := beads.CloseBeadCtx(ctx, project.BeadsDir, bead.ID); err != nil {
+		s.logger.Error("failed to close bead", "project", projectName, "bead", bead.ID, "error", err)
+		return
+	}
+
+	s.logger.Info("bead closed", "project", projectName, "bead", bead.ID, "reason", reason)
+	_ = s.store.RecordHealthEventWithDispatch("bead_closed", 
+		fmt.Sprintf("project %s bead %s closed after DoD validation: %s", projectName, bead.ID, reason), 
+		0, bead.ID)
+}
+
+// transitionBeadToCoding transitions a bead back to stage:coding with failure notes
+func (s *Scheduler) transitionBeadToCoding(ctx context.Context, projectName string, project config.Project, bead beads.Bead, failureReason string) {
+	// Update bead to stage:coding using bd CLI
+	projectRoot := strings.TrimSuffix(project.BeadsDir, "/.beads")
+	cmd := exec.CommandContext(ctx, "bd", "update", bead.ID, "--set-labels", "stage:coding")
+	cmd.Dir = projectRoot
+	
+	if err := cmd.Run(); err != nil {
+		s.logger.Error("failed to transition bead to coding", "project", projectName, "bead", bead.ID, "error", err)
+		return
+	}
+
+	s.logger.Info("bead transitioned back to coding", "project", projectName, "bead", bead.ID, "reason", failureReason)
+	_ = s.store.RecordHealthEventWithDispatch("dod_failure", 
+		fmt.Sprintf("project %s bead %s DoD failed, returned to coding: %s", projectName, bead.ID, failureReason), 
+		0, bead.ID)
+}
+
+// handleOpsQaCompletion checks if a completed dispatch was ops/qa work and transitions to DoD if configured
+func (s *Scheduler) handleOpsQaCompletion(ctx context.Context, dispatch store.Dispatch) {
+	// Check if this was an ops agent dispatch
+	if dispatch.AgentID == "" || !strings.HasSuffix(dispatch.AgentID, "-ops") {
+		return
+	}
+
+	// Extract project name from agent ID (format: "projectname-ops")
+	projectName := strings.TrimSuffix(dispatch.AgentID, "-ops")
+	project, exists := s.cfg.Projects[projectName]
+	if !exists || !project.Enabled {
+		return
+	}
+
+	// Get the bead to check if it's in stage:qa
+	beadList, err := beads.ListBeads(project.BeadsDir)
+	if err != nil {
+		s.logger.Error("failed to list beads for ops completion check", "project", projectName, "error", err)
+		return
+	}
+
+	var bead beads.Bead
+	var found bool
+	for _, b := range beadList {
+		if b.ID == dispatch.BeadID {
+			bead = b
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		s.logger.Warn("bead not found for ops completion check", "project", projectName, "bead", dispatch.BeadID)
+		return
+	}
+
+	// Check if bead is in stage:qa
+	if !hasIssueLabel(bead, "stage:qa") {
+		s.logger.Debug("ops completion but bead not in stage:qa, skipping DoD transition", 
+			"project", projectName, "bead", dispatch.BeadID)
+		return
+	}
+
+	// Check if DoD is configured for this project
+	dodChecker := NewDoDChecker(project.DoD)
+	if !dodChecker.IsEnabled() {
+		s.logger.Debug("DoD not configured, auto-closing bead", "project", projectName, "bead", dispatch.BeadID)
+		s.closeBead(ctx, projectName, project, bead, "DoD not configured, auto-close after ops/qa")
+		return
+	}
+
+	// Transition bead to stage:dod for DoD validation
+	s.transitionBeadToDod(ctx, projectName, project, bead)
+}
+
+// transitionBeadToDod transitions a bead to stage:dod for DoD validation
+func (s *Scheduler) transitionBeadToDod(ctx context.Context, projectName string, project config.Project, bead beads.Bead) {
+	// Update bead to stage:dod using bd CLI
+	projectRoot := strings.TrimSuffix(project.BeadsDir, "/.beads")
+	cmd := exec.CommandContext(ctx, "bd", "update", bead.ID, "--set-labels", "stage:dod")
+	cmd.Dir = projectRoot
+	
+	if err := cmd.Run(); err != nil {
+		s.logger.Error("failed to transition bead to DoD", "project", projectName, "bead", bead.ID, "error", err)
+		return
+	}
+
+	s.logger.Info("bead transitioned to DoD stage for validation", "project", projectName, "bead", bead.ID)
+	_ = s.store.RecordHealthEventWithDispatch("ops_to_dod_transition", 
+		fmt.Sprintf("project %s bead %s transitioned to DoD stage after ops/qa completion", projectName, bead.ID), 
+		0, bead.ID)
 }
 
 // defaultModel returns the model from the first balanced provider, or falls back to any provider.
@@ -542,7 +718,7 @@ func (s *Scheduler) isDispatchCoolingDown(beadID, agent string) bool {
 }
 
 // checkRunningDispatches polls running dispatches and marks completed/failed.
-func (s *Scheduler) checkRunningDispatches() {
+func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 	running, err := s.store.GetRunningDispatches()
 	if err != nil {
 		s.logger.Error("failed to get running dispatches", "error", err)
@@ -729,6 +905,9 @@ func (s *Scheduler) checkRunningDispatches() {
 				if err := s.store.UpdateDispatchStage(d.ID, "completed"); err != nil {
 					s.logger.Warn("failed to update dispatch stage", "dispatch_id", d.ID, "stage", "completed", "error", err)
 				}
+
+				// Check if this was ops/qa completion - transition to DoD if configured
+				s.handleOpsQaCompletion(ctx, d)
 			} else {
 				if err := s.store.UpdateDispatchStage(d.ID, finalStage); err != nil {
 					s.logger.Warn("failed to update dispatch stage", "dispatch_id", d.ID, "stage", finalStage, "error", err)

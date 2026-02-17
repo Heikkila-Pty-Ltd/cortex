@@ -20,6 +20,7 @@ func TestInferRole(t *testing.T) {
 		{"stage:coding", beads.Bead{Type: "task", Labels: []string{"stage:coding"}}, "coder"},
 		{"stage:review", beads.Bead{Type: "task", Labels: []string{"stage:review"}}, "reviewer"},
 		{"stage:qa", beads.Bead{Type: "task", Labels: []string{"stage:qa"}}, "ops"},
+		{"stage:dod", beads.Bead{Type: "task", Labels: []string{"stage:dod"}}, "skip"},
 		{"stage:done", beads.Bead{Type: "task", Labels: []string{"stage:done"}}, "skip"},
 		// Stage label with other labels — stage takes precedence
 		{"stage overrides keyword", beads.Bead{Type: "task", Labels: []string{"deploy", "stage:backlog"}}, "scrum"},

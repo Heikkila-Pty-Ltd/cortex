@@ -19,6 +19,7 @@ type Chief struct {
 	store      *store.Store
 	dispatcher dispatch.DispatcherInterface
 	logger     *slog.Logger
+	allocator  *AllocationRecorder
 }
 
 // CeremonyType represents different types of ceremonies
@@ -40,11 +41,13 @@ type CeremonySchedule struct {
 
 // New creates a new Chief instance
 func New(cfg *config.Config, store *store.Store, dispatcher dispatch.DispatcherInterface, logger *slog.Logger) *Chief {
+	allocator := NewAllocationRecorder(cfg, store, dispatcher, logger)
 	return &Chief{
 		cfg:        cfg,
 		store:      store,
 		dispatcher: dispatcher,
 		logger:     logger,
+		allocator:  allocator,
 	}
 }
 
@@ -108,6 +111,93 @@ func (c *Chief) RunMultiTeamPlanning(ctx context.Context) error {
 	c.logger.Info("multi-team planning ceremony dispatched", 
 		"dispatch_id", dispatchID,
 		"bead_id", ceremonyBead.ID)
+
+	// Start a background process to monitor completion and record allocations
+	go c.monitorCeremonyCompletion(ctx, ceremonyBead.ID, dispatchID)
+
+	return nil
+}
+
+// monitorCeremonyCompletion monitors a ceremony dispatch and processes results when complete
+func (c *Chief) monitorCeremonyCompletion(ctx context.Context, ceremonyID string, dispatchID int64) {
+	c.logger.Info("monitoring ceremony completion", 
+		"ceremony_id", ceremonyID,
+		"dispatch_id", dispatchID)
+
+	// Poll for completion (in production, this would use event-driven completion)
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	
+	timeout := time.NewTimer(2 * time.Hour) // Max ceremony duration
+	defer timeout.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			c.logger.Info("ceremony monitoring cancelled", "ceremony_id", ceremonyID)
+			return
+		case <-timeout.C:
+			c.logger.Warn("ceremony monitoring timed out", "ceremony_id", ceremonyID)
+			return
+		case <-ticker.C:
+			dispatch, err := c.store.GetDispatchByID(dispatchID)
+			if err != nil {
+				c.logger.Error("failed to check ceremony dispatch status", 
+					"ceremony_id", ceremonyID, 
+					"dispatch_id", dispatchID,
+					"error", err)
+				continue
+			}
+
+			if dispatch.Status == "completed" {
+				c.logger.Info("ceremony completed, processing results", 
+					"ceremony_id", ceremonyID,
+					"dispatch_id", dispatchID)
+				
+				if err := c.processCeremonyResults(ctx, ceremonyID, dispatchID); err != nil {
+					c.logger.Error("failed to process ceremony results",
+						"ceremony_id", ceremonyID,
+						"error", err)
+				}
+				return
+			} else if dispatch.Status == "failed" {
+				c.logger.Error("ceremony dispatch failed",
+					"ceremony_id", ceremonyID,
+					"dispatch_id", dispatchID,
+					"exit_code", dispatch.ExitCode)
+				return
+			}
+			// Continue polling if still running
+		}
+	}
+}
+
+// processCeremonyResults processes the output of a completed ceremony dispatch
+func (c *Chief) processCeremonyResults(ctx context.Context, ceremonyID string, dispatchID int64) error {
+	// Get the ceremony output
+	output, err := c.store.GetOutput(dispatchID)
+	if err != nil {
+		return fmt.Errorf("get ceremony output: %w", err)
+	}
+
+	c.logger.Debug("processing ceremony output", 
+		"ceremony_id", ceremonyID,
+		"output_length", len(output))
+
+	// Parse allocation decisions from the Chief SM output
+	allocation, err := c.allocator.ParseAllocationFromOutput(ctx, ceremonyID, output)
+	if err != nil {
+		return fmt.Errorf("parse allocation from output: %w", err)
+	}
+
+	// Record the allocation decision and send to Matrix room
+	if err := c.allocator.RecordAllocationDecision(ctx, ceremonyID, allocation); err != nil {
+		return fmt.Errorf("record allocation decision: %w", err)
+	}
+
+	c.logger.Info("ceremony results processed successfully",
+		"ceremony_id", ceremonyID,
+		"allocation_id", allocation.ID)
 
 	return nil
 }
@@ -244,4 +334,46 @@ func (c *Chief) GetMultiTeamPlanningSchedule() CeremonySchedule {
 		DayOfWeek: time.Monday,
 		TimeOfDay: targetTime,
 	}
+}
+
+// GetCurrentAllocation returns the currently active allocation decision
+func (c *Chief) GetCurrentAllocation(ctx context.Context) (*store.AllocationDecision, error) {
+	return c.allocator.GetCurrentAllocation(ctx)
+}
+
+// GetProjectAllocation returns the current capacity allocation for a specific project
+func (c *Chief) GetProjectAllocation(ctx context.Context, projectName string) (*store.ProjectAllocation, error) {
+	allocation, err := c.GetCurrentAllocation(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get current allocation: %w", err)
+	}
+
+	if projectAlloc, exists := allocation.ProjectAllocations[projectName]; exists {
+		return &projectAlloc, nil
+	}
+
+	return nil, fmt.Errorf("no allocation found for project: %s", projectName)
+}
+
+// GetCrossProjectDependencies returns current cross-project dependencies
+func (c *Chief) GetCrossProjectDependencies(ctx context.Context) ([]store.CrossProjectDependency, error) {
+	allocation, err := c.GetCurrentAllocation(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get current allocation: %w", err)
+	}
+
+	return allocation.CrossProjectDeps, nil
+}
+
+// IsProjectCapacityAvailable checks if a project has available capacity for new work
+func (c *Chief) IsProjectCapacityAvailable(ctx context.Context, projectName string) (bool, float64, error) {
+	projectAlloc, err := c.GetProjectAllocation(ctx, projectName)
+	if err != nil {
+		// If no allocation exists, assume capacity is available
+		return true, 100.0, nil
+	}
+
+	// Simple capacity check - in production this would consider current workload
+	availablePercent := projectAlloc.CapacityPercent
+	return availablePercent > 0, availablePercent, nil
 }

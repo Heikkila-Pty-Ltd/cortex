@@ -100,3 +100,8 @@
 [2026-02-18T06:50:44+10:00] checkpoint running=1 completed_15m=2 failed_15m=4 usage_5h=123/150 usage_weekly=234/2000
 [2026-02-18T07:05:44+10:00] NUDGE: Repeated failure signature 2x/15m: <none>
 [2026-02-18T07:05:44+10:00] checkpoint running=3 completed_15m=3 failed_15m=4 usage_5h=111/150 usage_weekly=243/2000
+[2026-02-18T07:20:45+10:00] checkpoint running=2 completed_15m=5 failed_15m=0 usage_5h=88/150 usage_weekly=247/2000
+[2026-02-18T07:35:45+10:00] NUDGE: Repeated failure signature 4x/15m: gateway connect failed: Error: gateway closed (1000):
+[2026-02-18T07:35:45+10:00] checkpoint running=1 completed_15m=7 failed_15m=4 usage_5h=85/150 usage_weekly=257/2000
+[2026-02-18T07:50:46+10:00] NUDGE: Repeated failure signature 3x/15m: gateway connect failed: Error: gateway closed (1000):
+[2026-02-18T07:50:46+10:00] checkpoint running=1 completed_15m=1 failed_15m=4 usage_5h=85/150 usage_weekly=262/2000

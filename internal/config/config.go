@@ -70,6 +70,17 @@ type Project struct {
 	SprintPlanningTime  string `toml:"sprint_planning_time"`  // time of day for sprint planning (e.g., "09:00")
 	SprintCapacity      int    `toml:"sprint_capacity"`       // maximum points/tasks per sprint
 	BacklogThreshold    int    `toml:"backlog_threshold"`     // minimum backlog size to maintain
+
+	// Definition of Done configuration
+	DoD DoDConfig `toml:"dod"`
+}
+
+// DoDConfig defines the Definition of Done configuration for a project
+type DoDConfig struct {
+	Checks             []string `toml:"checks"`               // commands to run (e.g. "go test ./...", "go vet ./...")
+	CoverageMin        int      `toml:"coverage_min"`         // optional: fail if coverage < N%
+	RequireEstimate    bool     `toml:"require_estimate"`     // bead must have estimate before closing
+	RequireAcceptance  bool     `toml:"require_acceptance"`   // bead must have acceptance criteria
 }
 
 type RateLimits struct {

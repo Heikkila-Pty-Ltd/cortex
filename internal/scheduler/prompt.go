@@ -71,9 +71,11 @@ Note: You can also use 'gh pr review --approve' or 'gh pr review --request-chang
 		return fmt.Sprintf(`## Instructions (QA/Ops)
 1. Run the full test suite
 2. Verify acceptance criteria are met
-3. If all tests pass: bd close %s
+3. If all tests pass: transition to DoD checking: bd update %s --set-labels stage:dod
 4. If tests fail: add failure notes and transition back: bd update %s --set-labels stage:coding
 5. Unassign yourself: bd update %s --assignee=""
+
+Note: The system will automatically run Definition of Done checks after you transition to stage:dod.
 `, b.ID, b.ID, b.ID)
 	},
 }

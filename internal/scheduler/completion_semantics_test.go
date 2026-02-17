@@ -96,7 +96,7 @@ Pane is dead (status 0)`
 		t.Fatalf("record dispatch: %v", err)
 	}
 
-	sched.checkRunningDispatches()
+	sched.checkRunningDispatches(context.Background())
 
 	d, err := st.GetDispatchByID(id)
 	if err != nil {
@@ -147,7 +147,7 @@ func TestCheckRunningDispatches_ZeroExitWithoutTerminalFailureStaysCompleted(t *
 		t.Fatalf("record dispatch: %v", err)
 	}
 
-	sched.checkRunningDispatches()
+	sched.checkRunningDispatches(context.Background())
 
 	d, err := st.GetDispatchByID(id)
 	if err != nil {
