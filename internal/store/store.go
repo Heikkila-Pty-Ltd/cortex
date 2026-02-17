@@ -319,6 +319,11 @@ func (s *Store) GetDispatchByID(id int64) (*Dispatch, error) {
 	return &dispatches[0], nil
 }
 
+// GetPendingRetryDispatches returns all dispatches with status "pending_retry", ordered by dispatched_at ASC.
+func (s *Store) GetPendingRetryDispatches() ([]Dispatch, error) {
+	return s.queryDispatches(`SELECT `+dispatchCols+` FROM dispatches WHERE status = 'pending_retry' ORDER BY dispatched_at ASC`)
+}
+
 func (s *Store) queryDispatches(query string, args ...any) ([]Dispatch, error) {
 	rows, err := s.db.Query(query, args...)
 	if err != nil {

@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sort"
 	"sync"
@@ -87,6 +88,35 @@ func (s *Scheduler) IsPaused() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.paused
+}
+
+// CancelDispatch stops a running dispatch by id and marks it cancelled.
+func (s *Scheduler) CancelDispatch(id int64) error {
+	d, err := s.store.GetDispatchByID(id)
+	if err != nil {
+		return fmt.Errorf("failed to load dispatch %d: %w", id, err)
+	}
+	if d.Status != "running" {
+		return fmt.Errorf("dispatch not running")
+	}
+
+	if d.SessionName != "" {
+		if err := dispatch.KillSession(d.SessionName); err != nil {
+			s.logger.Warn("failed to kill tmux session for cancel", "id", id, "session", d.SessionName, "error", err)
+		}
+	}
+
+	// Keep this path for PID-based dispatchers and compatibility.
+	if err := s.dispatcher.Kill(d.PID); err != nil {
+		s.logger.Warn("failed to kill dispatch process for cancel", "id", id, "handle", d.PID, "error", err)
+	}
+
+	if err := s.store.UpdateDispatchStatus(id, "cancelled", 0, time.Since(d.DispatchedAt).Seconds()); err != nil {
+		return fmt.Errorf("failed to update dispatch status: %w", err)
+	}
+
+	s.logger.Info("dispatch cancelled", "id", id, "bead", d.BeadID, "handle", d.PID)
+	return nil
 }
 
 // RunTick executes a single scheduler tick.
@@ -350,15 +380,25 @@ func (s *Scheduler) checkRunningDispatches() {
 		// For tmux sessions, capture output and get exit code from the session
 		if d.SessionName != "" {
 			sessStatus, sessExit := dispatch.SessionStatus(d.SessionName)
-			if sessStatus == "exited" && sessExit != 0 {
+			switch sessStatus {
+			case "gone":
 				status = "failed"
-				exitCode = sessExit
+				exitCode = -1
+				s.logger.Warn("dispatch session disappeared before completion capture", "bead", d.BeadID, "session", d.SessionName)
+				_ = s.store.RecordHealthEvent("dispatch_session_gone", fmt.Sprintf("bead %s session %s disappeared during completion check", d.BeadID, d.SessionName))
+			case "exited":
+				if sessExit != 0 {
+					status = "failed"
+					exitCode = sessExit
+				}
 			}
-			if output, err := dispatch.CaptureOutput(d.SessionName); err != nil {
-				s.logger.Warn("failed to capture output", "session", d.SessionName, "error", err)
-			} else if output != "" {
-				if err := s.store.CaptureOutput(d.ID, output); err != nil {
-					s.logger.Error("failed to store output", "dispatch_id", d.ID, "error", err)
+			if sessStatus != "gone" {
+				if output, err := dispatch.CaptureOutput(d.SessionName); err != nil {
+					s.logger.Warn("failed to capture output", "session", d.SessionName, "error", err)
+				} else if output != "" {
+					if err := s.store.CaptureOutput(d.ID, output); err != nil {
+						s.logger.Error("failed to store output", "dispatch_id", d.ID, "error", err)
+					}
 				}
 			}
 		}

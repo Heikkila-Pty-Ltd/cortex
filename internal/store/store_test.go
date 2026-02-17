@@ -369,6 +369,52 @@ func TestGetOutputNotFound(t *testing.T) {
 	}
 }
 
+func TestGetPendingRetryDispatches(t *testing.T) {
+	s := tempStore(t)
+
+	// Initially no pending retries
+	retries, err := s.GetPendingRetryDispatches()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retries) != 0 {
+		t.Errorf("expected 0 pending retries, got %d", len(retries))
+	}
+
+	// Create a failed dispatch
+	id, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 100, "", "test prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mark it as failed
+	err = s.UpdateDispatchStatus(id, "failed", 1, 45.5)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mark it as pending_retry (simulate API retry call)
+	_, err = s.DB().Exec("UPDATE dispatches SET status = ? WHERE id = ?", "pending_retry", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Now it should show up in pending retries
+	retries, err = s.GetPendingRetryDispatches()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retries) != 1 {
+		t.Errorf("expected 1 pending retry, got %d", len(retries))
+	}
+	if retries[0].BeadID != "bead-1" {
+		t.Errorf("expected bead-1, got %s", retries[0].BeadID)
+	}
+	if retries[0].Status != "pending_retry" {
+		t.Errorf("expected pending_retry status, got %s", retries[0].Status)
+	}
+}
+
 func TestRecordDispatchCost(t *testing.T) {
 	s := tempStore(t)
 

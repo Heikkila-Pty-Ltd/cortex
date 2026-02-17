@@ -24,18 +24,20 @@ type Server struct {
 	store       *store.Store
 	rateLimiter *dispatch.RateLimiter
 	scheduler   *scheduler.Scheduler
+	dispatcher  dispatch.DispatcherInterface
 	logger      *slog.Logger
 	startTime   time.Time
 	httpServer  *http.Server
 }
 
 // NewServer creates a new API server.
-func NewServer(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, sched *scheduler.Scheduler, logger *slog.Logger) *Server {
+func NewServer(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, sched *scheduler.Scheduler, disp dispatch.DispatcherInterface, logger *slog.Logger) *Server {
 	return &Server{
 		cfg:         cfg,
 		store:       s,
 		rateLimiter: rl,
 		scheduler:   sched,
+		dispatcher:  disp,
 		logger:      logger,
 		startTime:   time.Now(),
 	}
@@ -388,9 +390,8 @@ func (s *Server) handleDispatchCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update status to cancelled
-	if err := s.store.UpdateDispatchStatus(id, "cancelled", 0, 0); err != nil {
-		s.logger.Error("failed to update dispatch status", "id", id, "error", err)
+	if err := s.scheduler.CancelDispatch(id); err != nil {
+		s.logger.Error("failed to cancel dispatch", "id", id, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to cancel dispatch")
 		return
 	}
