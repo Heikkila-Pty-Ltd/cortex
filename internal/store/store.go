@@ -29,6 +29,8 @@ type Dispatch struct {
 	CompletedAt       sql.NullTime
 	Status            string // running, completed, failed
 	Stage             string // dispatched, running, completed, failed, cancelled, gone
+	PRURL             string
+	PRNumber          int
 	ExitCode          int
 	DurationS         float64
 	Retries           int
@@ -89,7 +91,9 @@ CREATE TABLE IF NOT EXISTS dispatches (
 	exit_code INTEGER NOT NULL DEFAULT 0,
 	duration_s REAL NOT NULL DEFAULT 0,
 	retries INTEGER NOT NULL DEFAULT 0,
-	escalated_from_tier TEXT NOT NULL DEFAULT ''
+	escalated_from_tier TEXT NOT NULL DEFAULT '',
+	pr_url TEXT NOT NULL DEFAULT '',
+	pr_number INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS provider_usage (
@@ -265,6 +269,27 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// Add PR tracking columns if they don't exist
+	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('dispatches') WHERE name = 'pr_url'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check pr_url column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE dispatches ADD COLUMN pr_url TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add pr_url column: %w", err)
+		}
+	}
+
+	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('dispatches') WHERE name = 'pr_number'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check pr_number column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE dispatches ADD COLUMN pr_number INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add pr_number column: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -315,7 +340,34 @@ func (s *Store) UpdateDispatchStage(id int64, stage string) error {
 	return nil
 }
 
-const dispatchCols = `id, bead_id, project, agent_id, provider, tier, pid, session_name, prompt, dispatched_at, completed_at, status, stage, exit_code, duration_s, retries, escalated_from_tier, failure_category, failure_summary, log_path, branch, backend`
+// UpdateDispatchPR updates a dispatch's PR information.
+func (s *Store) UpdateDispatchPR(id int64, prURL string, prNumber int) error {
+	_, err := s.db.Exec(
+		`UPDATE dispatches SET pr_url = ?, pr_number = ? WHERE id = ?`,
+		prURL,
+		prNumber,
+		id,
+	)
+	if err != nil {
+		return fmt.Errorf("store: update dispatch PR: %w", err)
+	}
+	return nil
+}
+
+// GetLastDispatchIDForBead returns the ID of the most recent dispatch for a bead.
+func (s *Store) GetLastDispatchIDForBead(beadID string) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM dispatches WHERE bead_id = ? ORDER BY dispatched_at DESC LIMIT 1`, beadID).Scan(&id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("store: get last dispatch ID: %w", err)
+	}
+	return id, nil
+}
+
+const dispatchCols = `id, bead_id, project, agent_id, provider, tier, pid, session_name, prompt, dispatched_at, completed_at, status, stage, pr_url, pr_number, exit_code, duration_s, retries, escalated_from_tier, failure_category, failure_summary, log_path, branch, backend`
 
 // GetRunningDispatches returns all dispatches with status 'running'.
 func (s *Store) GetRunningDispatches() ([]Dispatch, error) {
@@ -331,6 +383,26 @@ func (s *Store) GetStuckDispatches(timeout time.Duration) ([]Dispatch, error) {
 // GetDispatchesByBead returns all dispatches for a given bead ID, ordered by dispatched_at DESC.
 func (s *Store) GetDispatchesByBead(beadID string) ([]Dispatch, error) {
 	return s.queryDispatches(`SELECT `+dispatchCols+` FROM dispatches WHERE bead_id = ? ORDER BY dispatched_at DESC`, beadID)
+}
+
+// WasBeadDispatchedRecently checks if a bead has been dispatched within the cooldown period.
+// Returns true if the bead should be skipped due to recent dispatch activity.
+func (s *Store) WasBeadDispatchedRecently(beadID string, cooldownPeriod time.Duration) (bool, error) {
+	cutoff := time.Now().Add(-cooldownPeriod).UTC()
+	
+	var count int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*) 
+		FROM dispatches 
+		WHERE bead_id = ? AND dispatched_at > ?`,
+		beadID, cutoff.Format(time.DateTime),
+	).Scan(&count)
+	
+	if err != nil {
+		return false, fmt.Errorf("check recent dispatch: %w", err)
+	}
+	
+	return count > 0, nil
 }
 
 // GetDispatchByID returns a dispatch by its ID.
@@ -385,7 +457,7 @@ func (s *Store) queryDispatches(query string, args ...any) ([]Dispatch, error) {
 		var d Dispatch
 		if err := rows.Scan(
 			&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName,
-			&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.Stage, &d.ExitCode, &d.DurationS,
+			&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.Stage, &d.PRURL, &d.PRNumber, &d.ExitCode, &d.DurationS,
 			&d.Retries, &d.EscalatedFromTier, &d.FailureCategory, &d.FailureSummary, &d.LogPath, &d.Branch, &d.Backend,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan dispatch: %w", err)

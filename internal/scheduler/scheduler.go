@@ -222,6 +222,21 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			continue
 		}
 
+		// Skip if recently dispatched (cooldown period)
+		if s.cfg.General.DispatchCooldown.Duration > 0 {
+			recentlyDispatched, err := s.store.WasBeadDispatchedRecently(item.bead.ID, s.cfg.General.DispatchCooldown.Duration)
+			if err != nil {
+				s.logger.Error("failed to check recent dispatch history", "bead", item.bead.ID, "error", err)
+				continue
+			}
+			if recentlyDispatched {
+				s.logger.Debug("bead recently dispatched, cooling down", 
+					"bead", item.bead.ID, 
+					"cooldown", s.cfg.General.DispatchCooldown.Duration)
+				continue
+			}
+		}
+
 		// Infer role - skip epics and done
 		role := InferRole(item.bead)
 		if role == "skip" {
@@ -320,6 +335,31 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 				continue
 			}
 			s.logger.Debug("ensured feature branch", "bead", item.bead.ID, "branch", item.project.BranchPrefix+item.bead.ID)
+
+			// If stage is review, ensure PR exists
+			if stage == "stage:review" {
+				branch := item.project.BranchPrefix + item.bead.ID
+				status, err := git.GetPRStatus(workspace, branch)
+				if err != nil {
+					s.logger.Warn("failed to check PR status", "bead", item.bead.ID, "branch", branch, "error", err)
+				} else if status == nil {
+					// Create PR
+					title := fmt.Sprintf("feat(%s): %s", item.bead.ID, item.bead.Title)
+					body := fmt.Sprintf("## Task\n- **Title:** %s\n- **Bead:** %s\n\n## Description\n%s\n\n## Acceptance Criteria\n%s\n\n## Bead Link\n- `%s` (view with `bd show %s`)", item.bead.Title, item.bead.ID, item.bead.Description, item.bead.Acceptance, item.bead.ID, item.bead.ID)
+					url, num, err := git.CreatePR(workspace, branch, item.project.BaseBranch, title, body)
+					if err != nil {
+						s.logger.Error("failed to create PR", "bead", item.bead.ID, "branch", branch, "error", err)
+					} else {
+						s.logger.Info("PR created", "bead", item.bead.ID, "url", url, "number", num)
+						// Update the most recent dispatch for this bead with the PR info
+						// (Usually the coder's dispatch)
+						lastID, err := s.store.GetLastDispatchIDForBead(item.bead.ID)
+						if err == nil && lastID != 0 {
+							_ = s.store.UpdateDispatchPR(lastID, url, num)
+						}
+					}
+				}
+			}
 		}
 
 		handle, err := s.dispatcher.Dispatch(ctx, agent, prompt, provider.Model, thinkingLevel, workspace)
@@ -411,18 +451,18 @@ func (s *Scheduler) checkRunningDispatches() {
 				status = "failed"
 				exitCode = -1
 				finalStage = "gone"
-				s.logger.Error("dispatch session disappeared - needs manual diagnosis", 
-					"bead", d.BeadID, 
+				s.logger.Error("dispatch session disappeared - needs manual diagnosis",
+					"bead", d.BeadID,
 					"session", d.SessionName,
 					"agent", d.AgentID,
 					"provider", d.Provider,
 					"duration_s", duration)
-				
+
 				// Record detailed health event for tracking
-				healthDetails := fmt.Sprintf("bead %s session %s (agent=%s, provider=%s) disappeared after %.1fs - session may have crashed or been terminated externally", 
+				healthDetails := fmt.Sprintf("bead %s session %s (agent=%s, provider=%s) disappeared after %.1fs - session may have crashed or been terminated externally",
 					d.BeadID, d.SessionName, d.AgentID, d.Provider, duration)
 				_ = s.store.RecordHealthEvent("dispatch_session_gone", healthDetails)
-				
+
 				// Set failure diagnosis for manual review
 				category := "session_disappeared"
 				summary := fmt.Sprintf("Tmux session %s disappeared unexpectedly during execution. This may indicate a system crash, out-of-memory condition, or external termination. Manual investigation required.", d.SessionName)
@@ -516,21 +556,21 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 
 	for _, retry := range retries {
 		// Check if enough time has passed for retry using backoff logic
-		if !dispatch.ShouldRetry(retry.CompletedAt.Time, retry.Retries, 
+		if !dispatch.ShouldRetry(retry.CompletedAt.Time, retry.Retries,
 			s.cfg.General.RetryBackoffBase.Duration, s.cfg.General.RetryMaxDelay.Duration) {
-			s.logger.Debug("retry backoff not elapsed", 
-				"bead", retry.BeadID, 
-				"retries", retry.Retries, 
-				"next_retry_in", dispatch.BackoffDelay(retry.Retries, 
-					s.cfg.General.RetryBackoffBase.Duration, s.cfg.General.RetryMaxDelay.Duration) - time.Since(retry.CompletedAt.Time))
+			s.logger.Debug("retry backoff not elapsed",
+				"bead", retry.BeadID,
+				"retries", retry.Retries,
+				"next_retry_in", dispatch.BackoffDelay(retry.Retries,
+					s.cfg.General.RetryBackoffBase.Duration, s.cfg.General.RetryMaxDelay.Duration)-time.Since(retry.CompletedAt.Time))
 			continue
 		}
 
 		// Check if we've exceeded max retries
 		if retry.Retries >= s.cfg.General.MaxRetries {
-			s.logger.Warn("max retries exceeded, marking as failed", 
+			s.logger.Warn("max retries exceeded, marking as failed",
 				"bead", retry.BeadID, "retries", retry.Retries, "max_retries", s.cfg.General.MaxRetries)
-			
+
 			// Update status to failed permanently
 			duration := time.Since(retry.DispatchedAt).Seconds()
 			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
@@ -564,9 +604,9 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 		// Find the project config
 		project, exists := s.cfg.Projects[retry.Project]
 		if !exists || !project.Enabled {
-			s.logger.Warn("project not found or disabled, failing retry", 
+			s.logger.Warn("project not found or disabled, failing retry",
 				"project", retry.Project, "bead", retry.BeadID)
-			
+
 			duration := time.Since(retry.DispatchedAt).Seconds()
 			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
 				s.logger.Error("failed to update retry status", "id", retry.ID, "error", err)
@@ -575,9 +615,9 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 		}
 
 		// Attempt to re-dispatch
-		s.logger.Info("retrying dispatch", 
-			"bead", retry.BeadID, 
-			"attempt", retry.Retries+1, 
+		s.logger.Info("retrying dispatch",
+			"bead", retry.BeadID,
+			"attempt", retry.Retries+1,
 			"agent", retry.AgentID,
 			"delay", time.Since(retry.CompletedAt.Time))
 
@@ -594,7 +634,7 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 		handle, err := s.dispatcher.Dispatch(ctx, retry.AgentID, retry.Prompt, retry.Provider, dispatch.ThinkingLevel(retry.Tier), workspace)
 		if err != nil {
 			s.logger.Error("retry dispatch failed", "bead", retry.BeadID, "error", err)
-			
+
 			// Mark as failed since retry dispatch itself failed
 			duration := time.Since(retry.DispatchedAt).Seconds()
 			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
@@ -608,7 +648,7 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 
 		// Record new dispatch for the retry
 		newDispatchID, err := s.store.RecordDispatch(
-			retry.BeadID, retry.Project, retry.AgentID, retry.Provider, retry.Tier, 
+			retry.BeadID, retry.Project, retry.AgentID, retry.Provider, retry.Tier,
 			handle, sessionName, retry.Prompt, retry.LogPath, retry.Branch, retry.Backend)
 		if err != nil {
 			s.logger.Error("failed to record retry dispatch", "bead", retry.BeadID, "error", err)
@@ -621,11 +661,11 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			s.logger.Error("failed to update retry status", "id", retry.ID, "error", err)
 		}
 
-		s.logger.Info("dispatch retry successful", 
-			"bead", retry.BeadID, 
+		s.logger.Info("dispatch retry successful",
+			"bead", retry.BeadID,
 			"old_dispatch_id", retry.ID,
-			"new_dispatch_id", newDispatchID, 
-			"handle", handle, 
+			"new_dispatch_id", newDispatchID,
+			"handle", handle,
 			"session", sessionName)
 	}
 }
