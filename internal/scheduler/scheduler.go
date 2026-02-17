@@ -141,20 +141,32 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		// Detect complexity -> tier
 		tier := DetectComplexity(item.bead)
 
-		// Pick provider with tier downgrade
+		// Pick provider — try downgrade first, then upgrade if no providers found
 		var provider *config.Provider
 		currentTier := tier
+		tried := map[string]bool{tier: true}
 		for {
 			provider = s.rateLimiter.PickProvider(currentTier, s.cfg.Providers, s.cfg.Tiers)
 			if provider != nil {
 				break
 			}
+			// Try downgrade
 			next := dispatch.DowngradeTier(currentTier)
-			if next == "" {
-				break
+			if next != "" && !tried[next] {
+				s.logger.Info("tier downgrade", "bead", item.bead.ID, "from", currentTier, "to", next)
+				tried[next] = true
+				currentTier = next
+				continue
 			}
-			s.logger.Info("tier downgrade", "bead", item.bead.ID, "from", currentTier, "to", next)
-			currentTier = next
+			// Try upgrade
+			next = dispatch.UpgradeTier(currentTier)
+			if next != "" && !tried[next] {
+				s.logger.Info("tier upgrade", "bead", item.bead.ID, "from", currentTier, "to", next)
+				tried[next] = true
+				currentTier = next
+				continue
+			}
+			break
 		}
 
 		if provider == nil {

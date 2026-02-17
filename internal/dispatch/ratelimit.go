@@ -109,3 +109,15 @@ func DowngradeTier(tier string) string {
 		return ""
 	}
 }
+
+// UpgradeTier returns the next higher tier, or "" if already at highest.
+func UpgradeTier(tier string) string {
+	switch tier {
+	case "fast":
+		return "balanced"
+	case "balanced":
+		return "premium"
+	default:
+		return ""
+	}
+}
