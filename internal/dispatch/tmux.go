@@ -292,13 +292,14 @@ func (d *TmuxDispatcher) DispatchToSession(
 
 	shellCmd := cmdBuf.String()
 
-	// Create the session first
+	// Create the session with a shell first (no command), configure it,
+	// then send the actual command. This eliminates the race where a fast
+	// command exits before remain-on-exit can be set.
 	args := []string{
 		"new-session",
 		"-d",
 		"-s", sessionName,
 		"-c", workDir,
-		shellCmd,
 	}
 
 	cmd := exec.CommandContext(ctx, "tmux", args...)
@@ -306,12 +307,15 @@ func (d *TmuxDispatcher) DispatchToSession(
 		return fmt.Errorf("tmux dispatch %q: %w (%s)", sessionName, err, strings.TrimSpace(string(out)))
 	}
 
-	// Set remain-on-exit so session persists after command completion
-	// We need to do this immediately after session creation
+	// Set remain-on-exit before the command runs — no race possible.
 	exec.Command("tmux", "set", "-t", sessionName, "remain-on-exit", "on").Run()
 
 	// Set history limit for output capture
 	exec.Command("tmux", "set-option", "-t", sessionName, "history-limit", strconv.Itoa(d.historyLimit)).Run()
+
+	// Now send the actual command. The session has a shell waiting for input,
+	// so we send the command text followed by Enter.
+	exec.Command("tmux", "send-keys", "-t", sessionName, shellCmd, "Enter").Run()
 
 	return nil
 }
