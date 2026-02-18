@@ -199,9 +199,27 @@ FROM downtime_periods;
 ### Monitoring Integration
 
 These metrics integrate with existing tools:
-- **Collection**: Automated via `tools/burnin-evidence.go`
+- **Raw collection**: `tools/burnin-collector.go` outputs machine-readable JSON for scoring and report pipelines.
+- **Evidence reports**: `tools/burnin-evidence.go` renders JSON + Markdown evidence artifacts.
 - **Reporting**: JSON output for automated processing, Markdown for human review
 - **Alerting**: Threshold violations should trigger launch readiness review
+
+#### Collector Command
+
+```bash
+# Collect a 7-day window (end date is exclusive)
+go run tools/burnin-collector.go \
+  --config cortex.toml \
+  --start-date 2026-02-11 \
+  --end-date 2026-02-18 \
+  --out artifacts/launch/burnin/raw-2026-02-18.json
+```
+
+The collector output includes:
+- `period` (RFC3339 start/end)
+- `dispatches` (total, failed, unknown/disappeared, intervention counts and percentages)
+- `health_events` (`gateway_critical`, `dispatch_session_gone`, `bead_churn_blocked`)
+- `system` (`uptime_seconds`, `total_seconds`, `availability_pct`)
 
 ## Validation Checklist
 

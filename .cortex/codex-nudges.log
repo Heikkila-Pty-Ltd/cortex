@@ -69,3 +69,11 @@
 [2026-02-18T09:20:51+10:00] Repeated failure signature 6x/15m: gateway connect failed: Error: gateway closed (1000):
 [2026-02-18T09:20:51+10:00] Repeated failure signature 6x/15m: <none>
 [2026-02-18T09:23:13+10:00] codex-worker escalation completed for cortex-dxh
+[2026-02-18T09:33:29+10:00] codex-worker escalation completed for cortex-8xm
+[2026-02-18T09:35:52+10:00] Repeated failure signature 3x/15m: gateway connect failed: Error: gateway closed (1000):
+[2026-02-18T09:48:07+10:00] codex-incident-worker started (poll 300s)
+[2026-02-18T09:48:07+10:00] Scheduler was paused; nightwatch resumed it
+[2026-02-18T09:48:07+10:00] Reconciled 1 dead-running dispatch(es)
+[2026-02-18T10:03:08+10:00] Repeated failure signature 4x/15m: gateway connect failed: Error: gateway closed (1000):
+[2026-02-18T10:03:08+10:00] Repeated failure signature 2x/15m: <none>
+[2026-02-18T10:05:45+10:00] codex-worker escalation completed for cortex-ijz

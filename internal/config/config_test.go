@@ -68,6 +68,28 @@ weekly_retro_day = "Monday"
 bind = "127.0.0.1:8900"
 `
 
+func withProjectMatrixRoom(t *testing.T, cfg, room string) string {
+	t.Helper()
+	target := "priority = 1\n"
+	replacement := fmt.Sprintf("priority = 1\nmatrix_room = %q\n", room)
+	updated := strings.Replace(cfg, target, replacement, 1)
+	if updated == cfg {
+		t.Fatal("failed to inject project matrix_room into test config")
+	}
+	return updated
+}
+
+func withReporterDefaultRoom(t *testing.T, cfg, room string) string {
+	t.Helper()
+	target := "agent_id = \"main\"\n"
+	replacement := fmt.Sprintf("agent_id = \"main\"\ndefault_room = %q\n", room)
+	updated := strings.Replace(cfg, target, replacement, 1)
+	if updated == cfg {
+		t.Fatal("failed to inject reporter default_room into test config")
+	}
+	return updated
+}
+
 func TestLoadValidConfig(t *testing.T) {
 	path := writeTestConfig(t, validConfig)
 	cfg, err := Load(path)
@@ -115,6 +137,79 @@ priority = 1
 	_, err := Load(path)
 	if err == nil {
 		t.Fatal("expected error for no enabled projects")
+	}
+}
+
+func TestResolveRoomPrefersProjectRoom(t *testing.T) {
+	cfg := withProjectMatrixRoom(t, withReporterDefaultRoom(t, validConfig, "!fallback:matrix.org"), "!project-test:matrix.org")
+	path := writeTestConfig(t, cfg)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if got := loaded.ResolveRoom("test"); got != "!project-test:matrix.org" {
+		t.Fatalf("ResolveRoom(test) = %q, want !project-test:matrix.org", got)
+	}
+}
+
+func TestResolveRoomFallsBackToReporterDefault(t *testing.T) {
+	cfg := withReporterDefaultRoom(t, validConfig, "!fallback:matrix.org")
+	path := writeTestConfig(t, cfg)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if got := loaded.ResolveRoom("test"); got != "!fallback:matrix.org" {
+		t.Fatalf("ResolveRoom(test) = %q, want !fallback:matrix.org", got)
+	}
+	if got := loaded.ResolveRoom("missing-project"); got != "!fallback:matrix.org" {
+		t.Fatalf("ResolveRoom(missing-project) = %q, want !fallback:matrix.org", got)
+	}
+}
+
+func TestResolveRoomBackwardCompatible(t *testing.T) {
+	path := writeTestConfig(t, validConfig)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if got := loaded.ResolveRoom("test"); got != "" {
+		t.Fatalf("ResolveRoom(test) = %q, want empty string", got)
+	}
+}
+
+func TestMissingProjectRoomRouting(t *testing.T) {
+	path := writeTestConfig(t, validConfig)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	missing := loaded.MissingProjectRoomRouting()
+	if len(missing) != 1 || missing[0] != "test" {
+		t.Fatalf("MissingProjectRoomRouting() = %v, want [test]", missing)
+	}
+
+	withDefault := withReporterDefaultRoom(t, validConfig, "!fallback:matrix.org")
+	path = writeTestConfig(t, withDefault)
+	loaded, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load failed with default room: %v", err)
+	}
+	if missing = loaded.MissingProjectRoomRouting(); len(missing) != 0 {
+		t.Fatalf("MissingProjectRoomRouting() with default_room = %v, want []", missing)
+	}
+
+	withProjectRoom := withProjectMatrixRoom(t, validConfig, "!project-test:matrix.org")
+	path = writeTestConfig(t, withProjectRoom)
+	loaded, err = Load(path)
+	if err != nil {
+		t.Fatalf("Load failed with project room: %v", err)
+	}
+	if missing = loaded.MissingProjectRoomRouting(); len(missing) != 0 {
+		t.Fatalf("MissingProjectRoomRouting() with project matrix_room = %v, want []", missing)
 	}
 }
 
@@ -323,7 +418,7 @@ project-b = 50
 	if err == nil {
 		t.Fatal("expected budget sum validation error")
 	}
-	
+
 	if !strings.Contains(err.Error(), "must sum to 100") {
 		t.Errorf("expected sum validation error, got: %v", err)
 	}
@@ -341,7 +436,7 @@ project-b = 50
 	if err == nil {
 		t.Fatal("expected negative budget validation error")
 	}
-	
+
 	if !strings.Contains(err.Error(), "cannot be negative") {
 		t.Errorf("expected negative budget validation error, got: %v", err)
 	}
@@ -358,7 +453,7 @@ project-a = 150
 	if err == nil {
 		t.Fatal("expected over 100% budget validation error")
 	}
-	
+
 	if !strings.Contains(err.Error(), "cannot exceed 100%") {
 		t.Errorf("expected over 100%% budget validation error, got: %v", err)
 	}
@@ -567,7 +662,7 @@ balanced_backend = "tmux"
 	if err == nil {
 		t.Fatal("expected error for invalid backend type")
 	}
-	
+
 	if !strings.Contains(err.Error(), "invalid backend type") {
 		t.Errorf("expected invalid backend error, got: %v", err)
 	}
@@ -590,7 +685,7 @@ fast_backend = "headless_cli"
 	if err == nil {
 		t.Fatal("expected error for missing CLI config")
 	}
-	
+
 	if !strings.Contains(err.Error(), "references undefined CLI config") {
 		t.Errorf("expected undefined CLI config error, got: %v", err)
 	}
@@ -647,7 +742,7 @@ approval_flags = ["skip-perms"]
 			if err == nil {
 				t.Fatal("expected validation error")
 			}
-			
+
 			if !strings.Contains(err.Error(), tt.error) {
 				t.Errorf("expected error containing %q, got: %v", tt.error, err)
 			}
@@ -796,7 +891,7 @@ sprint_planning_day = "InvalidDay"
 	if err == nil {
 		t.Fatal("expected error for invalid sprint planning day")
 	}
-	
+
 	if !strings.Contains(err.Error(), "invalid sprint_planning_day") {
 		t.Errorf("expected invalid day validation error, got: %v", err)
 	}
@@ -831,7 +926,7 @@ sprint_planning_time = "%s"
 			if err == nil {
 				t.Fatalf("expected error for invalid time format: %s", tt.time)
 			}
-			
+
 			if !strings.Contains(err.Error(), "invalid sprint_planning_time") {
 				t.Errorf("expected time validation error, got: %v", err)
 			}
@@ -841,7 +936,7 @@ sprint_planning_time = "%s"
 
 func TestLoadSprintPlanningConfigValidTimes(t *testing.T) {
 	validTimes := []string{"00:00", "09:30", "23:59", "12:00", "18:45"}
-	
+
 	for _, validTime := range validTimes {
 		t.Run("valid_time_"+validTime, func(t *testing.T) {
 			cfg := validConfig + fmt.Sprintf(`
@@ -857,7 +952,7 @@ sprint_planning_time = "%s"
 			if err != nil {
 				t.Fatalf("expected valid time %s to load: %v", validTime, err)
 			}
-			
+
 			if config.Projects["sprint-project"].SprintPlanningTime != validTime {
 				t.Errorf("expected time %s, got %s", validTime, config.Projects["sprint-project"].SprintPlanningTime)
 			}
@@ -879,7 +974,7 @@ sprint_capacity = -1
 	if err == nil {
 		t.Fatal("expected error for negative sprint capacity")
 	}
-	
+
 	if !strings.Contains(err.Error(), "sprint_capacity cannot be negative") {
 		t.Errorf("expected negative capacity validation error, got: %v", err)
 	}
@@ -899,7 +994,7 @@ sprint_capacity = 1001
 	if err == nil {
 		t.Fatal("expected error for excessive sprint capacity")
 	}
-	
+
 	if !strings.Contains(err.Error(), "sprint_capacity seems unreasonably large") {
 		t.Errorf("expected excessive capacity validation error, got: %v", err)
 	}
@@ -919,7 +1014,7 @@ backlog_threshold = -1
 	if err == nil {
 		t.Fatal("expected error for negative backlog threshold")
 	}
-	
+
 	if !strings.Contains(err.Error(), "backlog_threshold cannot be negative") {
 		t.Errorf("expected negative threshold validation error, got: %v", err)
 	}
@@ -939,7 +1034,7 @@ backlog_threshold = 501
 	if err == nil {
 		t.Fatal("expected error for excessive backlog threshold")
 	}
-	
+
 	if !strings.Contains(err.Error(), "backlog_threshold seems unreasonably large") {
 		t.Errorf("expected excessive threshold validation error, got: %v", err)
 	}
@@ -960,7 +1055,7 @@ backlog_threshold = 30
 	if err == nil {
 		t.Fatal("expected error for threshold less than capacity")
 	}
-	
+
 	if !strings.Contains(err.Error(), "backlog_threshold") || !strings.Contains(err.Error(), "should be at least as large as sprint_capacity") {
 		t.Errorf("expected threshold/capacity validation error, got: %v", err)
 	}
@@ -968,7 +1063,7 @@ backlog_threshold = 30
 
 func TestLoadSprintPlanningConfigValidDays(t *testing.T) {
 	validDays := []string{"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"}
-	
+
 	for _, validDay := range validDays {
 		t.Run("valid_day_"+validDay, func(t *testing.T) {
 			cfg := validConfig + fmt.Sprintf(`
@@ -984,7 +1079,7 @@ sprint_planning_day = "%s"
 			if err != nil {
 				t.Fatalf("expected valid day %s to load: %v", validDay, err)
 			}
-			
+
 			if config.Projects["sprint-project"].SprintPlanningDay != validDay {
 				t.Errorf("expected day %s, got %s", validDay, config.Projects["sprint-project"].SprintPlanningDay)
 			}
@@ -1234,7 +1329,7 @@ coverage_min = -1
 	if err == nil {
 		t.Fatal("expected error for negative coverage_min")
 	}
-	
+
 	if !strings.Contains(err.Error(), "coverage_min cannot be negative") {
 		t.Errorf("expected negative coverage validation error, got: %v", err)
 	}
@@ -1256,7 +1351,7 @@ coverage_min = 101
 	if err == nil {
 		t.Fatal("expected error for coverage_min > 100")
 	}
-	
+
 	if !strings.Contains(err.Error(), "coverage_min cannot exceed 100") {
 		t.Errorf("expected excessive coverage validation error, got: %v", err)
 	}
@@ -1290,4 +1385,3 @@ require_estimate = true
 		t.Errorf("expected coverage_min 80, got %d", dod.CoverageMin)
 	}
 }
-

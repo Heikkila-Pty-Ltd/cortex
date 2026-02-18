@@ -145,6 +145,32 @@ func TestHandleHealth(t *testing.T) {
 
 func TestHandleMetrics(t *testing.T) {
 	srv := setupTestServer(t)
+
+	dispatchID, err := srv.store.RecordDispatch("metric-bead", "test-proj", "test-proj-coder", "claude-sonnet-4", "balanced", 777, "metric-sess", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.UpsertClaimLease("metric-bead", "test-proj", "/tmp/beads", "test-proj-coder"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.AttachDispatchToClaimLease("metric-bead", dispatchID); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.UpsertClaimLease("metric-unbound", "test-proj", "/tmp/beads", "test-proj-coder"); err != nil {
+		t.Fatal(err)
+	}
+
+	failID, err := srv.store.RecordDispatch("metric-fail", "test-proj", "test-proj-coder", "claude-sonnet-4", "balanced", 778, "metric-sess-fail", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.UpdateDispatchStatus(failID, "failed", 1, 1.0); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.UpdateFailureDiagnosis(failID, "gateway_closed", "gateway connect failed: Error: gateway closed (1000):"); err != nil {
+		t.Fatal(err)
+	}
+
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	w := httptest.NewRecorder()
 	srv.handleMetrics(w, req)
@@ -162,6 +188,21 @@ func TestHandleMetrics(t *testing.T) {
 	}
 	if !strings.Contains(body, "cortex_uptime_seconds") {
 		t.Fatal("missing cortex_uptime_seconds metric")
+	}
+	if !strings.Contains(body, "cortex_claim_leases_total") {
+		t.Fatal("missing cortex_claim_leases_total metric")
+	}
+	if !strings.Contains(body, "cortex_claim_leases_unbound_total") {
+		t.Fatal("missing cortex_claim_leases_unbound_total metric")
+	}
+	if !strings.Contains(body, "cortex_claim_leases_running_dispatch_total") {
+		t.Fatal("missing cortex_claim_leases_running_dispatch_total metric")
+	}
+	if !strings.Contains(body, "cortex_claim_leases_terminal_dispatch_total") {
+		t.Fatal("missing cortex_claim_leases_terminal_dispatch_total metric")
+	}
+	if !strings.Contains(body, "cortex_gateway_closed_failures_2m") {
+		t.Fatal("missing cortex_gateway_closed_failures_2m metric")
 	}
 }
 

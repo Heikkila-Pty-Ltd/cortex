@@ -23,14 +23,14 @@ import (
 
 // Server is the HTTP API server.
 type Server struct {
-	cfg         *config.Config
-	store       *store.Store
-	rateLimiter *dispatch.RateLimiter
-	scheduler   *scheduler.Scheduler
-	dispatcher  dispatch.DispatcherInterface
-	logger      *slog.Logger
-	startTime   time.Time
-	httpServer  *http.Server
+	cfg            *config.Config
+	store          *store.Store
+	rateLimiter    *dispatch.RateLimiter
+	scheduler      *scheduler.Scheduler
+	dispatcher     dispatch.DispatcherInterface
+	logger         *slog.Logger
+	startTime      time.Time
+	httpServer     *http.Server
 	authMiddleware *AuthMiddleware
 }
 
@@ -40,7 +40,7 @@ func NewServer(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, sch
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize auth middleware: %w", err)
 	}
-	
+
 	return &Server{
 		cfg:            cfg,
 		store:          s,
@@ -64,7 +64,7 @@ func (s *Server) Close() error {
 // Start begins listening on the configured bind address. Blocks until context is cancelled.
 func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
-	
+
 	// Read-only endpoints (no auth required)
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/projects", s.handleProjects)
@@ -75,10 +75,10 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/recommendations", s.handleRecommendations)
 	mux.HandleFunc("/scheduler/status", s.handleSchedulerStatus)
-	
+
 	// Dispatch endpoints (mixed read/write - auth applied per endpoint)
 	mux.HandleFunc("/dispatches/", s.authMiddleware.RequireAuth(s.routeDispatches))
-	
+
 	// Control endpoints (write operations - require auth)
 	mux.HandleFunc("/scheduler/pause", s.authMiddleware.RequireAuth(s.handleSchedulerPause))
 	mux.HandleFunc("/scheduler/resume", s.authMiddleware.RequireAuth(s.handleSchedulerResume))
@@ -226,6 +226,40 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	s.store.DB().QueryRow(`SELECT COUNT(*) FROM dispatches`).Scan(&totalDispatches)
 	s.store.DB().QueryRow(`SELECT COUNT(*) FROM dispatches WHERE status='failed'`).Scan(&totalFailed)
 
+	var claimLeasesTotal int
+	s.store.DB().QueryRow(`SELECT COUNT(*) FROM claim_leases`).Scan(&claimLeasesTotal)
+
+	var claimLeasesUnbound int
+	s.store.DB().QueryRow(`SELECT COUNT(*) FROM claim_leases WHERE dispatch_id <= 0`).Scan(&claimLeasesUnbound)
+
+	var claimLeasesExpired int
+	s.store.DB().QueryRow(`SELECT COUNT(*) FROM claim_leases WHERE heartbeat_at < datetime('now', '-4 minutes')`).Scan(&claimLeasesExpired)
+
+	var claimLeasesRunning int
+	s.store.DB().QueryRow(`
+		SELECT COUNT(*)
+		FROM claim_leases cl
+		JOIN dispatches d ON d.id = cl.dispatch_id
+		WHERE cl.dispatch_id > 0 AND d.status = 'running'
+	`).Scan(&claimLeasesRunning)
+
+	var claimLeasesTerminal int
+	s.store.DB().QueryRow(`
+		SELECT COUNT(*)
+		FROM claim_leases cl
+		JOIN dispatches d ON d.id = cl.dispatch_id
+		WHERE cl.dispatch_id > 0 AND d.status IN ('completed','failed','cancelled','interrupted','retried')
+	`).Scan(&claimLeasesTerminal)
+
+	var gatewayClosed2m int
+	s.store.DB().QueryRow(`
+		SELECT COUNT(*)
+		FROM dispatches
+		WHERE failure_category = 'gateway_closed'
+		  AND completed_at IS NOT NULL
+		  AND completed_at >= datetime('now', '-2 minutes')
+	`).Scan(&gatewayClosed2m)
+
 	fmt.Fprintf(&b, "# HELP cortex_dispatches_total Total number of dispatches\n")
 	fmt.Fprintf(&b, "# TYPE cortex_dispatches_total counter\n")
 	fmt.Fprintf(&b, "cortex_dispatches_total %d\n", totalDispatches)
@@ -237,6 +271,30 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&b, "# HELP cortex_dispatches_running Current running dispatches\n")
 	fmt.Fprintf(&b, "# TYPE cortex_dispatches_running gauge\n")
 	fmt.Fprintf(&b, "cortex_dispatches_running %d\n", len(running))
+
+	fmt.Fprintf(&b, "# HELP cortex_claim_leases_total Current number of claim leases\n")
+	fmt.Fprintf(&b, "# TYPE cortex_claim_leases_total gauge\n")
+	fmt.Fprintf(&b, "cortex_claim_leases_total %d\n", claimLeasesTotal)
+
+	fmt.Fprintf(&b, "# HELP cortex_claim_leases_unbound_total Claim leases not linked to a dispatch\n")
+	fmt.Fprintf(&b, "# TYPE cortex_claim_leases_unbound_total gauge\n")
+	fmt.Fprintf(&b, "cortex_claim_leases_unbound_total %d\n", claimLeasesUnbound)
+
+	fmt.Fprintf(&b, "# HELP cortex_claim_leases_expired_total Claim leases with stale heartbeat (>4m)\n")
+	fmt.Fprintf(&b, "# TYPE cortex_claim_leases_expired_total gauge\n")
+	fmt.Fprintf(&b, "cortex_claim_leases_expired_total %d\n", claimLeasesExpired)
+
+	fmt.Fprintf(&b, "# HELP cortex_claim_leases_running_dispatch_total Claim leases linked to running dispatches\n")
+	fmt.Fprintf(&b, "# TYPE cortex_claim_leases_running_dispatch_total gauge\n")
+	fmt.Fprintf(&b, "cortex_claim_leases_running_dispatch_total %d\n", claimLeasesRunning)
+
+	fmt.Fprintf(&b, "# HELP cortex_claim_leases_terminal_dispatch_total Claim leases linked to terminal dispatches\n")
+	fmt.Fprintf(&b, "# TYPE cortex_claim_leases_terminal_dispatch_total gauge\n")
+	fmt.Fprintf(&b, "cortex_claim_leases_terminal_dispatch_total %d\n", claimLeasesTerminal)
+
+	fmt.Fprintf(&b, "# HELP cortex_gateway_closed_failures_2m Failed dispatches diagnosed as gateway_closed in last 2 minutes\n")
+	fmt.Fprintf(&b, "# TYPE cortex_gateway_closed_failures_2m gauge\n")
+	fmt.Fprintf(&b, "cortex_gateway_closed_failures_2m %d\n", gatewayClosed2m)
 
 	var ratio float64
 	if s.cfg.RateLimits.WeeklyCap > 0 {
@@ -569,9 +627,9 @@ func (s *Server) handleRecommendations(w http.ResponseWriter, r *http.Request) {
 
 	resp := map[string]any{
 		"recommendations": recommendations,
-		"hours":          hours,
-		"count":          len(recommendations),
-		"generated_at":   time.Now(),
+		"hours":           hours,
+		"count":           len(recommendations),
+		"generated_at":    time.Now(),
 	}
 
 	writeJSON(w, resp)

@@ -75,7 +75,7 @@ func TestBuildPromptWithRole(t *testing.T) {
 		},
 		{
 			role:     "ops",
-			contains: []string{"QA/Ops", "test suite", "stage:dod", "stage:coding"},
+			contains: []string{"QA/Ops", "test suite", "stage:dod", "stage:coding", "bd close"},
 		},
 		{
 			role:     "", // empty role = generic fallback

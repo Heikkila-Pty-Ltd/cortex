@@ -37,6 +37,10 @@ func main() {
 		logger.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
+	for _, project := range cfg.MissingProjectRoomRouting() {
+		logger.Warn("project has no matrix_room and reporter.default_room is unset",
+			"project", project)
+	}
 
 	// Configure logger from config
 	var level slog.Level
@@ -80,19 +84,19 @@ func main() {
 
 	// Create dispatcher using config-driven resolver
 	resolver := scheduler.NewDispatcherResolver(cfg)
-	
+
 	// Validate dispatcher configuration before proceeding
 	if err := resolver.ValidateConfiguration(); err != nil {
 		logger.Error("dispatcher configuration validation failed", "error", err)
 		os.Exit(1)
 	}
-	
+
 	d, err := resolver.CreateDispatcher()
 	if err != nil {
 		logger.Error("failed to create dispatcher", "error", err)
 		os.Exit(1)
 	}
-	
+
 	logger.Info("dispatcher created", "type", d.GetHandleType())
 
 	sched := scheduler.New(cfg, st, rl, d, logger.With("component", "scheduler"), *dryRun)

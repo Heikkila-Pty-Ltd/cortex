@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,18 +31,18 @@ func (d Duration) MarshalText() ([]byte, error) {
 }
 
 type Config struct {
-	General    General                    `toml:"general"`
-	Projects   map[string]Project         `toml:"projects"`
-	RateLimits RateLimits                 `toml:"rate_limits"`
-	Providers  map[string]Provider        `toml:"providers"`
-	Tiers      Tiers                      `toml:"tiers"`
-	Workflows  map[string]WorkflowConfig  `toml:"workflows"`
-	Health     Health                     `toml:"health"`
-	Reporter   Reporter                   `toml:"reporter"`
-	Learner    Learner                    `toml:"learner"`
-	API        API                        `toml:"api"`
-	Dispatch   Dispatch                   `toml:"dispatch"`
-	Chief      Chief                      `toml:"chief"`
+	General    General                   `toml:"general"`
+	Projects   map[string]Project        `toml:"projects"`
+	RateLimits RateLimits                `toml:"rate_limits"`
+	Providers  map[string]Provider       `toml:"providers"`
+	Tiers      Tiers                     `toml:"tiers"`
+	Workflows  map[string]WorkflowConfig `toml:"workflows"`
+	Health     Health                    `toml:"health"`
+	Reporter   Reporter                  `toml:"reporter"`
+	Learner    Learner                   `toml:"learner"`
+	API        API                       `toml:"api"`
+	Dispatch   Dispatch                  `toml:"dispatch"`
+	Chief      Chief                     `toml:"chief"`
 }
 
 type General struct {
@@ -61,15 +62,16 @@ type Project struct {
 	BeadsDir     string `toml:"beads_dir"`
 	Workspace    string `toml:"workspace"`
 	Priority     int    `toml:"priority"`
-	BaseBranch   string `toml:"base_branch"`    // branch to create features from (default "main")
-	BranchPrefix string `toml:"branch_prefix"`  // prefix for feature branches (default "feat/")
-	UseBranches  bool   `toml:"use_branches"`   // enable branch workflow (default false)
-	
+	MatrixRoom   string `toml:"matrix_room"`   // project-specific Matrix room (optional)
+	BaseBranch   string `toml:"base_branch"`   // branch to create features from (default "main")
+	BranchPrefix string `toml:"branch_prefix"` // prefix for feature branches (default "feat/")
+	UseBranches  bool   `toml:"use_branches"`  // enable branch workflow (default false)
+
 	// Sprint planning configuration (optional for backward compatibility)
-	SprintPlanningDay   string `toml:"sprint_planning_day"`   // day of week for sprint planning (e.g., "Monday")
-	SprintPlanningTime  string `toml:"sprint_planning_time"`  // time of day for sprint planning (e.g., "09:00")
-	SprintCapacity      int    `toml:"sprint_capacity"`       // maximum points/tasks per sprint
-	BacklogThreshold    int    `toml:"backlog_threshold"`     // minimum backlog size to maintain
+	SprintPlanningDay  string `toml:"sprint_planning_day"`  // day of week for sprint planning (e.g., "Monday")
+	SprintPlanningTime string `toml:"sprint_planning_time"` // time of day for sprint planning (e.g., "09:00")
+	SprintCapacity     int    `toml:"sprint_capacity"`      // maximum points/tasks per sprint
+	BacklogThreshold   int    `toml:"backlog_threshold"`    // minimum backlog size to maintain
 
 	// Definition of Done configuration
 	DoD DoDConfig `toml:"dod"`
@@ -77,10 +79,10 @@ type Project struct {
 
 // DoDConfig defines the Definition of Done configuration for a project
 type DoDConfig struct {
-	Checks             []string `toml:"checks"`               // commands to run (e.g. "go test ./...", "go vet ./...")
-	CoverageMin        int      `toml:"coverage_min"`         // optional: fail if coverage < N%
-	RequireEstimate    bool     `toml:"require_estimate"`     // bead must have estimate before closing
-	RequireAcceptance  bool     `toml:"require_acceptance"`   // bead must have acceptance criteria
+	Checks            []string `toml:"checks"`             // commands to run (e.g. "go test ./...", "go vet ./...")
+	CoverageMin       int      `toml:"coverage_min"`       // optional: fail if coverage < N%
+	RequireEstimate   bool     `toml:"require_estimate"`   // bead must have estimate before closing
+	RequireAcceptance bool     `toml:"require_acceptance"` // bead must have acceptance criteria
 }
 
 type RateLimits struct {
@@ -124,6 +126,7 @@ type Health struct {
 type Reporter struct {
 	Channel         string `toml:"channel"`
 	AgentID         string `toml:"agent_id"`
+	DefaultRoom     string `toml:"default_room"` // fallback Matrix room when project has no explicit room
 	DailyDigestTime string `toml:"daily_digest_time"`
 	WeeklyRetroDay  string `toml:"weekly_retro_day"`
 }
@@ -136,15 +139,15 @@ type Learner struct {
 }
 
 type API struct {
-	Bind     string    `toml:"bind"`
+	Bind     string      `toml:"bind"`
 	Security APISecurity `toml:"security"`
 }
 
 type APISecurity struct {
-	Enabled        bool     `toml:"enabled"`        // Enable auth for control endpoints
-	AllowedTokens  []string `toml:"allowed_tokens"` // Valid API tokens for auth
-	RequireLocalOnly bool    `toml:"require_local_only"` // Only allow local connections when auth disabled
-	AuditLog       string   `toml:"audit_log"`      // Path to audit log file
+	Enabled          bool     `toml:"enabled"`            // Enable auth for control endpoints
+	AllowedTokens    []string `toml:"allowed_tokens"`     // Valid API tokens for auth
+	RequireLocalOnly bool     `toml:"require_local_only"` // Only allow local connections when auth disabled
+	AuditLog         string   `toml:"audit_log"`          // Path to audit log file
 }
 
 type Dispatch struct {
@@ -166,7 +169,7 @@ type CLIConfig struct {
 }
 
 type DispatchRouting struct {
-	FastBackend     string `toml:"fast_backend"`     // "headless_cli", "tmux"
+	FastBackend     string `toml:"fast_backend"` // "headless_cli", "tmux"
 	BalancedBackend string `toml:"balanced_backend"`
 	PremiumBackend  string `toml:"premium_backend"`
 	CommsBackend    string `toml:"comms_backend"`
@@ -318,10 +321,10 @@ func applyDefaults(cfg *Config) {
 		if project.BranchPrefix == "" {
 			project.BranchPrefix = "feat/"
 		}
-		
+
 		// Sprint planning defaults (optional - no defaults applied to maintain backward compatibility)
 		// Users must explicitly configure sprint planning to enable it
-		
+
 		cfg.Projects[name] = project
 	}
 
@@ -380,12 +383,12 @@ func validate(cfg *Config) error {
 		if p.Enabled {
 			hasEnabled = true
 		}
-		
+
 		// Validate sprint planning configuration when provided
 		if err := validateSprintPlanningConfig(projectName, p); err != nil {
 			return fmt.Errorf("project %q sprint planning config: %w", projectName, err)
 		}
-		
+
 		// Validate DoD configuration when provided
 		if err := validateDoDConfig(projectName, p.DoD); err != nil {
 			return fmt.Errorf("project %q DoD config: %w", projectName, err)
@@ -507,6 +510,47 @@ func (rl *RateLimits) GetProjectBudget(project string) int {
 	return rl.Budget[project]
 }
 
+// ResolveRoom returns the Matrix room for a project.
+// Priority: projects.<name>.matrix_room -> reporter.default_room -> empty string.
+func (cfg *Config) ResolveRoom(project string) string {
+	if cfg == nil {
+		return ""
+	}
+	project = strings.TrimSpace(project)
+	if project != "" {
+		if p, ok := cfg.Projects[project]; ok {
+			if room := strings.TrimSpace(p.MatrixRoom); room != "" {
+				return room
+			}
+		}
+	}
+	return strings.TrimSpace(cfg.Reporter.DefaultRoom)
+}
+
+// MissingProjectRoomRouting returns enabled projects that have neither a project room
+// nor a reporter-level default room configured.
+func (cfg *Config) MissingProjectRoomRouting() []string {
+	if cfg == nil {
+		return nil
+	}
+	if strings.TrimSpace(cfg.Reporter.DefaultRoom) != "" {
+		return nil
+	}
+
+	missing := make([]string, 0)
+	for name, project := range cfg.Projects {
+		if !project.Enabled {
+			continue
+		}
+		if strings.TrimSpace(project.MatrixRoom) != "" {
+			continue
+		}
+		missing = append(missing, name)
+	}
+	sort.Strings(missing)
+	return missing
+}
+
 // validateSprintPlanningConfig validates sprint planning configuration for a project.
 func validateSprintPlanningConfig(projectName string, project Project) error {
 	// Sprint planning day validation
@@ -524,18 +568,18 @@ func validateSprintPlanningConfig(projectName string, project Project) error {
 			return fmt.Errorf("invalid sprint_planning_day %q, must be one of: Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday", project.SprintPlanningDay)
 		}
 	}
-	
+
 	// Sprint planning time validation (24-hour format HH:MM)
 	if project.SprintPlanningTime != "" {
 		// Basic time format validation - must be HH:MM
 		if len(project.SprintPlanningTime) != 5 || project.SprintPlanningTime[2] != ':' {
 			return fmt.Errorf("invalid sprint_planning_time %q, must be in HH:MM format (24-hour)", project.SprintPlanningTime)
 		}
-		
+
 		// Parse hours and minutes
 		hour := project.SprintPlanningTime[:2]
 		minute := project.SprintPlanningTime[3:]
-		
+
 		// Simple validation without importing time package parsing
 		for _, c := range hour {
 			if c < '0' || c > '9' {
@@ -547,13 +591,13 @@ func validateSprintPlanningConfig(projectName string, project Project) error {
 				return fmt.Errorf("invalid sprint_planning_time %q, minute must be numeric", project.SprintPlanningTime)
 			}
 		}
-		
+
 		// Check valid ranges
 		if hour > "23" || minute > "59" {
 			return fmt.Errorf("invalid sprint_planning_time %q, hour must be 00-23 and minute must be 00-59", project.SprintPlanningTime)
 		}
 	}
-	
+
 	// Sprint capacity validation
 	if project.SprintCapacity < 0 {
 		return fmt.Errorf("sprint_capacity cannot be negative: %d", project.SprintCapacity)
@@ -561,7 +605,7 @@ func validateSprintPlanningConfig(projectName string, project Project) error {
 	if project.SprintCapacity > 1000 {
 		return fmt.Errorf("sprint_capacity seems unreasonably large: %d (max 1000)", project.SprintCapacity)
 	}
-	
+
 	// Backlog threshold validation
 	if project.BacklogThreshold < 0 {
 		return fmt.Errorf("backlog_threshold cannot be negative: %d", project.BacklogThreshold)
@@ -569,14 +613,14 @@ func validateSprintPlanningConfig(projectName string, project Project) error {
 	if project.BacklogThreshold > 500 {
 		return fmt.Errorf("backlog_threshold seems unreasonably large: %d (max 500)", project.BacklogThreshold)
 	}
-	
+
 	// Cross-field validation
 	if project.SprintCapacity > 0 && project.BacklogThreshold > 0 {
 		if project.BacklogThreshold < project.SprintCapacity {
 			return fmt.Errorf("backlog_threshold (%d) should be at least as large as sprint_capacity (%d)", project.BacklogThreshold, project.SprintCapacity)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -589,10 +633,10 @@ func validateDoDConfig(projectName string, dod DoDConfig) error {
 	if dod.CoverageMin > 100 {
 		return fmt.Errorf("coverage_min cannot exceed 100: %d", dod.CoverageMin)
 	}
-	
+
 	// Note: Empty checks array is valid - DoD can be coverage-only or flags-only
 	// Note: All string commands in checks are valid - we can't validate arbitrary commands
-	
+
 	return nil
 }
 
@@ -601,7 +645,7 @@ func validateDoDConfig(projectName string, dod DoDConfig) error {
 func ValidateDispatchConfig(cfg *Config) error {
 	// Validate backend names match known types
 	knownBackends := map[string]bool{
-		"tmux":        true,
+		"tmux":         true,
 		"headless_cli": true,
 	}
 

@@ -93946,3 +93946,2397 @@ exec
 76497:/usr/bin/zsh -lc "bd close cortex-ear --reason \"Root cause: churn escalation ran even when bead was already in failure-quarantine conditions. Dispatch history for cortex-xhk.9.3 showed repeated hard failures (ids 1275/1277/1280, exit 137, failure_summary 'gateway connect failed: Error: gateway closed (1000)'). Fix: scheduler churn guard now short-circuits on failure quarantine and suppresses churn escalation noise for quarantined beads. Added regression tests TestIsChurnBlocked_SuppressesEscalationWhenFailureQuarantined and TestIsChurnBlocked_RecordsEscalationWhenNotQuarantined. Verification: go test ./internal/scheduler -run 'TestIsChurnBlocked|TestHasActiveChurnEscalation|TestShouldAutoCloseEpicBreakdownTask' -count=1 (pass).\"" in /home/ubuntu/projects/cortex succeeded in 171ms:
 76498:✓ Closed cortex-ear: Root cause: churn escalation ran even when bead was already in failure-quarantine conditions. Dispatch history for cortex-xhk.9.3 showed repeated hard failures (ids 1275/1277/1280, exit 137, failure_summary 'gateway connect failed: Error: gateway closed (1000)'). Fix: scheduler churn guard now short-circuits on failure quarantine and suppresses churn escalation noise for quarantined beads. Added regression tests TestIsChurnBlocked_SuppressesEscalationWhenFailureQuarantined and TestIsChurnBlocked_RecordsEscalationWhenNotQuarantined. Verification: go test ./internal/scheduler -run 'TestIsChurnBlocked|TestHasActiveChurnEscalation|TestShouldAutoCloseEpicBreakdownTask' -count=1 (pass).
 77674:Close reason: Root cause: churn escalation ran even when bead was already in failure-quarantine conditions. Dispatch history for cortex-xhk.9.3 showed repeated hard failures (ids 1275/1277/1280, exit 137, failure_summary 'gateway connect failed: Error: gateway closed (1000)'). Fix: scheduler churn guard now short-circuits on failure quarantine and suppresses churn escalation noise for quarantined beads. Added regression tests TestIsChurnBlocked_SuppressesEscalationWhenFailureQuarantined and TestIsChurnBlocked_RecordsEscalationWhenNotQuarantined. Verification: go test ./internal/scheduler -run 'TestIsChurnBlocked|TestHasActiveChurnEscalation|TestShouldAutoCloseEpicBreakdownTask' -count=1 (pass).
+[2026-02-18T09:33:29+10:00] codex escalation completed for cortex-8xm
+[2026-02-18T09:48:07+10:00] codex-incident-worker starting poll_sec=300 codex_escalation=1 model=gpt-5.3-codex
+[2026-02-18T09:58:09+10:00] processing auto-issue cortex-ijz title=Auto: churn guard blocked bead cortex-xhk.8.1 (6 dispatches/1h0m0s)
+[2026-02-18T09:58:09+10:00] escalating issue cortex-ijz to codex model=gpt-5.3-codex timeout=1200s
+OpenAI Codex v0.101.0 (research preview)
+--------
+workdir: /home/ubuntu/projects/cortex
+model: gpt-5.3-codex
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: auto
+session id: 019c6e0a-39ff-7cb1-9866-e074e414577c
+--------
+user
+You are codex-incident-worker for overnight engine stabilization.
+
+Repository: /home/ubuntu/projects/cortex
+Issue ID: cortex-ijz
+Issue title: Auto: churn guard blocked bead cortex-xhk.8.1 (6 dispatches/1h0m0s)
+Issue description:
+Bead `cortex-xhk.8.1` in project `cortex` exceeded churn threshold (6 dispatches in 1h0m0s) and was blocked from further overnight dispatch.
+
+Please investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.
+
+Bead title: Add cross-project sprint completion data gathering
+Bead type: task
+
+Task:
+1) Attempt a minimal, safe fix for this issue now.
+2) If you can fix safely, implement and close issue cortex-ijz with evidence in the close reason.
+3) If this is too large/risky for a quick fix, create a new scoped bead (task/bug) with acceptance criteria and dependency discovered-from:cortex-ijz.
+4) Keep changes surgical and avoid stepping on active coders.
+
+Constraints:
+- No destructive git commands.
+- Prefer operational/config/script fixes first.
+- Do not pause scheduler/workers unless absolutely required to recover.
+- Keep command usage non-interactive.
+
+When done, print a concise summary of what you changed.
+
+mcp: linear starting
+mcp: linear failed: MCP client for `linear` failed to start: MCP startup failed: Environment variable LINEAR_API_KEY for MCP server 'linear' is not set
+mcp startup: failed: linear
+2026-02-17T23:58:09.963744Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c6dd8-f6e9-7e20-9ec1-85a2cf93adb6
+2026-02-17T23:58:09.998906Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c68d5-90e0-7601-94eb-10d106653269
+2026-02-17T23:58:10.032132Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c6b1d-9530-77a1-9a5a-7923286c4f6e
+2026-02-17T23:58:10.065180Z ERROR codex_core::rollout::list: state db missing rollout path for thread 019c6b75-4c4a-7c63-ba16-402b589d68ae
+
+thinking
+**Acknowledging task and planning initial steps**
+codex
+I’ll investigate `cortex-ijz` by checking the beads state and the code paths around churn-guard dispatch for `cortex-xhk.8.1`, then I’ll implement the smallest safe hardening fix with tests if feasible. I’m starting by onboarding and inspecting the issue plus recent related changes.
+exec
+/usr/bin/zsh -lc 'git status --short --branch' in /home/ubuntu/projects/cortex succeeded in 58ms:
+## master...origin/master
+ M .beads/issues.jsonl
+ M .cortex/codex-incident-worker-seen.tsv
+ M .cortex/codex-incident-worker.latest
+ M .cortex/codex-incident-worker.log
+ M .cortex/codex-nudges.log
+ M .cortex/nightwatch-checkpoints.jsonl
+ M .cortex/nightwatch.latest
+ M .cortex/nightwatch.log
+ M .cortex/overnight-issues.jsonl
+ M docs/burn-in-metrics.md
+ M internal/api/api.go
+ M internal/api/api_test.go
+ M internal/chief/chief.go
+ M internal/scheduler/prompt.go
+ M internal/scheduler/prompt_test.go
+ M rollback-binary/cortex-latest
+ M rollback-config/cortex-latest.toml
+ M scripts/codex_incident_worker.sh
+ M scripts/nightwatch.sh
+exec
+/usr/bin/zsh -lc 'bd ready' in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'bd onboard && bd show cortex-ijz && bd show cortex-xhk.8.1' in /home/ubuntu/projects/cortex succeeded in 199ms:
+
+📋 Ready work (10 issues with no blockers):
+
+1. [● P1] [bug] cortex-ijz: Auto: churn guard blocked bead cortex-xhk.8.1 (6 dispatches/1h0m0s)
+   Assignee: Simon Heikkila
+2. [● P2] [task] cortex-pg5.3: Extend DB schema for workflow stage tracking
+3. [● P2] [task] cortex-pg5.5: Add stage-aware prompt templates
+4. [● P2] [task] cortex-pg5.6: Extend role system for workflow-specific roles
+5. [● P2] [task] cortex-pg5.8: Add built-in workflow templates: dev, content, trading
+6. [● P2] [task] cortex-a4s.1: Add per-project Matrix room config
+7. [● P2] [task] cortex-a4s.7: Update scrum master ROLE.md for communication responsibilities
+8. [● P2] [task] cortex-xhk.2: Aligned sprint cadence across projects
+9. [● P2] [task] cortex-xhk.5: Cross-project provider performance profiling
+10. [● P2] [task] cortex-xhk.9: Definition of Done enforcement
+
+ succeeded in 441ms:
+
+○ cortex-ijz [BUG] · Auto: churn guard blocked bead cortex-xhk.8.1 (6 dispatches/1h0m0s)   [● P1 · OPEN]
+Owner: Simon Heikkila · Assignee: Simon Heikkila · Type: bug
+Created: 2026-02-18 · Updated: 2026-02-18
+
+DESCRIPTION
+Bead `cortex-xhk.8.1` in project `cortex` exceeded churn threshold (6 dispatches in 1h0m0s) and was blocked from further overnight dispatch.
+
+Please investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.
+
+Bead title: Add cross-project sprint completion data gathering
+Bead type: task
+
+DISCOVERED FROM
+  ◊ ○ cortex-xhk.8.1: Add cross-project sprint completion data gathering ● P2
+
+
+○ cortex-xhk.8.1 · Add cross-project sprint completion data gathering   [● P2 · OPEN]
+Owner: Simon Heikkila · Type: task
+Created: 2026-02-18 · Updated: 2026-02-18
+
+thinking
+**Inspecting churn guard implementation**
+codex
+I confirmed `cortex-ijz` is open and the worktree is already heavily dirty, so I’ll keep changes tightly scoped and avoid touching unrelated files. Next I’m locating the churn-guard logic and dispatch loop for overnight worker behavior around repeated redispatch of the same bead.
+exec
+/usr/bin/zsh -lc 'rg --files scripts internal | rg "incident|nightwatch|scheduler|dispatch|churn|worker|guard"' in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "rg -n \"churn|dispatch|blocked|overnight|incident-worker|xhk\\.8\\.1|redispatch|attempt\" scripts internal .cortex .beads | head -n 300" in /home/ubuntu/projects/cortex succeeded in 50ms:
+internal/dispatch/shell_escape_test.go
+internal/dispatch/shell_escape.go
+internal/dispatch/backoff_test.go
+internal/dispatch/session_lock_test.go
+internal/dispatch/dispatch.go
+internal/dispatch/pid_completion_test.go
+internal/dispatch/ratelimit.go
+internal/dispatch/backend.go
+internal/dispatch/tmux.go
+internal/dispatch/backoff.go
+internal/dispatch/dispatch_test.go
+internal/dispatch/ratelimit_test.go
+internal/dispatch/tmux_test.go
+internal/scheduler/claim_health_test.go
+internal/scheduler/ceremony.go
+internal/scheduler/completion_verification_test.go
+internal/scheduler/churn_guard_quarantine_test.go
+internal/scheduler/scheduler.go
+internal/scheduler/scheduler_test.go
+internal/scheduler/churn_guard_test.go
+ succeeded in 51ms:
+Total output lines: 300
+
+scripts/trial-monitoring-dashboard.sh:61:  curl -sS "$api_url/metrics" 2>/dev/null | rg -n "dispatch|retry|failure|unsafe|gateway|health" -m 40 || true
+scripts/analyze-trial-results.sh:41:  def is_control: (.path | test("^/scheduler/(pause|resume)$") or test("^/dispatches/[0-9]+/(cancel|retry)$"));
+.cortex/codex-incident-worker.latest:8:claim_leases_running_dispatch: 0
+.cortex/codex-incident-worker.latest:9:claim_leases_terminal_dispatch: 0
+.cortex/nightwatch-checkpoints.jsonl:43:{"ts":"2026-02-17T23:48:07Z","running_count":0,"completed_15m":3,"failed_15m":1,"cancelled_15m":1,"usage_5h":107,"cap_5h":150,"usage_weekly":327,"cap_weekly":2000,"claim_leases_total":0,"claim_leases_unbound":0,"claim_leases_expired":0,"claim_leases_running_dispatch":0,"claim_leases_terminal_dispatch":0,"gateway_closed_2m":0}
+.cortex/nightwatch.latest:11:claim_leases_running_dispatch: 0
+.cortex/nightwatch.latest:12:claim_leases_terminal_dispatch: 0
+scripts/nightwatch.sh:22:ISSUES_FILE="$STATE_DIR/overnight-issues.jsonl"
+scripts/nightwatch.sh:91:  panel_cmd="cd $ROOT && while true; do clear; echo 'Cortex Codex Panel'; echo; echo 'Nightwatch:'; if [ -f .cortex/nightwatch.latest ]; then cat .cortex/nightwatch.latest; else echo 'waiting for first checkpoint...'; fi; echo; echo 'Codex Incident Worker:'; if [ -f .cortex/codex-incident-worker.latest ]; then cat .cortex/codex-incident-worker.latest; else echo 'waiting for worker status...'; fi; echo; echo 'Recent nudges:'; tail -n 20 .cortex/codex-nudges.log 2>/dev/null || true; sleep 10; done"
+scripts/nightwatch.sh:179:reconcile_dead_running_dispatches() {
+scripts/nightwatch.sh:184:  rows="$(sqlite3 "$DB" "SELECT id, bead_id, session_name FROM dispatches WHERE status='running' ORDER BY id;" 2>/dev/null || true)"
+scripts/nightwatch.sh:199:      for attempt in 1 2; do
+scripts/nightwatch.sh:200:        resp="$(curl -fsS -X POST "$API/dispatches/$id/cancel" 2>/dev/null || true)"
+scripts/nightwatch.sh:207:      log "reconciled dead running dispatch id=$id bead=$bead pane=$pane session_exists=$session_exists resp=${resp:-<retry_failed>}"
+scripts/nightwatch.sh:208:      recon_details+="- dispatch $id bead $bead pane=$pane session=$session (exists=$session_exists)"$'\n'
+scripts/nightwatch.sh:220:    record_issue "dead_running_reconciled" "high" "Reconciled dead-running dispatches" "$recon_details"
+scripts/nightwatch.sh:221:    nudge_codex "Reconciled $reconciled dead-running dispatch(es)"
+scripts/nightwatch.sh:227:      "Auto: multiple dead-running dispatches reconciled (${reconciled})" \
+
+thinking
+**Locating churn guard code**
+codex
+I found dedicated churn-guard tests and scheduler code, plus incident logs showing many dispatches with `failure_summary=<none>` around the same time as `cortex-xhk.8.1`. I’m now reading churn-guard implementation and recent dispatch records to isolate why this bead kept re-dispatching.
+exec
+/usr/bin/zsh -lc "sed -n '1,260p' internal/scheduler/churn_guard_test.go" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'ls -1 internal/scheduler | rg "churn|cooldown|completion|scheduler"' in /home/ubuntu/projects/cortex succeeded in 50ms:
+package scheduler
+
+import (
+	"testing"
+	"time"
+
+	"github.com/antigravity-dev/cortex/internal/beads"
+)
+
+func TestHasActiveChurnEscalation(t *testing.T) {
+	beadID := "cortex-c4j.3"
+	title := "Auto: churn guard blocked bead cortex-c4j.3 (6 dispatches/1h0m0s)"
+
+	tests := []struct {
+		name   string
+		issues []beads.Bead
+		want   bool
+	}{
+		{
+			name: "open bug with discovered-from dependency is active",
+exec
+/usr/bin/zsh -lc "sed -n '1,260p' internal/scheduler/churn_guard_quarantine_test.go" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'rg -n "churn|quarantine|threshold|blocked|redispatch|dispatches/1h|GetRecentDispatches|cooldown" internal/scheduler/scheduler.go internal/scheduler/*.go' in /home/ubuntu/projects/cortex succeeded in 51ms:
+churn_guard_quarantine_test.go
+churn_guard_test.go
+completion_semantics_test.go
+completion_verification.go
+completion_verification_test.go
+cooldown_test.go
+scheduler.go
+scheduler_test.go
+ succeeded in 50ms:
+package scheduler
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/antigravity-dev/cortex/internal/beads"
+	"github.com/antigravity-dev/cortex/internal/store"
+)
+
+func TestIsChurnBlocked_SuppressesEscalationWhenFailureQuarantined(t *testing.T) {
+	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+	installFakeBDForChurnGuardTest(t)
+ succeeded in 51ms:
+internal/scheduler/cooldown_test.go:53:	// Test 4: With zero cooldown, should not be recent
+internal/scheduler/cooldown_test.go:59:		t.Error("bead should not be recent with zero cooldown")
+internal/scheduler/cooldown_test.go:72:	// Config with disabled cooldown
+internal/scheduler/cooldown_test.go:88:	// With cooldown disabled, should not block re-dispatch (beyond checking recent dispatches)
+internal/scheduler/cooldown_test.go:89:	// This test mainly ensures the cooldown logic doesn't break when disabled
+internal/scheduler/cooldown_test.go:95:		t.Error("bead should not be recent when cooldown is disabled (duration 0)")
+internal/scheduler/dod_test.go:492:			name:        "coverage below threshold fails",
+internal/scheduler/dod_test.go:494:			coverageMin: 200, // impossible threshold
+internal/scheduler/chief.go:66:	UnblockedWork   int       `json:"unblocked_work_count"`
+internal/scheduler/chief.go:355:				targetProjects, unblockedCount := c.findUnblockedProjects(ctx, completedBead, projectCompletions, sourceProject)
+internal/scheduler/chief.go:364:						UnblockedWork:    unblockedCount,
+internal/scheduler/chief.go:410:// findUnblockedProjects determines which projects were unblocked by a milestone completion
+internal/scheduler/chief.go:411:func (c *ChiefSprintReviewer) findUnblockedProjects(ctx context.Context, milestone beads.Bead, projectCompletions map[string]*ProjectSprintData, sourceProject string) ([]string, int) {
+internal/scheduler/chief.go:413:	unblockedCount := 0
+internal/scheduler/chief.go:427:				unblockedCount++
+internal/scheduler/chief.go:437:				unblockedCount++
+internal/scheduler/chief.go:442:	return targetProjects, unblockedCount
+internal/scheduler/chief.go:476:		return fmt.Sprintf("Unblocked work in %s project", targetProjects[0])
+internal/scheduler/chief.go:479:	return fmt.Sprintf("Unblocked work across %d projects: %s", 
+internal/scheduler/chief.go:540:	if strings.Contains(text, "dependency") || strings.Contains(text, "blocked") {
+
+thinking
+**Investigating scheduler and database paths**
+codex
+I’ve located the churn-guard path in `internal/scheduler/scheduler.go`; next I’m inspecting the exact logic around block/escalation and correlating it with actual dispatch records for `cortex-xhk.8.1` to confirm the concrete failure mode before patching.
+exec
+/usr/bin/zsh -lc "sed -n '1180,1325p' internal/scheduler/scheduler.go" in /home/ubuntu/projects/cortex succeeded in 51ms:
+		if dep.DependsOnID == beadID && dep.Type == "discovered-from" {
+			return true
+		}
+	}
+	for _, depID := range issue.DependsOn {
+		if depID == beadID {
+			return true
+		}
+	}
+	return false
+}
+
+// isDispatchAlive checks if a dispatch is still running using the best available method.
+// For tmux dispatches, it uses the stored session name (crash-resilient).
+// For PID dispatches, it falls back to the dispatcher's in-memory tracking.
+func (s *Scheduler) isDispatchAlive(d store.Dispatch) bool {
+	if d.SessionName != "" {
+		status, _ := dispatch.SessionStatus(d.SessionName)
+		return status == "running"
+	}
+exec
+/usr/bin/zsh -lc "sed -n '1050,1545p' internal/scheduler/scheduler.go" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "find . -maxdepth 4 -type f \\( -name \"*.db\" -o -name \"*.sqlite\" -o -name \"*.sqlite3\" \\) | sed 's#"'^./##'"'" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "rg -n \"db_path|sqlite|dispatches.db|cortex.db|data.db|Store\\(\" configs internal scripts -g\"*.toml\" -g\"*.go\" -g\"*.sh\" | head -n 200" in /home/ubuntu/projects/cortex succeeded in 55ms:
+scripts/nightwatch.sh:5:DB="${DB:-$HOME/.local/share/cortex/cortex.db}"
+scripts/nightwatch.sh:184:  rows="$(sqlite3 "$DB" "SELECT id, bead_id, session_name FROM dispatches WHERE status='running' ORDER BY id;" 2>/dev/null || true)"
+scripts/nightwatch.sh:234:  fail_msg_count="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='failed' AND completed_at >= datetime('now','-15 minutes') AND failure_summary LIKE '%required option ''-m, --message <text>'' not specified%';" 2>/dev/null || echo 0)"
+scripts/nightwatch.sh:249:  rows="$(sqlite3 "$DB" "SELECT COALESCE(NULLIF(failure_summary,''), '<none>') AS summary, COUNT(*) AS cnt, GROUP_CONCAT(id) AS ids, GROUP_CONCAT(DISTINCT bead_id) AS beads FROM dispatches WHERE status='failed' AND completed_at >= datetime('now','-15 minutes') GROUP BY summary HAVING COUNT(*) >= $BUG_MIN_REPEAT_15M ORDER BY cnt DESC;" 2>/dev/null || true)"
+scripts/nightwatch.sh:281:  completed15="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='completed' AND completed_at >= datetime('now','-15 minutes');" 2>/dev/null || echo 0)"
+scripts/nightwatch.sh:282:  failed15="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='failed' AND completed_at >= datetime('now','-15 minutes');" 2>/dev/null || echo 0)"
+scripts/nightwatch.sh:283:  cancelled15="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='cancelled' AND completed_at >= datetime('now','-15 minutes');" 2>/dev/null || echo 0)"
+scripts/nightwatch.sh:284:  claim_total="$(sqlite3 "$DB" "SELECT COUNT(*) FROM claim_leases;" 2>/dev/null || echo 0)"
+scripts/nightwatch.sh:285:  claim_unbound="$(sqlite3 "$DB" "SELECT COUNT(*) FROM claim_leases WHERE dispatch_id <= 0;" 2>/dev/null || echo 0)"
+scripts/nightwatch.sh:286:  claim_expired="$(sqlite3 "$DB" "SELECT COUNT(*) FROM claim_leases WHERE heartbeat_at < datetime('now','-4 minutes');" 2>/dev/null || echo 0)"
+scripts/nightwatch.sh:287:  claim_running="$(sqlite3 "$DB" "SELECT COUNT(*) FROM claim_leases cl JOIN dispatches d ON d.id = cl.dispatch_id WHERE cl.dispatch_id > 0 AND d.status='running';" 2>/dev/null || echo 0)"
+scripts/nightwatch.sh:288:  claim_terminal="$(sqlite3 "$DB" "SELECT COUNT(*) FROM claim_leases cl JOIN dispatches d ON d.id = cl.dispatch_id WHERE cl.dispatch_id > 0 AND d.status IN ('completed','failed','cancelled','interrupted','retried');" 2>/dev/null || echo 0)"
+scripts/nightwatch.sh:289:  gateway_closed2m="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE failure_category='gateway_closed' AND completed_at IS NOT NULL AND completed_at >= datetime('now','-2 minutes');" 2>/dev/null || echo 0)"
+scripts/nightwatch.sh:291:  top_failures="$(sqlite3 "$DB" "SELECT REPLACE(COALESCE(NULLIF(failure_summary,''),'<none>'), char(10), ' ') || ' x' || COUNT(*) FROM dispatches WHERE status='failed' AND completed_at >= datetime('now','-15 minutes') GROUP BY failure_summary ORDER BY COUNT(*) DESC LIMIT 3;" 2>/dev/null || true)"
+scripts/codex_incident_worker.sh:5:DB="${DB:-$HOME/.local/share/cortex/cortex.db}"
+scripts/codex_incident_worker.sh:100:  rows="$(sqlite3 "$DB" "SELECT id, bead_id, session_name FROM dispatches WHERE status='running' ORDER BY id;" 2>/dev/null || true)"
+scripts/codex_incident_worker.sh:116:  rows="$(sqlite3 "$DB" "SELECT id, bead_id, session_name FROM dispatches WHERE status='running' ORDER BY id;" 2>/dev/null || true)"
+scripts/codex_incident_worker.sh:265:    recent_count="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='failed' AND completed_at >= datetime('now','-15 minutes') AND failure_summary = '$summary_sql';" 2>/dev/null || echo 0)"
+scripts/codex_incident_worker.sh:278:      recent_count="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='failed' AND completed_at >= datetime('now','-15 minutes') AND failure_summary = 'error: required option ''-m, --message <text>'' not specified';" 2>/dev/null || echo 0)"
+scripts/codex_incident_worker.sh:298:  failed15="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='failed' AND completed_at >= datetime('now','-15 minutes');" 2>/dev/null || echo 0)"
+ succeeded in 178ms:
+.cortex/cortex.db
+artifacts/launch/runbooks/drill-backup-20260218-044714.db
+artifacts/launch/runbooks/drill-restore-test.db
+artifacts/launch/runbooks/verification-backup-20260218-045437.db
+.beads/beads.db
+ succeeded in 230ms:
+
+		// Run failure diagnostics on captured output
+		if status == "failed" {
+			if output, err := s.store.GetOutput(d.ID); err == nil && output != "" {
+				if diag := learner.DiagnoseFailure(output); diag != nil {
+					if err := s.store.UpdateFailureDiagnosis(d.ID, diag.Category, diag.Summary); err != nil {
+						s.logger.Error("failed to store failure diagnosis", "dispatch_id", d.ID, "error", err)
+					} else {
+						s.logger.Warn("dispatch failure diagnosed",
+							"bead", d.BeadID,
+							"category", diag.Category,
+							"summary", diag.Summary,
+						)
+					}
+				}
+			}
+		}
+	}
+}
+
+
+thinking
+**Investigating database sources for dispatch issues**
+codex
+The churn guard logic itself already dedupes escalation issues, so I’m now validating whether `cortex-xhk.8.1` churn came from repeated failed dispatch lifecycle events (likely output-classification gaps). I’ll pull exact dispatch timelines and failure signatures from the active SQLite state DB.
+exec
+/usr/bin/zsh -lc 'sqlite3 $HOME/.local/share/cortex/cortex.db "SELECT id, bead_id, status, stage, dispatched_at, completed_at, retries, failure_category, substr(failure_summary,1,120) FROM dispatches WHERE bead_id='"'cortex-xhk.8.1' ORDER BY id;\" 2>/dev/null || true" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "sqlite3 .cortex/cortex.db \"SELECT id, status, stage, exit_code, duration_s, backend, session_name, log_path FROM dispatches WHERE bead_id='cortex-xhk.8.1' ORDER BY id DESC LIMIT 15;\"" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'ls -l .cortex/cortex.db $HOME/.local/share/cortex/cortex.db 2>/dev/null || true' in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc "sqlite3 .cortex/cortex.db \"SELECT id, bead_id, status, stage, dispatched_at, completed_at, retries, failure_category, substr(failure_summary,1,120) FROM dispatches WHERE bead_id='cortex-xhk.8.1' ORDER BY id;\"" in /home/ubuntu/projects/cortex exited 1 in 50ms:
+Error: in prepare, no such table: dispatches
+ succeeded in 53ms:
+1311|cortex-xhk.8.1|completed|completed|2026-02-17 23:07:43|2026-02-17 23:11:38|0||
+1319|cortex-xhk.8.1|failed|failed|2026-02-17 23:16:43|2026-02-17 23:17:38|0||
+1327|cortex-xhk.8.1|completed|completed|2026-02-17 23:21:44|2026-02-17 23:24:38|0||
+1335|cortex-xhk.8.1|cancelled|cancelled|2026-02-17 23:36:42|2026-02-17 23:48:07|0||
+1336|cortex-xhk.8.1|failed|failed|2026-02-17 23:48:43|2026-02-17 23:51:38|0|unknown|gateway connect failed: Error: gateway closed (1000):
+1342|cortex-xhk.8.1|completed|completed|2026-02-17 23:53:43|2026-02-17 23:55:38|0||
+ succeeded in 51ms:
+-rw-r--r-- 1 ubuntu ubuntu       0 Feb 18 04:29 .cortex/cortex.db
+-rw-r--r-- 1 ubuntu ubuntu 5332992 Feb 18 09:51 /home/ubuntu/.local/share/cortex/cortex.db
+ exited 1 in 50ms:
+Error: in prepare, no such table: dispatches
+
+thinking
+**Investigating dispatch churn cause**
+exec
+/usr/bin/zsh -lc 'sqlite3 $HOME/.local/share/cortex/cortex.db "SELECT id, event_type, event_text, created_at, dispatch_id, bead_id FROM health_events WHERE bead_id='"'cortex-xhk.8.1' ORDER BY id DESC LIMIT 30;\"" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'sqlite3 $HOME/.local/share/cortex/cortex.db "SELECT id, bead_id, status, stage, exit_code, failure_category, failure_summary, completed_at FROM dispatches WHERE id IN (1311,1319,1327,1335,1336,1342) ORDER BY id;"' in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'sqlite3 $HOME/.local/share/cortex/cortex.db "SELECT dispatch_id, length(output), substr(replace(output, char(10), '"' '),1,260) FROM dispatch_output WHERE dispatch_id IN (1311,1319,1327,1335,1336,1342) ORDER BY dispatch_id;\"" in /home/ubuntu/projects/cortex exited 1 in 54ms:
+Error: in prepare, no such column: event_text
+  SELECT id, event_type, event_text, created_at, dispatch_id, bead_id FROM healt
+                         ^--- error here
+ succeeded in 51ms:
+1311|cortex-xhk.8.1|completed|completed|0|||2026-02-17 23:11:38
+1319|cortex-xhk.8.1|failed|failed|1|||2026-02-17 23:17:38
+1327|cortex-xhk.8.1|completed|completed|0|||2026-02-17 23:24:38
+1335|cortex-xhk.8.1|cancelled|cancelled|0|||2026-02-17 23:48:07
+1336|cortex-xhk.8.1|failed|failed|137|unknown|gateway connect failed: Error: gateway closed (1000):|2026-02-17 23:51:38
+1342|cortex-xhk.8.1|completed|completed|0|||2026-02-17 23:55:38
+ succeeded in 139ms:
+1311|4326|/home/ubuntu/.zshrc:source:2: no such file or directory: /home/ubuntu/.acfs/zsh/ acfs.zshrc exec sh /tmp/cortex-openclaw-2791470086.sh /tmp/cortex-prompt-3018885664.txt /tm p/cortex-agent-1687540714.txt /tmp/cortex-thinking-3710257613.txt /tmp/cortex-pr ovider
+1319|1538|exec sh /tmp/cortex-openclaw-2023322116.sh /tmp/cortex-prompt-1857580526.txt /tm p/cortex-agent-1834444020.txt /tmp/cortex-thinking-3411170006.txt /tmp/cortex-pr ovider-2209595763.txt /home/ubuntu/.zshrc:source:2: no such file or directory: /home/ubuntu/.acfs/
+1327|4657|exec sh /tmp/cortex-openclaw-815953628.sh /tmp/cortex-prompt-3027771414.txt /tmp /cortex-agent-3669927444.txt /tmp/cortex-thinking-3617115651.txt /tmp/cortex-pro vider-2403101887.txt /home/ubuntu/.zshrc:source:2: no such file or directory: /home/ubuntu/.acfs/z
+1336|3400|exec sh /tmp/cortex-openclaw-2198984055.sh /tmp/cortex-prompt-3022598419.txt /tm p/cortex-agent-3531792513.txt /tmp/cortex-thinking-672117352.txt /tmp/cortex-pro vider-1219050755.txt /home/ubuntu/.zshrc:source:2: no such file or directory: /home/ubuntu/.acfs/z
+1342|4536|exec sh /tmp/cortex-openclaw-1196597571.sh /tmp/cortex-prompt-1075404502.txt /tm p/cortex-agent-514594917.txt /tmp/cortex-thinking-1622992377.txt /tmp/cortex-pro vider-4040712950.txt /home/ubuntu/.zshrc:source:2: no such file or directory: /home/ubuntu/.acfs/z
+
+thinking
+**Inspecting schema columns**
+exec
+/usr/bin/zsh -lc 'sqlite3 $HOME/.local/share/cortex/cortex.db "PRAGMA table_info(health_events);"' in /home/ubuntu/projects/cortex succeeded in 51ms:
+0|id|INTEGER|0||1
+1|event_type|TEXT|1||0
+2|details|TEXT|1|''|0
+3|created_at|DATETIME|1|datetime('now')|0
+4|dispatch_id|INTEGER|1|0|0
+5|bead_id|TEXT|1|''|0
+exec
+/usr/bin/zsh -lc 'sqlite3 $HOME/.local/share/cortex/cortex.db "SELECT id, event_type, details, created_at, dispatch_id, bead_id FROM health_events WHERE bead_id='"'cortex-xhk.8.1' ORDER BY id DESC LIMIT 40;\"" in /home/ubuntu/projects/cortex succeeded in 51ms:
+638|bead_churn_blocked|project cortex bead cortex-xhk.8.1 blocked after 6 dispatches in 1h0m0s|2026-02-17 23:55:43|0|cortex-xhk.8.1
+637|session_cleaned|cleaned dead session ctx-cortex-cortex-reviewer-1771372423649289860-796064-5414f01b for dispatch 1342 bead cortex-xhk.8.1 status completed|2026-02-17 23:55:38|1342|cortex-xhk.8.1
+631|session_cleaned|cleaned dead session ctx-cortex-cortex-reviewer-1771372123604084024-796064-11c95824 for dispatch 1336 bead cortex-xhk.8.1 status failed|2026-02-17 23:51:38|1336|cortex-xhk.8.1
+612|session_cleaned|cleaned dead session ctx-cortex-cortex-reviewer-1771370504370067279-796064-60ce5691 for dispatch 1327 bead cortex-xhk.8.1 status completed|2026-02-17 23:24:38|1327|cortex-xhk.8.1
+598|session_cleaned|cleaned dead session ctx-cortex-cortex-reviewer-1771370203895523538-796064-b6a7e2be for dispatch 1319 bead cortex-xhk.8.1 status failed|2026-02-17 23:17:39|1319|cortex-xhk.8.1
+586|session_cleaned|cleaned dead session ctx-cortex-cortex-coder-1771369663486232045-796064-85c98348 for dispatch 1311 bead cortex-xhk.8.1 status completed|2026-02-17 23:11:38|1311|cortex-xhk.8.1
+
+thinking
+**Analyzing dispatch failure patterns**
+exec
+/usr/bin/zsh -lc "rg -n \"isChurnBlocked\\(\" internal/scheduler/scheduler.go internal/scheduler/*.go" in /home/ubuntu/projects/cortex succeeded in 51ms:
+internal/scheduler/scheduler.go:310:		if s.isChurnBlocked(ctx, item.bead, item.name, itemBeadsDir) {
+internal/scheduler/scheduler.go:1389:func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, projectName string, beadsDir string) bool {
+internal/scheduler/churn_guard_quarantine_test.go:25:	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "quarantine test"}, "cortex", beadsDir)
+internal/scheduler/churn_guard_quarantine_test.go:50:	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+internal/scheduler/churn_guard_quarantine_test.go:76:	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "quarantine cancelled test"}, "cortex", beadsDir)
+internal/scheduler/churn_guard_quarantine_test.go:111:	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "duplicate escalation test"}, "cortex", beadsDir)
+internal/scheduler/scheduler.go:310:		if s.isChurnBlocked(ctx, item.bead, item.name, itemBeadsDir) {
+internal/scheduler/scheduler.go:1389:func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, projectName string, beadsDir string) bool {
+
+thinking
+**Identifying caller context region**
+exec
+/usr/bin/zsh -lc "sed -n '230,360p' internal/scheduler/scheduler.go" in /home/ubuntu/projects/cortex succeeded in 50ms:
+	})
+
+	crossGraph, crossErr := beads.BuildCrossProjectGraph(ctx, s.cfg.Projects)
+	if crossErr != nil {
+		s.logger.Warn("failed to build cross-project dependency graph", "error", crossErr)
+		crossGraph = nil
+	}
+
+	for _, np := range projects {
+		// Auto-spawn team for each enabled project
+		model := s.defaultModel()
+		created, err := team.EnsureTeam(np.name, config.ExpandHome(np.proj.Workspace), model, AllRoles, s.logger)
+		if err != nil {
+			s.logger.Error("failed to ensure team", "project", np.name, "error", err)
+		} else if len(created) > 0 {
+			s.logger.Info("team agents created", "project", np.name, "agents", created)
+		}
+
+		beadsDir := config.ExpandHome(np.proj.BeadsDir)
+		beadList, err := beads.ListBeads(beadsDir)
+
+thinking
+**Analyzing churn guard status patterns**
+codex
+I confirmed `cortex-xhk.8.1` hit threshold with a mixed history (`completed/failed/completed/cancelled/failed/completed`) rather than a pure failure streak. I’m sampling other recent churn-blocked beads to see if this is systemic before applying a guard change.
+exec
+/usr/bin/zsh -lc 'set -euo pipefail
+issues_file=.cortex/overnight-issues.jsonl
+beads=$(rg "Auto: churn guard blocked bead" "$issues_file" -o -r '"'"'$0'"' | sed -E 's/.*bead (["'^ ]+) .*/'"\\1/' | sort -u)
+for b in "'$beads; do
+  echo "=== $b ==="
+  sqlite3 "$HOME/.local/share/cortex/cortex.db" "SELECT status, COUNT(*) FROM dispatches WHERE bead_id='"'"'$b'"' AND dispatched_at >= datetime('now','-24 hours') GROUP BY status ORDER BY status;\"
+  sqlite3 \""'$HOME/.local/share/cortex/cortex.db" "SELECT id,status,stage,exit_code,COALESCE(NULLIF(failure_category,'"''),'<none>') FROM dispatches WHERE bead_id='"'$b'"' AND dispatched_at >= datetime('now','-24 hours') ORDER BY id DESC LIMIT 8;\"
+  echo
+ done" in /home/ubuntu/projects/cortex succeeded in 51ms:
+=== Auto: churn guard blocked bead ===
+
+
+thinking
+**Adjusting extraction regex**
+exec
+/usr/bin/zsh -lc 'set -euo pipefail
+beads=$(rg "Auto: churn guard blocked bead" .cortex/overnight-issues.jsonl -o | true)
+# Extract bead IDs directly from lines
+beads=$(rg "Auto: churn guard blocked bead" .cortex/overnight-issues.jsonl | sed -E '"'s/.*bead (["'^ ]+) .*/'"\\1/' | sort -u)
+printf '%s\\n' \""'$beads"' in /home/ubuntu/projects/cortex succeeded in 51ms:
+cortex-34e
+cortex-46d.2
+cortex-46d.7
+cortex-46d.8
+cortex-84h
+cortex-c4j.3
+cortex-evu.1
+cortex-evu.2
+cortex-evu.3
+cortex-lxg
+cortex-xhk.6.1
+cortex-xhk.8.1
+cortex-xhk.9.2
+cortex-xhk.9.3
+cortex-y6s
+
+thinking
+**Looping over output statuses**
+exec
+/usr/bin/zsh -lc 'set -euo pipefail
+beads=$(rg "Auto: churn guard blocked bead" .cortex/overnight-issues.jsonl | sed -E '"'s/.*bead (["'^ ]+) .*/'"\\1/' | sort -u)
+for b in "'$beads; do
+  echo "=== $b ==="
+  sqlite3 "$HOME/.local/share/cortex/cortex.db" "SELECT status, COUNT(*) FROM dispatches WHERE bead_id='"'"'$b'"' AND dispatched_at >= datetime('now','-24 hours') GROUP BY status ORDER BY status;\"
+  sqlite3 \""'$HOME/.local/share/cortex/cortex.db" "SELECT id,status,stage,exit_code,COALESCE(NULLIF(failure_category,'"''),'<none>') FROM dispatches WHERE bead_id='"'$b'"' AND dispatched_at >= datetime('now','-24 hours') ORDER BY id DESC LIMIT 8;\"
+  echo
+ done" in /home/ubuntu/projects/cortex succeeded in 51ms:
+=== cortex-34e
+cortex-46d.2
+cortex-46d.7
+cortex-46d.8
+cortex-84h
+cortex-c4j.3
+cortex-evu.1
+cortex-evu.2
+cortex-evu.3
+cortex-lxg
+cortex-xhk.6.1
+cortex-xhk.8.1
+cortex-xhk.9.2
+cortex-xhk.9.3
+cortex-y6s ===
+
+
+thinking
+**Diagnosing loop splitting issue**
+exec
+/usr/bin/zsh -lc "set -euo pipefail
+rg \"Auto: churn guard blocked bead\" .cortex/overnight-issues.jsonl | sed -E 's/.*bead (["'^ ]+) .*/'"\\1/' | sort -u | while read -r b; do
+  [ -z \""'$b" ] && continue
+  echo "=== $b ==="
+  sqlite3 "$HOME/.local/share/cortex/cortex.db" "SELECT status, COUNT(*) FROM dispatches WHERE bead_id='"'"'$b'"' AND dispatched_at >= datetime('now','-24 hours') GROUP BY status ORDER BY status;\"
+  sqlite3 \""'$HOME/.local/share/cortex/cortex.db" "SELECT id,status,stage,exit_code,COALESCE(NULLIF(failure_category,'"''),'<none>') FROM dispatches WHERE bead_id='"'$b'"' AND dispatched_at >= datetime('now','-24 hours') ORDER BY id DESC LIMIT 8;\"
+  echo
+ done" in /home/ubuntu/projects/cortex succeeded in 1.28s:
+completed|16
+failed|2
+1037|completed|completed|0|<none>
+1029|completed|completed|0|<none>
+1021|completed|completed|0|<none>
+1014|completed|completed|0|<none>
+1007|completed|completed|0|<none>
+997|completed|completed|0|<none>
+990|completed|completed|0|<none>
+983|completed|completed|0|<none>
+
+=== cortex-84h ===
+completed|2
+failed|8
+1192|completed|completed|0|<none>
+1189|failed|failed|-1|<none>
+1188|completed|completed|0|<none>
+1183|failed|failed|1|unknown
+1158|failed|failed|-1|context_limit_rejected
+1152|failed|failed|-1|context_limit_rejected
+
+thinking
+**Refining churn guard logic**
+exec
+/usr/bin/zsh -lc 'rg -n "HasRecentConsecutiveFailures|consecutive failures|failureQuarantine" internal/store internal/scheduler | head -n 80' in /home/ubuntu/projects/cortex succeeded in 51ms:
+internal/store/store.go:681:// HasRecentConsecutiveFailures reports whether the most recent dispatches for a bead
+internal/store/store.go:683:func (s *Store) HasRecentConsecutiveFailures(beadID string, threshold int, window time.Duration) (bool, error) {
+internal/store/store.go:700:		return false, fmt.Errorf("check recent consecutive failures: %w", err)
+internal/store/store.go:708:			return false, fmt.Errorf("scan recent consecutive failures: %w", err)
+internal/store/store.go:716:		return false, fmt.Errorf("iterate recent consecutive failures: %w", err)
+internal/scheduler/scheduler.go:49:	failureQuarantineThreshold   = 3
+internal/scheduler/scheduler.go:50:	failureQuarantineWindow      = 45 * time.Minute
+internal/scheduler/scheduler.go:51:	failureQuarantineLogInterval = 10 * time.Minute
+internal/scheduler/scheduler.go:1391:	// If a bead is already quarantined for consecutive failures, suppress churn escalation noise.
+internal/scheduler/scheduler.go:1397:			"threshold", failureQuarantineThreshold,
+internal/scheduler/scheduler.go:1398:			"window", failureQuarantineWindow.String())
+internal/scheduler/scheduler.go:1486:	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+internal/scheduler/scheduler.go:1498:	if !seen || now.Sub(last) >= failureQuarantineLogInterval {
+internal/scheduler/scheduler.go:1502:			"threshold", failureQuarantineThreshold,
+internal/scheduler/scheduler.go:1503:			"window", failureQuarantineWindow.String(),
+internal/scheduler/scheduler.go:1506:			fmt.Sprintf("bead %s quarantined after %d consecutive failures in %s",
+internal/scheduler/scheduler.go:1507:				beadID, failureQuarantineThreshold, failureQuarantineWindow))
+internal/store/store_test.go:622:func TestHasRecentConsecutiveFailures_IncludesFailureLikeStatuses(t *testing.T) {
+internal/store/store_test.go:643:	got, err := s.HasRecentConsecutiveFailures(beadID, 3, time.Hour)
+internal/store/store_test.go:645:		t.Fatalf("HasRecentConsecutiveFailures returned error: %v", err)
+exec
+/usr/bin/zsh -lc "sed -n '660,740p' internal/store/store.go" in /home/ubuntu/projects/cortex succeeded in 51ms:
+			beadID, cutoff.Format(time.DateTime),
+		).Scan(&count)
+	} else {
+		err = s.db.QueryRow(`
+		SELECT COUNT(*)
+		FROM dispatches
+		WHERE bead_id = ?
+		  AND agent_id = ?
+		  AND dispatched_at > ?
+		  AND status IN ('running', 'completed', 'failed', 'cancelled', 'interrupted', 'pending_retry', 'retried')`,
+			beadID, agentID, cutoff.Format(time.DateTime),
+		).Scan(&count)
+	}
+
+	if err != nil {
+		return false, fmt.Errorf("check recent dispatch: %w", err)
+	}
+
+	return count > 0, nil
+}
+
+thinking
+**Refining churn count logic**
+codex
+I’ve isolated the root cause: churn counting currently includes `completed` dispatches, and recent history for this bead had 3 successful completions plus 3 non-success events, which still tripped the `6/1h` block.  
+
+Plan:
+1. Patch `isChurnBlocked` to count only non-completed churn statuses (`running`, `failed`, `cancelled`, `pending_retry`, `retried`, `interrupted`).
+2. Add/adjust scheduler churn-guard tests to lock this behavior in, including a regression test that many `completed` dispatches alone do not trigger churn block.
+3. Run focused tests, then update/close `cortex-ijz` with evidence from DB query and test results.
+
+thinking
+**Inspecting test file for edits**
+exec
+/usr/bin/zsh -lc "sed -n '1,260p' internal/scheduler/churn_guard_quarantine_test.go" in /home/ubuntu/projects/cortex succeeded in 51ms:
+package scheduler
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/antigravity-dev/cortex/internal/beads"
+	"github.com/antigravity-dev/cortex/internal/store"
+)
+
+func TestIsChurnBlocked_SuppressesEscalationWhenFailureQuarantined(t *testing.T) {
+	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+	installFakeBDForChurnGuardTest(t)
+
+thinking
+**Planning churn status helper**
+codex
+I’m applying a surgical scheduler patch now: churn threshold will stop counting `completed` dispatches, and I’m updating churn-guard tests plus a new regression test to prevent this false-positive pattern from returning.
+file update
+M /home/ubuntu/projects/cortex/internal/scheduler/scheduler.go
+@@ -1414,4 +1414,3 @@
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+@@ -1484,2 +1483,11 @@
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+apply_patch(auto_approved=true) exited 0 in 8ms:
+Success. Updated the following files:
+M /home/ubuntu/projects/cortex/internal/scheduler/scheduler.go
+file update:
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+file update:
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+
+thinking
+**Patching test files**
+file update
+M /home/ubuntu/projects/cortex/internal/scheduler/churn_guard_quarantine_test.go
+@@ -47,3 +47,3 @@
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+@@ -67,2 +67,24 @@
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+@@ -97,3 +119,3 @@
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+apply_patch(auto_approved=true) exited 0 in 9ms:
+Success. Updated the following files:
+M /home/ubuntu/projects/cortex/internal/scheduler/churn_guard_quarantine_test.go
+file update:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06fc53160d9d0ba0162cd21ef63f5c634d2..eefcfc47baf338fecba1217ccbe6c8e77886575c
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 	installFakeBDForChurnGuardTest(t)
+@@ -95,7 +117,7 @@
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	createLog := filepath.Join(t.TempDir(), "create.log")
+ 	recentClosedEscalation := fmt.Sprintf(`[{
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+file update:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06fc53160d9d0ba0162cd21ef63f5c634d2..eefcfc47baf338fecba1217ccbe6c8e77886575c
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 	installFakeBDForChurnGuardTest(t)
+@@ -95,7 +117,7 @@
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	createLog := filepath.Join(t.TempDir(), "create.log")
+ 	recentClosedEscalation := fmt.Sprintf(`[{
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+
+thinking
+**Running targeted Go tests after formatting**
+codex
+The code and regression tests are patched. I’m running targeted scheduler tests now to verify churn behavior changed as intended without broad side effects.
+exec
+/usr/bin/zsh -lc "go test ./internal/scheduler -run 'Churn|churn'" in /home/ubuntu/projects/cortex succeeded in 2.37s:
+ok  	github.com/antigravity-dev/cortex/internal/scheduler	0.128s
+file update:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06fc53160d9d0ba0162cd21ef63f5c634d2..eefcfc47baf338fecba1217ccbe6c8e77886575c
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 	installFakeBDForChurnGuardTest(t)
+@@ -95,7 +117,7 @@
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	createLog := filepath.Join(t.TempDir(), "create.log")
+ 	recentClosedEscalation := fmt.Sprintf(`[{
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+
+thinking
+**Planning targeted test runs**
+exec
+/usr/bin/zsh -lc 'git diff -- internal/scheduler/scheduler.go internal/scheduler/churn_guard_quarantine_test.go' in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'git status --short -- internal/scheduler/scheduler.go internal/scheduler/churn_guard_quarantine_test.go .beads/issues.jsonl' in /home/ubuntu/projects/cortex succeeded in 62ms:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06..eefcfc4 100644
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@ func TestIsChurnBlocked_RecordsEscalationWhenNotQuarantined(t *testing.T) {
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@ func TestIsChurnBlocked_RecordsEscalationWhenNotQuarantined(t *testing.T) {
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
+ succeeded in 56ms:
+ M .beads/issues.jsonl
+ M internal/scheduler/churn_guard_quarantine_test.go
+ M internal/scheduler/scheduler.go
+file update:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06fc53160d9d0ba0162cd21ef63f5c634d2..eefcfc47baf338fecba1217ccbe6c8e77886575c
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 	installFakeBDForChurnGuardTest(t)
+@@ -95,7 +117,7 @@
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	createLog := filepath.Join(t.TempDir(), "create.log")
+ 	recentClosedEscalation := fmt.Sprintf(`[{
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+
+thinking
+**Planning issue status update**
+codex
+I’ve validated the patch via focused tests. Next I’ll update bead status flow (`in_progress` → `closed`) and include concrete evidence (dispatch status mix + test pass) in the close reason for `cortex-ijz`.
+exec
+/usr/bin/zsh -lc 'bd update cortex-ijz --status in_progress && bd show cortex-ijz' in /home/ubuntu/projects/cortex succeeded in 514ms:
+✓ Updated issue: cortex-ijz
+
+◐ cortex-ijz [BUG] · Auto: churn guard blocked bead cortex-xhk.8.1 (6 dispatches/1h0m0s)   [● P1 · IN_PROGRESS]
+Owner: Simon Heikkila · Assignee: Simon Heikkila · Type: bug
+Created: 2026-02-18 · Updated: 2026-02-18
+
+DESCRIPTION
+Bead `cortex-xhk.8.1` in project `cortex` exceeded churn threshold (6 dispatches in 1h0m0s) and was blocked from further overnight dispatch.
+
+Please investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.
+
+Bead title: Add cross-project sprint completion data gathering
+Bead type: task
+
+DISCOVERED FROM
+  ◊ ○ cortex-xhk.8.1: Add cross-project sprint completion data gathering ● P2
+
+file update:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06fc53160d9d0ba0162cd21ef63f5c634d2..eefcfc47baf338fecba1217ccbe6c8e77886575c
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 	installFakeBDForChurnGuardTest(t)
+@@ -95,7 +117,7 @@
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	createLog := filepath.Join(t.TempDir(), "create.log")
+ 	recentClosedEscalation := fmt.Sprintf(`[{
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+
+thinking
+**Planning evidence query before close**
+exec
+/usr/bin/zsh -lc 'sqlite3 $HOME/.local/share/cortex/cortex.db "SELECT id,status,dispatched_at,completed_at,exit_code,COALESCE(NULLIF(failure_category,'"''),'<none>') FROM dispatches WHERE bead_id='cortex-xhk.8.1' AND dispatched_at BETWEEN datetime('2026-02-17 22:55:43') AND datetime('2026-02-17 23:55:43') ORDER BY id;\"" in /home/ubuntu/projects/cortexexec
+/usr/bin/zsh -lc 'sqlite3 $HOME/.local/share/cortex/cortex.db "SELECT status, COUNT(*) FROM dispatches WHERE bead_id='"'cortex-xhk.8.1' AND dispatched_at BETWEEN datetime('2026-02-17 22:55:43') AND datetime('2026-02-17 23:55:43') GROUP BY status ORDER BY status;\"" in /home/ubuntu/projects/cortex succeeded in 59ms:
+1311|completed|2026-02-17 23:07:43|2026-02-17 23:11:38|0|<none>
+1319|failed|2026-02-17 23:16:43|2026-02-17 23:17:38|1|<none>
+1327|completed|2026-02-17 23:21:44|2026-02-17 23:24:38|0|<none>
+1335|cancelled|2026-02-17 23:36:42|2026-02-17 23:48:07|0|<none>
+1336|failed|2026-02-17 23:48:43|2026-02-17 23:51:38|137|unknown
+1342|completed|2026-02-17 23:53:43|2026-02-17 23:55:38|0|<none>
+ succeeded in 57ms:
+cancelled|1
+completed|3
+failed|2
+file update:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06fc53160d9d0ba0162cd21ef63f5c634d2..eefcfc47baf338fecba1217ccbe6c8e77886575c
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 	installFakeBDForChurnGuardTest(t)
+@@ -95,7 +117,7 @@
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	createLog := filepath.Join(t.TempDir(), "create.log")
+ 	recentClosedEscalation := fmt.Sprintf(`[{
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+
+thinking
+**Closing issue with test evidence**
+exec
+/usr/bin/zsh -lc "bd close cortex-ijz --reason \"Fixed churn false positive: scheduler churn guard no longer counts 'completed' dispatches toward the 6/1h threshold (internal/scheduler/scheduler.go). Evidence: for cortex-xhk.8.1 in the block window ending 2026-02-17 23:55:43 UTC, dispatch mix was completed=3, failed=2, cancelled=1 (6 total), so successful runs were incorrectly triggering block. Added regression hardening in internal/scheduler/churn_guard_quarantine_test.go (completed-only history does not block; non-completion churn still blocks). Verified with: go test ./internal/scheduler -run 'Churn|churn' (pass).\" && bd show cortex-ijz" in /home/ubuntu/projects/cortex succeeded in 778ms:
+✓ Closed cortex-ijz: Fixed churn false positive: scheduler churn guard no longer counts 'completed' dispatches toward the 6/1h threshold (internal/scheduler/scheduler.go). Evidence: for cortex-xhk.8.1 in the block window ending 2026-02-17 23:55:43 UTC, dispatch mix was completed=3, failed=2, cancelled=1 (6 total), so successful runs were incorrectly triggering block. Added regression hardening in internal/scheduler/churn_guard_quarantine_test.go (completed-only history does not block; non-completion churn still blocks). Verified with: go test ./internal/scheduler -run 'Churn|churn' (pass).
+
+✓ cortex-ijz [BUG] · Auto: churn guard blocked bead cortex-xhk.8.1 (6 dispatches/1h0m0s)   [● P1 · CLOSED]
+Owner: Simon Heikkila · Assignee: Simon Heikkila · Type: bug
+Created: 2026-02-18 · Updated: 2026-02-18
+Close reason: Fixed churn false positive: scheduler churn guard no longer counts 'completed' dispatches toward the 6/1h threshold (internal/scheduler/scheduler.go). Evidence: for cortex-xhk.8.1 in the block window ending 2026-02-17 23:55:43 UTC, dispatch mix was completed=3, failed=2, cancelled=1 (6 total), so successful runs were incorrectly triggering block. Added regression hardening in internal/scheduler/churn_guard_quarantine_test.go (completed-only history does not block; non-completion churn still blocks). Verified with: go test ./internal/scheduler -run 'Churn|churn' (pass).
+
+DESCRIPTION
+Bead `cortex-xhk.8.1` in project `cortex` exceeded churn threshold (6 dispatches in 1h0m0s) and was blocked from further overnight dispatch.
+
+Please investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.
+
+Bead title: Add cross-project sprint completion data gathering
+Bead type: task
+
+DISCOVERED FROM
+  ◊ ○ cortex-xhk.8.1: Add cross-project sprint completion data gathering ● P2
+
+file update:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06fc53160d9d0ba0162cd21ef63f5c634d2..eefcfc47baf338fecba1217ccbe6c8e77886575c
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 	installFakeBDForChurnGuardTest(t)
+@@ -95,7 +117,7 @@
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	createLog := filepath.Join(t.TempDir(), "create.log")
+ 	recentClosedEscalation := fmt.Sprintf(`[{
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+
+thinking
+**Evaluating follow-up tasks**
+exec
+/usr/bin/zsh -lc 'go test ./internal/scheduler' in /home/ubuntu/projects/cortexfile update:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06fc53160d9d0ba0162cd21ef63f5c634d2..eefcfc47baf338fecba1217ccbe6c8e77886575c
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 	installFakeBDForChurnGuardTest(t)
+@@ -95,7 +117,7 @@
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	createLog := filepath.Join(t.TempDir(), "create.log")
+ 	recentClosedEscalation := fmt.Sprintf(`[{
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+
+thinking
+**Planning session polling**
+file update:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06fc53160d9d0ba0162cd21ef63f5c634d2..eefcfc47baf338fecba1217ccbe6c8e77886575c
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 	installFakeBDForChurnGuardTest(t)
+@@ -95,7 +117,7 @@
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	createLog := filepath.Join(t.TempDir(), "create.log")
+ 	recentClosedEscalation := fmt.Sprintf(`[{
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+ succeeded in 20.63s:
+ok  	github.com/antigravity-dev/cortex/internal/scheduler	19.406s
+
+thinking
+**Planning selective commit strategy**
+codex
+Code tests passed for the full scheduler package. I’m now preparing a minimal commit/push sequence that includes only this fix plus the bead state transition, while leaving unrelated dirty worktree changes untouched.
+exec
+/usr/bin/zsh -lc "git diff -- .beads/issues.jsonl | sed -n '1,220p'" in /home/ubuntu/projects/cortex succeeded in 51ms:
+Total output lines: 45
+
+diff --git a/.beads/issues.jsonl b/.beads/issues.jsonl
+index 520714c..3c4087d 100644
+--- a/.beads/issues.jsonl
++++ b/.beads/issues.jsonl
+@@ -32,7 +32,7 @@
+ {"id":"cortex-255.4","title":"Add SIGUSR1 state dump","description":"On SIGUSR1 signal, dump current state to log for debugging.\n\nChanges to cmd/cortex/main.go:\n- Add SIGUSR1 handler\n\nState dump includes:\n- Current time, uptime\n- Scheduler: paused?, last tick time, next tick time\n- Running dispatches: count, list of (bead, agent, duration, PID/session)\n- Rate limiter: 5h usage/cap, weekly usage/cap, headroom status\n- Per-project: open beads, ready beads, in-progress, blocked\n- Health: gateway status, restarts in last hour\n- Memory: goroutine count, heap alloc (runtime.MemStats)\n\nOutput: structured JSON to log (slog.Info with all fields).\nAlso write to /tmp/cortex-state-dump.json for easy access.\n\nAcceptance: SIGUSR1 produces comprehensive state dump, readable in logs and file","status":"open","priority":3,"issue_type":"task","owner":"simon.heikkila@gmail.com","created_at":"2026-02-17T18:00:45.829668458+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-17T18:00:45.829668458+10:00","labels":["code"],"dependencies":[{"issue_id":"cortex-255.4","depends_on_id":"cortex-255","type":"parent-child","created_at":"2026-02-17T18:00:45.833747932+10:00","created_by":"Simon Heikkila"}]}
+ {"id":"cortex-255.5","title":"Harden single-leader lock to prevent split-brain schedulers","description":"## Summary\nSingle-instance protection is currently brittle: lock file removal and process races can allow multiple schedulers to run concurrently. This creates split-brain dispatch and duplicate work.\n\n## Scope\n- Harden `AcquireFlock`/`ReleaseFlock` semantics to preserve kernel lock ownership correctly across crashes/restarts.\n- Remove lock-file deletion behavior that can invalidate active lock state.\n- Ensure stale file presence alone never blocks startup if lock is not held.\n- Update docs for safe recovery (no manual `rm /tmp/cortex.lock` requirement).\n\n## Hardening\n- Keep PID write as observability only, not a source of truth.\n- Verify behavior when lock file already exists from prior process.\n- Ensure second process fails while first holds lock.\n\n## Tests\n- Add/extend flock tests to cover:\n  - lock acquisition with pre-existing file\n  - exclusivity across two open file handles\n  - release behavior without file deletion side effects\n\n## Acceptance Criteria\n- Two simultaneous Cortex processes cannot both acquire leadership lock.\n- Restart after crash with stale lock file succeeds without manual cleanup.\n- Test coverage added for lock lifecycle and exclusivity.\n","status":"closed","priority":0,"issue_type":"bug","owner":"simon.heikkila@gmail.com","created_at":"2026-02-17T21:25:59.020559379+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-17T21:57:31.065095033+10:00","closed_at":"2026-02-17T21:57:31.065095033+10:00","close_reason":"Implemented with hardening changes and automated tests","labels":["code","hardening","test"],"dependencies":[{"issue_id":"cortex-255.5","depends_on_id":"cortex-255","type":"parent-child","created_at":"2026-02-17T21:25:59.023604546+10:00","created_by":"Simon Heikkila"}]}
+ {"id":"cortex-255.6","title":"Persist stuck-dispatch retries into pending_retry control path","description":"## Summary\nStuck dispatch handling records retry intent in memory/logs but does not requeue work in persistent state. Result: stuck runs fail permanently instead of entering controlled retry flow.\n\n## Scope\n- Make stuck-handler transitions explicit in DB:\n  - `failed` + `pending_retry` when retry budget remains\n  - permanent `failed` when retry budget exceeded\n- Increment retries consistently for requeued attempts.\n- Keep tier escalation data visible for scheduler retry path.\n\n## Hardening\n- Ensure idempotent transition logic per dispatch ID.\n- Keep stage/status aligned for observability (`failed`, `pending_retry`, terminal states).\n\n## Tests\n- Add health/scheduler tests proving stuck dispatch enters `pending_retry` when allowed.\n- Add test for max-retries terminal behavior.\n\n## Acceptance Criteria\n- Stuck dispatches with retry budget are automatically requeued.\n- Max-retry dispatches stop retrying and remain terminal.\n- Retry path is DB-driven and survives process restarts.\n","status":"closed","priority":1,"issue_type":"bug","owner":"simon.heikkila@gmail.com","created_at":"2026-02-17T21:25:59.146607409+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-17T21:57:31.109885418+10:00","closed_at":"2026-02-17T21:57:31.109885418+10:00","close_reason":"Implemented with hardening changes and automated tests","labels":["code","hardening","health","scheduler","test"],"dependencies":[{"issue_id":"cortex-255.6","depends_on_id":"cortex-255","type":"parent-child","created_at":"2026-02-17T21:25:59.14963895+10:00","created_by":"Simon Heikkila"}]}
+-{"id":"cortex-26q","title":"Build burn-in metrics collector","description":"Create a collector that extracts raw metrics data from the store database for burn-in SLO evaluation.\n\n## Goal\nBuild a command-line tool that queries the store database and outputs raw metrics data in JSON format.\n\n## Scope\n- Query dispatches table for failure analysis\n- Query health_events table for critical events\n- Extract intervention data (cancellations, retries)\n- Calculate time-based metrics (uptime, availability)\n- Output structured JSON for downstream processing\n\n## Implementation\nCreate :\n- Accept date range parameters (--start-date, --end-date)  \n- Connect to store database (same connection as main cortex)\n- Execute defined SQL queries from metrics schema\n- Output JSON with raw counts and percentages\n\n## Data to Collect\n```json\n{\n  \"period\": {\n    \"start\": \"2026-02-11T00:00:00Z\",\n    \"end\": \"2026-02-18T00:00:00Z\"\n  },\n  \"dispatches\": {\n    \"total\": 150,\n    \"failed\": 12,\n    \"unknown_exit\": 3,\n    \"session_disappeared\": 2,\n    \"cancelled_manual\": 4,\n    \"retried_manual\": 6\n  },\n  \"health_events\": {\n    \"gateway_critical\": 1,\n    \"dispatch_session_gone\": 2,\n    \"bead_churn_blocked\": 3\n  },\n  \"system\": {\n    \"uptime_seconds\": 604800,\n    \"total_seconds\": 604800\n  }\n}\n```\n\n## Acceptance Criteria\n1) Collector connects to store database using cortex config  \n2) Extracts all data needed for burn-in SLO calculations\n3) Supports date range filtering for flexible reporting\n4) Outputs structured JSON format\n5) Handles missing data gracefully (empty results)\n6) Includes data validation and error handling","status":"in_progress","priority":1,"issue_type":"task","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T02:33:32.994133398+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T09:51:25.124657523+10:00","labels":["collector","data","json","launch"],"dependencies":[{"issue_id":"cortex-26q","depends_on_id":"cortex-zly","type":"blocks","created_at":"2026-02-18T02:34:25.174417063+10:00","created_by":"Simon Heikkila"}]}
++{"id":"cortex-26q","title":"Build burn-in metrics collector","description":"Create a collector that extracts raw metrics data from the store database for burn-in SLO evaluation.\n\n## Goal\nBuild a command-line tool that queries the store database and outputs raw metrics data in JSON format.\n\n## Scope\n- Query dispatches table for failure analysis\n- Query health_events table for critical events\n- Extract intervention data (cancellations, retries)\n- Calculate time-based metrics (uptime, availability)\n- Output structured JSON for downstream processing\n\n## Implementation\nCreate :\n- Accept date range parameters (--start-date, --end-date)  \n- Connect to store database (same connection as main cortex)\n- Execute defined SQL queries from metrics schema\n- Output JSON with raw counts and percentages\n\n## Data to Collect\n```json\n{\n  \"period\": {\n    \"start\": \"2026-02-11T00:00:00Z\",\n    \"end\": \"2026-02-18T00:00:00Z\"\n  },\n  \"dispatches\": {\n    \"total\": 150,\n    \"failed\": 12,\n    \"unknown_exit\": 3,\n    \"session_disappeared\": 2,\n    \"cancelled_manual\": 4,\n    \"retried_manual\": 6\n  },\n  \"health_events\": {\n    \"gateway_critical\": 1,\n    \"dispatch_session_gone\": 2,\n    \"bead_churn_blocked\": 3\n  },\n  \"system\": {\n    \"uptime_seconds\": 604800,\n    \"total_seconds\": 604800\n  }\n}\n```\n\n## Acceptance Criteria\n1) Collector connects to store database using cortex config  \n2) Extracts all data needed for burn-in SLO calculations\n3) Supports date range filtering for flexible reporting\n4) Outputs structured JSON format\n5) Handles missing data gracefully (empty results)\n6) Includes data validation and error handling","status":"closed","priority":1,"issue_type":"task","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T02:33:32.994133398+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T09:59:08.653752798+10:00","closed_at":"2026-02-18T09:59:08.653752798+10:00","close_reason":"Completed: raw burn-in collector implemented with date-range flags, config-based DB resolution, JSON output, and tests","labels":["collector","data","json","launch"],"dependencies":[{"issue_id":"cortex-26q","depends_on_id":"cortex-zly","type":"blocks","created_at":"2026-02-18T02:34:25.174417063+10:00","created_by":"Simon Heikkila"}]}
+ {"id":"cortex-27c","title":"Stale openclaw session locks block all dispatches to agent","description":"When an openclaw agent process crashes or is killed, it leaves a .lock file in ~/.openclaw/agents/{name}/sessions/. All subsequent dispatches to that agent fail with 'session file locked'. Partial fix in place (clearStaleLocks in tmux.go) but needs hardening: lock files from LIVE sessions of a different dispatch also block. Need to either use per-dispatch session IDs or clear+recreate sessions.","notes":"**Review Result: Changes Needed**\n\n**Critical Issue - Session Name Collision Detected**\n\n## Test Failure\nTestSessionName_Uniqueness FAILED: same session name generated twice\nThis defeats the primary purpose of preventing session conflicts.\n\n## Architecture Assessment - Generally Good\n\n**Excellent Design Improvements:**\n- Per-session directories for resource isolation\n- Conservative stale lock cleanup (only clears dead PIDs)\n- Retry logic with fallback cleanup\n- Proper resource lifecycle management\n- Session isolation testing passes\n\n## Critical Flaw - Insufficient Uniqueness\n\n**SessionName Generation Issues:**\n- Uses millisecond timestamp (reduced precision)\n- Only 2-byte random component (65k possibilities)\n- Same PID for all rapid dispatches in single process\n- Result: High collision probability under load\n\n## Required Fixes\n\n**1. Stronger Uniqueness:**\n- Use full nanosecond precision timestamps\n- Increase random bytes to 4+ bytes\n- Consider atomic sequence counter per process\n\n**2. Collision Detection:**\n- Check if session name exists before use\n- Regenerate with new random component on collision\n\n**3. Test Reliability:**\n- TestSessionName_Uniqueness must pass 100% reliably\n- Consider concurrent load testing\n\n## Acceptance Criteria Status\n- Per-session resource isolation: IMPLEMENTED\n- Conservative lock cleanup: IMPLEMENTED  \n- Collision prevention: FAILS - critical issue\n- Resource lifecycle: IMPLEMENTED\n- Retry mechanism: IMPLEMENTED\n\n## Action Required\nFix session name uniqueness to ensure zero collisions. Core architecture is sound but uniqueness is critical for P0 reliability.\n\nTransitioned back to stage:coding for uniqueness fixes.","status":"closed","priority":0,"issue_type":"bug","owner":"simon.heikkila@gmail.com","created_at":"2026-02-17T21:09:32.669283096+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-17T21:25:44.43159755+10:00","closed_at":"2026-02-17T21:25:44.43159755+10:00","close_reason":"Closed","labels":["stage:coding"]}
+ {"id":"cortex-298","title":"Auto: churn guard blocked bead cortex-evu.2 (6 dispatches/1h0m0s)","description":"Bead `cortex-evu.2` in project `cortex` exceeded churn threshold (6 dispatches in 1h0m0s) and was blocked from further overnight dispatch.\n\nPlease investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.\n\nBead title: Add scheduler RunTick end-to-end test\nBead type: task","status":"in_progress","priority":1,"issue_type":"bug","assignee":"Simon Heikkila","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T02:00:14.78036953+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T05:55:59.332540644+10:00","dependencies":[{"issue_id":"cortex-298","depends_on_id":"cortex-evu.2","type":"discovered-from","created_at":"2026-02-18T02:00:14.783175723+10:00","created_by":"Simon Heikkila"}]}
+ {"id":"cortex-2cv","title":"Auto: churn guard blocked bead cortex-c4j.3 (6 dispatches/1h0m0s)","description":"Bead `cortex-c4j.3` in project `cortex` exceeded churn threshold (6 dispatches in 1h0m0s) and was blocked from further overnight dispatch.\n\nPlease investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.\n\nBead title: Publish operational runbook set for launch operations\nBead type: task","status":"closed","priority":1,"issue_type":"bug","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T02:28:08.822157751+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T02:43:25.968016555+10:00","closed_at":"2026-02-18T02:43:25.968016555+10:00","close_reason":"Duplicate churn-guard incident for cortex-c4j.3; superseded by cortex-ztu resolution (scheduler dedupe hardening + runbook task decomposition).","dependencies":[{"issue_id":"cortex-2cv","depends_on_id":"cortex-c4j.3","type":"discovered-from","created_at":"2026-02-18T02:28:08.942974222+10:00","created_by":"Simon Heikkila"}]}
+@@ -212,6 +212,7 @@
+ {"id":"cortex-hrz.3.2","title":"Implement config validation and reload logic","description":"Create config reloading logic with validation and error handling.\n\nFiles to create/modify:\n- internal/config/config.go (extend with Reload function)\n- internal/config/validation.go (new - validation logic)\n- internal/config/reload_test.go (new - test reload scenarios)\n\nAcceptance criteria:\n- Reload(path string) function re-reads and validates config file\n- Invalid config files are rejected with descriptive errors\n- Old config preserved when reload fails\n- Validation covers all config sections (providers, projects, dispatch, etc.)\n- Unit tests cover valid reload, invalid config rejection, file read errors\n- Structured logging for reload success/failure with details\n\nReload behavior:\n- Parse new config from file path\n- Run full validation on new config (same as startup validation)\n- If valid: return new config for atomic swap\n- If invalid: return error, log validation failure details\n- Handle file read errors gracefully (permissions, missing file, etc.)\n\nValidation requirements:\n- All provider configurations are valid\n- Project settings are correct\n- Dispatch routing is valid\n- No circular dependencies or invalid references\n- Required fields are present with valid values","status":"open","priority":2,"issue_type":"task","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T04:15:32.282126893+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T04:15:32.282126893+10:00","dependencies":[{"issue_id":"cortex-hrz.3.2","depends_on_id":"cortex-hrz.3","type":"parent-child","created_at":"2026-02-18T04:15:32.286045774+10:00","created_by":"Simon Heikkila"},{"issue_id":"cortex-hrz.3.2","depends_on_id":"cortex-hrz.3.1","type":"blocks","created_at":"2026-02-18T04:15:32.298052326+10:00","created_by":"Simon Heikkila"}]}
+ {"id":"cortex-hrz.3.3","title":"Add SIGHUP signal handler for config reload","description":"Implement SIGHUP signal handler in main.go to trigger config reload.\n\nFiles to create/modify:\n- cmd/cortex/main.go (add signal handling)\n- internal/config/signals.go (new - signal handling helpers)\n- Signal handling integration tests\n\nAcceptance criteria:\n- SIGHUP signal triggers config reload process\n- Signal handler integrates with ConfigManager for thread-safe reload\n- Successful reload logs 'config reloaded' with timestamp and changes summary\n- Failed reload logs 'config reload failed: {reason}' and preserves old config\n- Signal handler doesn't interfere with other signals (SIGTERM, SIGINT)\n- Integration test sends SIGHUP and verifies config reload behavior\n\nSignal handling requirements:\n- Use os/signal package to catch SIGHUP\n- Run signal handler in separate goroutine\n- Coordinate with main application lifecycle (don't reload during shutdown)\n- Graceful error handling - failed reloads don't crash the application\n- Log reload attempts and outcomes with appropriate log levels\n\nImplementation details:\n- Set up signal channel with signal.Notify(c, syscall.SIGHUP)\n- In signal handler goroutine: receive signal → trigger ConfigManager.Reload()\n- Pass config file path from command line args to reload logic\n- Handle case where config file path changes (use original path from startup)","status":"open","priority":2,"issue_type":"task","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T04:15:42.688652255+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T04:15:42.688652255+10:00","dependencies":[{"issue_id":"cortex-hrz.3.3","depends_on_id":"cortex-hrz.3","type":"parent-child","created_at":"2026-02-18T04:15:42.692443551+10:00","created_by":"Simon Heikkila"},{"issue_id":"cortex-hrz.3.3","depends_on_id":"cortex-hrz.3.1","type":"blocks","created_at":"2026-02-18T04:15:42.708013754+10:00","created_by":"Simon Heikkila"},{"issue_id":"cortex-hrz.3.3","depends_on_id":"cortex-hrz.3.2","type":"blocks","created_at":"2026-02-18T04:15:42.722385277+10:00","created_by":"Simon Heikkila"}]}
+ {"id":"cortex-hrz.4","title":"Add per-bead status API endpoint","description":"API endpoint to check the dispatch status of a specific bead.\n\nNew endpoint:\nGET /beads/{id}\n- Returns: bead ID, project, current dispatch status (running/completed/failed/not_dispatched)\n- If dispatched: agent, provider, tier, duration, started_at\n- If completed: duration, quality score (if available), cost (if tracked)\n- If failed: failure diagnosis, retry count\n- Dispatch history: all dispatches for this bead (may have been retried)\n\nImplementation:\n- Query dispatches table by bead_id\n- Join with dispatch_output for tail (if available)\n- Join with quality scores (if available)\n\nGET /beads/{id}/output\n- Returns: full captured output for the most recent dispatch of this bead\n- 404 if no output captured\n\nAcceptance: Bead status queryable, includes full dispatch history, output accessible","status":"open","priority":2,"issue_type":"task","owner":"simon.heikkila@gmail.com","created_at":"2026-02-17T18:00:17.923927769+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-17T18:00:17.923927769+10:00","labels":["code"],"dependencies":[{"issue_id":"cortex-hrz.4","depends_on_id":"cortex-hrz","type":"parent-child","created_at":"2026-02-17T18:00:17.927023179+10:00","created_by":"Simon Heikkila"}]}
++{"id":"cortex-ijz","title":"Auto: churn guard blocked bead cortex-xhk.8.1 (6 dispatches/1h0m0s)","description":"Bead `cortex-xhk.8.1` in project `cortex` exceeded churn threshold (6 dispatches in 1h0m0s) and was blocked from further overnight dispatch.\n\nPlease investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.\n\nBead title: Add cross-project sprint completion data gathering\nBead type: task","status":"in_progress","priority":1,"issue_type":"bug","assignee":"Simon Heikkila","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T09:55:43.900882101+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T10:01:58.636558779+10:00","dependencies":[{"issue_id":"cortex-ijz","depends_on_id":"cortex-xhk.8.1","type":"discovered-from","created_at":"2026-02-18T09:55:43.904744881+10:00","created_by":"Simon Heikkila"}]}
+file update:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06fc53160d9d0ba0162cd21ef63f5c634d2..eefcfc47baf338fecba1217ccbe6c8e77886575c
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 	installFakeBDForChurnGuardTest(t)
+@@ -95,7 +117,7 @@
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	createLog := filepath.Join(t.TempDir(), "create.log")
+ 	recentClosedEscalation := fmt.Sprintf(`[{
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+
+thinking
+**Assessing commit risks with shared issue data**
+exec
+/usr/bin/zsh -lc 'git status --short -- internal/scheduler/scheduler.go internal/scheduler/churn_guard_quarantine_test.go' in /home/ubuntu/projects/cortex succeeded in 51ms:
+ M internal/scheduler/churn_guard_quarantine_test.go
+ M internal/scheduler/scheduler.go
+file update:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06fc53160d9d0ba0162cd21ef63f5c634d2..eefcfc47baf338fecba1217ccbe6c8e77886575c
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 	installFakeBDForChurnGuardTest(t)
+@@ -95,7 +117,7 @@
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	createLog := filepath.Join(t.TempDir(), "create.log")
+ 	recentClosedEscalation := fmt.Sprintf(`[{
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+
+thinking
+**Inspecting progress state in .beads file**
+exec
+/usr/bin/zsh -lc "rg -n \"\\\"id\\\":\\\"cortex-ijz\\\"|cortex-ijz\" .beads/issues.jsonl" in /home/ubuntu/projects/cortex succeeded in 51ms:
+215:{"id":"cortex-ijz","title":"Auto: churn guard blocked bead cortex-xhk.8.1 (6 dispatches/1h0m0s)","description":"Bead `cortex-xhk.8.1` in project `cortex` exceeded churn threshold (6 dispatches in 1h0m0s) and was blocked from further overnight dispatch.\n\nPlease investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.\n\nBead title: Add cross-project sprint completion data gathering\nBead type: task","status":"in_progress","priority":1,"issue_type":"bug","assignee":"Simon Heikkila","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T09:55:43.900882101+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T10:01:58.636558779+10:00","dependencies":[{"issue_id":"cortex-ijz","depends_on_id":"cortex-xhk.8.1","type":"discovered-from","created_at":"2026-02-18T09:55:43.904744881+10:00","created_by":"Simon Heikkila"}]}
+file update:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06fc53160d9d0ba0162cd21ef63f5c634d2..eefcfc47baf338fecba1217ccbe6c8e77886575c
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 	installFakeBDForChurnGuardTest(t)
+@@ -95,7 +117,7 @@
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	createLog := filepath.Join(t.TempDir(), "create.log")
+ 	recentClosedEscalation := fmt.Sprintf(`[{
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+
+thinking
+**Analyzing issue state syncing process**
+exec
+/usr/bin/zsh -lc 'bd sync --help' in /home/ubuntu/projects/cortex succeeded in 54ms:
+Export database to JSONL for git synchronization.
+
+By default, exports the current database state to JSONL.
+Does NOT stage or commit - that's the user's job.
+
+Commands:
+  bd sync              Export to JSONL (prep for push)
+  bd sync --import     Import from JSONL (after pull)
+  bd sync --status     Show sync state
+  bd sync --resolve    Resolve conflicts (uses configured strategy)
+  bd sync --force      Force full export/import (skip incremental)
+  bd sync --full       Full sync: pull → merge → export → commit → push (legacy)
+
+Conflict Resolution:
+  bd sync --resolve              Use configured conflict.strategy
+  bd sync --resolve --ours       Keep local versions
+  bd sync --resolve --theirs     Keep remote versions
+  bd sync --resolve --manual     Interactive resolution with prompts
+
+The --manual flag shows a diff for each conflict and prompts you to choose:
+file update:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06fc53160d9d0ba0162cd21ef63f5c634d2..eefcfc47baf338fecba1217ccbe6c8e77886575c
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 	installFakeBDForChurnGuardTest(t)
+@@ -95,7 +117,7 @@
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	createLog := filepath.Join(t.TempDir(), "create.log")
+ 	recentClosedEscalation := fmt.Sprintf(`[{
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+
+thinking
+**Analyzing sync and commit strategy**
+codex
+I’m committing only the surgical scheduler fix and its tests so we don’t touch unrelated in-progress files. After that I’ll sync/push the branch and confirm remote is up to date.
+exec
+/usr/bin/zsh -lc 'git add internal/scheduler/scheduler.go internal/scheduler/churn_guard_quarantine_test.go && git commit -m "scheduler: ignore completed dispatches in churn guard"' in /home/ubuntu/projects/cortex succeeded in 549ms:
+[master 82e29b0] scheduler: ignore completed dispatches in churn guard
+ 3 files changed, 40 insertions(+), 9 deletions(-)
+file update:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06fc53160d9d0ba0162cd21ef63f5c634d2..eefcfc47baf338fecba1217ccbe6c8e77886575c
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 	installFakeBDForChurnGuardTest(t)
+@@ -95,7 +117,7 @@
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	createLog := filepath.Join(t.TempDir(), "create.log")
+ 	recentClosedEscalation := fmt.Sprintf(`[{
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+
+thinking
+**Checking unexpected commit file**
+exec
+/usr/bin/zsh -lc 'git show --name-only --oneline --stat --format=medium -n 1 82e29b0' in /home/ubuntu/projects/cortex succeeded in 51ms:
+commit 82e29b0
+Author: Simon Heikkila <simon.heikkila@gmail.com>
+Date:   Wed Feb 18 10:03:58 2026 +1000
+
+    scheduler: ignore completed dispatches in churn guard
+
+.beads/issues.jsonl
+internal/scheduler/churn_guard_quarantine_test.go
+internal/scheduler/scheduler.go
+file update:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06fc53160d9d0ba0162cd21ef63f5c634d2..eefcfc47baf338fecba1217ccbe6c8e77886575c
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 	installFakeBDForChurnGuardTest(t)
+@@ -95,7 +117,7 @@
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	createLog := filepath.Join(t.TempDir(), "create.log")
+ 	recentClosedEscalation := fmt.Sprintf(`[{
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+
+thinking
+**Assessing unintended commit impact**
+exec
+/usr/bin/zsh -lc 'git show --stat --oneline -n 1 82e29b0' in /home/ubuntu/projects/cortex succeeded in 51ms:
+82e29b0 scheduler: ignore completed dispatches in churn guard
+ .beads/issues.jsonl                               | 11 +++++-----
+ internal/scheduler/churn_guard_quarantine_test.go | 26 +++++++++++++++++++++--
+ internal/scheduler/scheduler.go                   | 12 +++++++++--
+ 3 files changed, 40 insertions(+), 9 deletions(-)
+file update:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06fc53160d9d0ba0162cd21ef63f5c634d2..eefcfc47baf338fecba1217ccbe6c8e77886575c
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 	installFakeBDForChurnGuardTest(t)
+@@ -95,7 +117,7 @@
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	createLog := filepath.Join(t.TempDir(), "create.log")
+ 	recentClosedEscalation := fmt.Sprintf(`[{
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+
+thinking
+**Assessing small issue file changes**
+exec
+/usr/bin/zsh -lc 'git show -n 1 -- .beads/issues.jsonl' in /home/ubuntu/projects/cortex succeeded in 53ms:
+Total output lines: 51
+
+commit 82e29b08171743c7b469ff45e79d8948040fdb76
+Author: Simon Heikkila <simon.heikkila@gmail.com>
+Date:   Wed Feb 18 10:03:58 2026 +1000
+
+    scheduler: ignore completed dispatches in churn guard
+
+diff --git a/.beads/issues.jsonl b/.beads/issues.jsonl
+index 520714c..86fea15 100644
+--- a/.beads/issues.jsonl
++++ b/.beads/issues.jsonl
+@@ -32,7 +32,7 @@
+ {"id":"cortex-255.4","title":"Add SIGUSR1 state dump","description":"On SIGUSR1 signal, dump current state to log for debugging.\n\nChanges to cmd/cortex/main.go:\n- Add SIGUSR1 handler\n\nState dump includes:\n- Current time, uptime\n- Scheduler: paused?, last tick time, next tick time\n- Running dispatches: count, list of (bead, agent, duration, PID/session)\n- Rate limiter: 5h usage/cap, weekly usage/cap, headroom status\n- Per-project: open beads, ready beads, in-progress, blocked\n- Health: gateway status, restarts in last hour\n- Memory: goroutine count, heap alloc (runtime.MemStats)\n\nOutput: structured JSON to log (slog.Info with all fields).\nAlso write to /tmp/cortex-state-dump.json for easy access.\n\nAcceptance: SIGUSR1 produces comprehensive state dump, readable in logs and file","status":"open","priority":3,"issue_type":"task","owner":"simon.heikkila@gmail.com","created_at":"2026-02-17T18:00:45.829668458+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-17T18:00:45.829668458+10:00","labels":["code"],"dependencies":[{"issue_id":"cortex-255.4","depends_on_id":"cortex-255","type":"parent-child","created_at":"2026-02-17T18:00:45.833747932+10:00","created_by":"Simon Heikkila"}]}
+ {"id":"cortex-255.5","title":"Harden single-leader lock to prevent split-brain schedulers","description":"## Summary\nSingle-instance protection is currently brittle: lock file removal and process races can allow multiple schedulers to run concurrently. This creates split-brain dispatch and duplicate work.\n\n## Scope\n- Harden `AcquireFlock`/`ReleaseFlock` semantics to preserve kernel lock ownership correctly across crashes/restarts.\n- Remove lock-file deletion behavior that can invalidate active lock state.\n- Ensure stale file presence alone never blocks startup if lock is not held.\n- Update docs for safe recovery (no manual `rm /tmp/cortex.lock` requirement).\n\n## Hardening\n- Keep PID write as observability only, not a source of truth.\n- Verify behavior when lock file already exists from prior process.\n- Ensure second process fails while first holds lock.\n\n## Tests\n- Add/extend flock tests to cover:\n  - lock acquisition with pre-existing file\n  - exclusivity across two open file handles\n  - release behavior without file deletion side effects\n\n## Acceptance Criteria\n- Two simultaneous Cortex processes cannot both acquire leadership lock.\n- Restart after crash with stale lock file succeeds without manual cleanup.\n- Test coverage added for lock lifecycle and exclusivity.\n","status":"closed","priority":0,"issue_type":"bug","owner":"simon.heikkila@gmail.com","created_at":"2026-02-17T21:25:59.020559379+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-17T21:57:31.065095033+10:00","closed_at":"2026-02-17T21:57:31.065095033+10:00","close_reason":"Implemented with hardening changes and automated tests","labels":["code","hardening","test"],"dependencies":[{"issue_id":"cortex-255.5","depends_on_id":"cortex-255","type":"parent-child","created_at":"2026-02-17T21:25:59.023604546+10:00","created_by":"Simon Heikkila"}]}
+ {"id":"cortex-255.6","title":"Persist stuck-dispatch retries into pending_retry control path","description":"## Summary\nStuck dispatch handling records retry intent in memory/logs but does not requeue work in persistent state. Result: stuck runs fail permanently instead of entering controlled retry flow.\n\n## Scope\n- Make stuck-handler transitions explicit in DB:\n  - `failed` + `pending_retry` when retry budget remains\n  - permanent `failed` when retry budget exceeded\n- Increment retries consistently for requeued attempts.\n- Keep tier escalation data visible for scheduler retry path.\n\n## Hardening\n- Ensure idempotent transition logic per dispatch ID.\n- Keep stage/status aligned for observability (`failed`, `pending_retry`, terminal states).\n\n## Tests\n- Add health/scheduler tests proving stuck dispatch enters `pending_retry` when allowed.\n- Add test for max-retries terminal behavior.\n\n## Acceptance Criteria\n- Stuck dispatches with retry budget are automatically requeued.\n- Max-retry dispatches stop retrying and remain terminal.\n- Retry path is DB-driven and survives process restarts.\n","status":"closed","priority":1,"issue_type":"bug","owner":"simon.heikkila@gmail.com","created_at":"2026-02-17T21:25:59.146607409+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-17T21:57:31.109885418+10:00","closed_at":"2026-02-17T21:57:31.109885418+10:00","close_reason":"Implemented with hardening changes and automated tests","labels":["code","hardening","health","scheduler","test"],"dependencies":[{"issue_id":"cortex-255.6","depends_on_id":"cortex-255","type":"parent-child","created_at":"2026-02-17T21:25:59.14963895+10:00","created_by":"Simon Heikkila"}]}
+-{"id":"cortex-26q","title":"Build burn-in metrics collector","description":"Create a collector that extracts raw metrics data from the store database for burn-in SLO evaluation.\n\n## Goal\nBuild a command-line tool that queries the store database and outputs raw metrics data in JSON format.\n\n## Scope\n- Query dispatches table for failure analysis\n- Query health_events table for critical events\n- Extract intervention data (cancellations, retries)\n- Calculate time-based metrics (uptime, availability)\n- Output structured JSON for downstream processing\n\n## Implementation\nCreate :\n- Accept date range parameters (--start-date, --end-date)  \n- Connect to store database (same connection as main cortex)\n- Execute defined SQL queries from metrics schema\n- Output JSON with raw counts and percentages\n\n## Data to Collect\n```json\n{\n  \"period\": {\n    \"start\": \"2026-02-11T00:00:00Z\",\n    \"end\": \"2026-02-18T00:00:00Z\"\n  },\n  \"dispatches\": {\n    \"total\": 150,\n    \"failed\": 12,\n    \"unknown_exit\": 3,\n    \"session_disappeared\": 2,\n    \"cancelled_manual\": 4,\n    \"retried_manual\": 6\n  },\n  \"health_events\": {\n    \"gateway_critical\": 1,\n    \"dispatch_session_gone\": 2,\n    \"bead_churn_blocked\": 3\n  },\n  \"system\": {\n    \"uptime_seconds\": 604800,\n    \"total_seconds\": 604800\n  }\n}\n```\n\n## Acceptance Criteria\n1) Collector connects to store database using cortex config  \n2) Extracts all data needed for burn-in SLO calculations\n3) Supports date range filtering for flexible reporting\n4) Outputs structured JSON format\n5) Handles missing data gracefully (empty results)\n6) Includes data validation and error handling","status":"in_progress","priority":1,"issue_type":"task","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T02:33:32.994133398+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T09:51:25.124657523+10:00","labels":["collector","data","json","launch"],"dependencies":[{"issue_id":"cortex-26q","depends_on_id":"cortex-zly","type":"blocks","created_at":"2026-02-18T02:34:25.174417063+10:00","created_by":"Simon Heikkila"}]}
++{"id":"cortex-26q","title":"Build burn-in metrics collector","description":"Create a collector that extracts raw metrics data from the store database for burn-in SLO evaluation.\n\n## Goal\nBuild a command-line tool that queries the store database and outputs raw metrics data in JSON format.\n\n## Scope\n- Query dispatches table for failure analysis\n- Query health_events table for critical events\n- Extract intervention data (cancellations, retries)\n- Calculate time-based metrics (uptime, availability)\n- Output structured JSON for downstream processing\n\n## Implementation\nCreate :\n- Accept date range parameters (--start-date, --end-date)  \n- Connect to store database (same connection as main cortex)\n- Execute defined SQL queries from metrics schema\n- Output JSON with raw counts and percentages\n\n## Data to Collect\n```json\n{\n  \"period\": {\n    \"start\": \"2026-02-11T00:00:00Z\",\n    \"end\": \"2026-02-18T00:00:00Z\"\n  },\n  \"dispatches\": {\n    \"total\": 150,\n    \"failed\": 12,\n    \"unknown_exit\": 3,\n    \"session_disappeared\": 2,\n    \"cancelled_manual\": 4,\n    \"retried_manual\": 6\n  },\n  \"health_events\": {\n    \"gateway_critical\": 1,\n    \"dispatch_session_gone\": 2,\n    \"bead_churn_blocked\": 3\n  },\n  \"system\": {\n    \"uptime_seconds\": 604800,\n    \"total_seconds\": 604800\n  }\n}\n```\n\n## Acceptance Criteria\n1) Collector connects to store database using cortex config  \n2) Extracts all data needed for burn-in SLO calculations\n3) Supports date range filtering for flexible reporting\n4) Outputs structured JSON format\n5) Handles missing data gracefully (empty results)\n6) Includes data validation and error handling","status":"closed","priority":1,"issue_type":"task","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T02:33:32.994133398+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T09:59:08.653752798+10:00","closed_at":"2026-02-18T09:59:08.653752798+10:00","close_reason":"Completed: raw burn-in collector implemented with date-range flags, config-based DB resolution, JSON output, and tests","labels":["collector","data","json","launch"],"dependencies":[{"issue_id":"cortex-26q","depends_on_id":"cortex-zly","type":"blocks","created_at":"2026-02-18T02:34:25.174417063+10:00","created_by":"Simon Heikkila"}]}
+ {"id":"cortex-27c","title":"Stale openclaw session locks block all dispatches to agent","description":"When an openclaw agent process crashes or is killed, it leaves a .lock file in ~/.openclaw/agents/{name}/sessions/. All subsequent dispatches to that agent fail with 'session file locked'. Partial fix in place (clearStaleLocks in tmux.go) but needs hardening: lock files from LIVE sessions of a different dispatch also block. Need to either use per-dispatch session IDs or clear+recreate sessions.","notes":"**Review Result: Changes Needed**\n\n**Critical Issue - Session Name Collision Detected**\n\n## Test Failure\nTestSessionName_Uniqueness FAILED: same session name generated twice\nThis defeats the primary purpose of preventing session conflicts.\n\n## Architecture Assessment - Generally Good\n\n**Excellent Design Improvements:**\n- Per-session directories for resource isolation\n- Conservative stale lock cleanup (only clears dead PIDs)\n- Retry logic with fallback cleanup\n- Proper resource lifecycle management\n- Session isolation testing passes\n\n## Critical Flaw - Insufficient Uniqueness\n\n**SessionName Generation Issues:**\n- Uses millisecond timestamp (reduced precision)\n- Only 2-byte random component (65k possibilities)\n- Same PID for all rapid dispatches in single process\n- Result: High collision probability under load\n\n## Required Fixes\n\n**1. Stronger Uniqueness:**\n- Use full nanosecond precision timestamps\n- Increase random bytes to 4+ bytes\n- Consider atomic sequence counter per process\n\n**2. Collision Detection:**\n- Check if session name exists before use\n- Regenerate with new random component on collision\n\n**3. Test Reliability:**\n- TestSessionName_Uniqueness must pass 100% reliably\n- Consider concurrent load testing\n\n## Acceptance Criteria Status\n- Per-session resource isolation: IMPLEMENTED\n- Conservative lock cleanup: IMPLEMENTED  \n- Collision prevention: FAILS - critical issue\n- Resource lifecycle: IMPLEMENTED\n- Retry mechanism: IMPLEMENTED\n\n## Action Required\nFix session name uniqueness to ensure zero collisions. Core architecture is sound but uniqueness is critical for P0 reliability.\n\nTransitioned back to stage:coding for uniqueness fixes.","status":"closed","priority":0,"issue_type":"bug","owner":"simon.heikkila@gmail.com","created_at":"2026-02-17T21:09:32.669283096+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-17T21:25:44.43159755+10:00","closed_at":"2026-02-17T21:25:44.43159755+10:00","close_reason":"Closed","labels":["stage:coding"]}
+ {"id":"cortex-298","title":"Auto: churn guard blocked bead cortex-evu.2 (6 dispatches/1h0m0s)","description":"Bead `cortex-evu.2` in project `cortex` exceeded churn threshold (6 dispatches in 1h0m0s) and was blocked from further overnight dispatch.\n\nPlease investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.\n\nBead title: Add scheduler RunTick end-to-end test\nBead type: task","status":"in_progress","priority":1,"issue_type":"bug","assignee":"Simon Heikkila","owner":"simon.heikkila@gmail.com","created_at":"2026-02-18T02:00:14.78036953+10:00","created_by":"Simon Heikkila","updated_at":"2026-02-18T05:55:59.332540644+10:00","dependencies":[{"issue_id":"cortex-298","depends_on_id":"cortex-evu.2","type":"discovered-from","created_at":"2026-02-18T02:00:14.783175723+10:00","created_by":"Simon Heikkila"}]}
+file update:
+diff --git a/internal/scheduler/churn_guard_quarantine_test.go b/internal/scheduler/churn_guard_quarantine_test.go
+index 3699c06fc53160d9d0ba0162cd21ef63f5c634d2..eefcfc47baf338fecba1217ccbe6c8e77886575c
+--- a/internal/scheduler/churn_guard_quarantine_test.go
++++ b/internal/scheduler/churn_guard_quarantine_test.go
+@@ -45,7 +45,7 @@
+ 	installFakeBDForChurnGuardTest(t)
+ 
+ 	const beadID = "cortex-non-quarantine"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
+ 	if !blocked {
+@@ -65,6 +65,28 @@
+ 	}
+ }
+ 
++func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
++	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
++	installFakeBDForChurnGuardTest(t)
++
++	const beadID = "cortex-completed-only"
++	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
++
++	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
++	if blocked {
++		t.Fatal("did not expect churn guard block for completed-only history")
++	}
++
++	events, err := st.GetRecentHealthEvents(10)
++	if err != nil {
++		t.Fatalf("get health events: %v", err)
++	}
++
++	if hasHealthEventType(events, "bead_churn_blocked") {
++		t.Fatal("did not expect churn escalation health event for completed-only history")
++	}
++}
++
+ func TestIsChurnBlocked_SuppressesEscalationWhenCancelledCompletesFailureStreak(t *testing.T) {
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 	installFakeBDForChurnGuardTest(t)
+@@ -95,7 +117,7 @@
+ 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+ 
+ 	const beadID = "cortex-duplicate-escalation"
+-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
++	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
+ 
+ 	createLog := filepath.Join(t.TempDir(), "create.log")
+ 	recentClosedEscalation := fmt.Sprintf(`[{
+diff --git a/internal/scheduler/scheduler.go b/internal/scheduler/scheduler.go
+index 1530068487a3e6bdd140a0b7d309bcf0c7f47beb..c0305b1fcad85876cf7d670489080214e6d1ece5
+--- a/internal/scheduler/scheduler.go
++++ b/internal/scheduler/scheduler.go
+@@ -1412,8 +1412,7 @@
+ 		if d.DispatchedAt.Before(cutoff) {
+ 			continue
+ 		}
+-		switch d.Status {
+-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		if isChurnCountableStatus(d.Status) {
+ 			recent++
+ 		}
+ 	}
+@@ -1482,6 +1481,15 @@
+ 	return true
+ }
+ 
++func isChurnCountableStatus(status string) bool {
++	switch status {
++	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
++		return true
++	default:
++		return false
++	}
++}
++
+ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
+ 	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
+ 	if err != nil {
+
+
+thinking
+**Planning cautious rebase push**
+exec
+/usr/bin/zsh -lc 'git pull --rebase --autostash' in /home/ubuntu/projects/cortex[2026-02-18T10:05:45+10:00] codex escalation completed for cortex-ijz

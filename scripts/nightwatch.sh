@@ -87,7 +87,9 @@ ensure_codex_panel() {
     return 0
   fi
 
-  tmux new-session -d -s "$NUDGE_SESSION" "cd $ROOT && while true; do clear; echo 'Cortex Codex Panel'; echo; if [ -f .cortex/nightwatch.latest ]; then cat .cortex/nightwatch.latest; else echo 'waiting for first checkpoint...'; fi; echo; echo 'Recent nudges:'; tail -n 20 .cortex/codex-nudges.log 2>/dev/null || true; sleep 10; done"
+  local panel_cmd
+  panel_cmd="cd $ROOT && while true; do clear; echo 'Cortex Codex Panel'; echo; echo 'Nightwatch:'; if [ -f .cortex/nightwatch.latest ]; then cat .cortex/nightwatch.latest; else echo 'waiting for first checkpoint...'; fi; echo; echo 'Codex Incident Worker:'; if [ -f .cortex/codex-incident-worker.latest ]; then cat .cortex/codex-incident-worker.latest; else echo 'waiting for worker status...'; fi; echo; echo 'Recent nudges:'; tail -n 20 .cortex/codex-nudges.log 2>/dev/null || true; sleep 10; done"
+  tmux new-session -d -s "$NUDGE_SESSION" "$panel_cmd"
   tmux split-window -h -t "$NUDGE_SESSION:0" "cd $ROOT && zsh"
   tmux select-layout -t "$NUDGE_SESSION:0" even-horizontal
   log "created $NUDGE_SESSION tmux panel"
@@ -265,6 +267,8 @@ write_checkpoint() {
   local status_json
   local running_count usage5h cap5h usage_weekly cap_weekly
   local completed15 failed15 cancelled15
+  local claim_total claim_unbound claim_expired claim_running claim_terminal
+  local gateway_closed2m
   local top_failures
 
   status_json="$(curl -fsS "$API/status" 2>/dev/null || true)"
@@ -277,11 +281,17 @@ write_checkpoint() {
   completed15="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='completed' AND completed_at >= datetime('now','-15 minutes');" 2>/dev/null || echo 0)"
   failed15="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='failed' AND completed_at >= datetime('now','-15 minutes');" 2>/dev/null || echo 0)"
   cancelled15="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='cancelled' AND completed_at >= datetime('now','-15 minutes');" 2>/dev/null || echo 0)"
+  claim_total="$(sqlite3 "$DB" "SELECT COUNT(*) FROM claim_leases;" 2>/dev/null || echo 0)"
+  claim_unbound="$(sqlite3 "$DB" "SELECT COUNT(*) FROM claim_leases WHERE dispatch_id <= 0;" 2>/dev/null || echo 0)"
+  claim_expired="$(sqlite3 "$DB" "SELECT COUNT(*) FROM claim_leases WHERE heartbeat_at < datetime('now','-4 minutes');" 2>/dev/null || echo 0)"
+  claim_running="$(sqlite3 "$DB" "SELECT COUNT(*) FROM claim_leases cl JOIN dispatches d ON d.id = cl.dispatch_id WHERE cl.dispatch_id > 0 AND d.status='running';" 2>/dev/null || echo 0)"
+  claim_terminal="$(sqlite3 "$DB" "SELECT COUNT(*) FROM claim_leases cl JOIN dispatches d ON d.id = cl.dispatch_id WHERE cl.dispatch_id > 0 AND d.status IN ('completed','failed','cancelled','interrupted','retried');" 2>/dev/null || echo 0)"
+  gateway_closed2m="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE failure_category='gateway_closed' AND completed_at IS NOT NULL AND completed_at >= datetime('now','-2 minutes');" 2>/dev/null || echo 0)"
 
   top_failures="$(sqlite3 "$DB" "SELECT REPLACE(COALESCE(NULLIF(failure_summary,''),'<none>'), char(10), ' ') || ' x' || COUNT(*) FROM dispatches WHERE status='failed' AND completed_at >= datetime('now','-15 minutes') GROUP BY failure_summary ORDER BY COUNT(*) DESC LIMIT 3;" 2>/dev/null || true)"
 
-  printf '{"ts":"%s","running_count":%s,"completed_15m":%s,"failed_15m":%s,"cancelled_15m":%s,"usage_5h":%s,"cap_5h":%s,"usage_weekly":%s,"cap_weekly":%s}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${running_count:-0}" "${completed15:-0}" "${failed15:-0}" "${cancelled15:-0}" "${usage5h:-0}" "${cap5h:-0}" "${usage_weekly:-0}" "${cap_weekly:-0}" \
+  printf '{"ts":"%s","running_count":%s,"completed_15m":%s,"failed_15m":%s,"cancelled_15m":%s,"usage_5h":%s,"cap_5h":%s,"usage_weekly":%s,"cap_weekly":%s,"claim_leases_total":%s,"claim_leases_unbound":%s,"claim_leases_expired":%s,"claim_leases_running_dispatch":%s,"claim_leases_terminal_dispatch":%s,"gateway_closed_2m":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${running_count:-0}" "${completed15:-0}" "${failed15:-0}" "${cancelled15:-0}" "${usage5h:-0}" "${cap5h:-0}" "${usage_weekly:-0}" "${cap_weekly:-0}" "${claim_total:-0}" "${claim_unbound:-0}" "${claim_expired:-0}" "${claim_running:-0}" "${claim_terminal:-0}" "${gateway_closed2m:-0}" \
     >> "$CHECKPOINTS_FILE"
 
   tail -n 200 "$CHECKPOINTS_FILE" > "$CHECKPOINTS_FILE.tmp" && mv "$CHECKPOINTS_FILE.tmp" "$CHECKPOINTS_FILE"
@@ -294,6 +304,12 @@ write_checkpoint() {
     echo "cancelled_15m: ${cancelled15:-0}"
     echo "usage_5h: ${usage5h:-0}/${cap5h:-0}"
     echo "usage_weekly: ${usage_weekly:-0}/${cap_weekly:-0}"
+    echo "claim_leases_total: ${claim_total:-0}"
+    echo "claim_leases_unbound: ${claim_unbound:-0}"
+    echo "claim_leases_expired_4m: ${claim_expired:-0}"
+    echo "claim_leases_running_dispatch: ${claim_running:-0}"
+    echo "claim_leases_terminal_dispatch: ${claim_terminal:-0}"
+    echo "gateway_closed_2m: ${gateway_closed2m:-0}"
     echo "top_failures_15m:"
     if [[ -n "$top_failures" ]]; then
       echo "$top_failures"
@@ -302,7 +318,7 @@ write_checkpoint() {
     fi
   } > "$LATEST_FILE"
 
-  log "checkpoint running=${running_count:-0} completed_15m=${completed15:-0} failed_15m=${failed15:-0} usage_5h=${usage5h:-0}/${cap5h:-0} usage_weekly=${usage_weekly:-0}/${cap_weekly:-0}"
+  log "checkpoint running=${running_count:-0} completed_15m=${completed15:-0} failed_15m=${failed15:-0} usage_5h=${usage5h:-0}/${cap5h:-0} usage_weekly=${usage_weekly:-0}/${cap_weekly:-0} claim_total=${claim_total:-0} claim_expired=${claim_expired:-0} claim_terminal=${claim_terminal:-0} gw_closed_2m=${gateway_closed2m:-0}"
 }
 
 ensure_codex_panel

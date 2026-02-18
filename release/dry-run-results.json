@@ -1,0 +1,18 @@
+{
+  "dry_run": {
+    "started_at": "2026-02-17T23:45:53Z",
+    "finished_at": "2026-02-17T23:45:56Z",
+    "overall_status": "pass",
+    "gates": {
+      "validate_release": "pass",
+      "generate_changelog": "pass",
+      "create_tag_dry_run": "pass",
+      "rollback_assets": "pass",
+      "release_template": "pass"
+    },
+    "notes": [
+      "No publish/deploy actions executed",
+      "Tag creation performed in dry-run mode"
+    ]
+  }
+}

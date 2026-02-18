@@ -291,15 +291,29 @@ process_issue() {
 
 write_latest_status() {
   local open_auto total_running failed15
+  local claim_total claim_unbound claim_expired claim_running claim_terminal
+  local gateway_closed2m
   open_auto="$(list_auto_bug_ids | wc -l | tr -d ' ')"
   total_running="$(curl -fsS "$API/status" 2>/dev/null | jq -r '.running_count // 0' || echo 0)"
   failed15="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE status='failed' AND completed_at >= datetime('now','-15 minutes');" 2>/dev/null || echo 0)"
+  claim_total="$(sqlite3 "$DB" "SELECT COUNT(*) FROM claim_leases;" 2>/dev/null || echo 0)"
+  claim_unbound="$(sqlite3 "$DB" "SELECT COUNT(*) FROM claim_leases WHERE dispatch_id <= 0;" 2>/dev/null || echo 0)"
+  claim_expired="$(sqlite3 "$DB" "SELECT COUNT(*) FROM claim_leases WHERE heartbeat_at < datetime('now','-4 minutes');" 2>/dev/null || echo 0)"
+  claim_running="$(sqlite3 "$DB" "SELECT COUNT(*) FROM claim_leases cl JOIN dispatches d ON d.id = cl.dispatch_id WHERE cl.dispatch_id > 0 AND d.status='running';" 2>/dev/null || echo 0)"
+  claim_terminal="$(sqlite3 "$DB" "SELECT COUNT(*) FROM claim_leases cl JOIN dispatches d ON d.id = cl.dispatch_id WHERE cl.dispatch_id > 0 AND d.status IN ('completed','failed','cancelled','interrupted','retried');" 2>/dev/null || echo 0)"
+  gateway_closed2m="$(sqlite3 "$DB" "SELECT COUNT(*) FROM dispatches WHERE failure_category='gateway_closed' AND completed_at IS NOT NULL AND completed_at >= datetime('now','-2 minutes');" 2>/dev/null || echo 0)"
 
   {
     echo "timestamp: $(date -Is)"
     echo "open_auto_bugs: $open_auto"
     echo "running_count: $total_running"
     echo "failed_15m: $failed15"
+    echo "claim_leases_total: ${claim_total:-0}"
+    echo "claim_leases_unbound: ${claim_unbound:-0}"
+    echo "claim_leases_expired_4m: ${claim_expired:-0}"
+    echo "claim_leases_running_dispatch: ${claim_running:-0}"
+    echo "claim_leases_terminal_dispatch: ${claim_terminal:-0}"
+    echo "gateway_closed_2m: ${gateway_closed2m:-0}"
     echo "codex_escalation_enabled: $ENABLE_CODEX_ESCALATION"
     echo "poll_sec: $POLL_SEC"
   } > "$LATEST_FILE"
