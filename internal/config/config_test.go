@@ -612,14 +612,14 @@ func TestLoadDispatchValidConfig(t *testing.T) {
 	cfg := validConfig + `
 
 [dispatch.cli.claude]
-cmd = "claude"
+cmd = "sh"
 prompt_mode = "stdin"
 args = ["--print"]
 model_flag = "--model"
 approval_flags = ["--dangerously-skip-permissions"]
 
 [dispatch.cli.codex]
-cmd = "codex"
+cmd = "sh"
 prompt_mode = "file"
 args = ["exec", "--full-auto"]
 model_flag = "-m"
@@ -754,19 +754,19 @@ func TestLoadDispatchValidCLIConfigs(t *testing.T) {
 	cfg := validConfig + `
 
 [dispatch.cli.claude]
-cmd = "claude"
+cmd = "sh"
 prompt_mode = "stdin"
 model_flag = "--model"
 approval_flags = ["--dangerously-skip-permissions", "--yes"]
 
 [dispatch.cli.codex]
-cmd = "codex"
+cmd = "sh"
 prompt_mode = "file"
 model_flag = "-m"
 approval_flags = []
 
 [dispatch.cli.aider]
-cmd = "aider"
+cmd = "sh"
 prompt_mode = "arg"
 model_flag = "--model"
 
@@ -815,6 +815,117 @@ func TestValidateDispatchConfigNilCLI(t *testing.T) {
 	err := ValidateDispatchConfig(cfg)
 	if err != nil {
 		t.Errorf("expected nil CLI config to be valid, got: %v", err)
+	}
+}
+
+func TestLoadDispatchCLIExecutableNotFound(t *testing.T) {
+	cfg := `
+[general]
+state_db = "/tmp/cortex-test.db"
+
+[projects.test]
+enabled = true
+beads_dir = "/tmp/test/.beads"
+workspace = "/tmp/test"
+priority = 1
+
+[rate_limits]
+window_5h_cap = 20
+weekly_cap = 200
+weekly_headroom_pct = 80
+
+[providers.test-provider]
+tier = "fast"
+authed = true
+model = "test-model"
+cli = "missingbin"
+
+[tiers]
+fast = ["test-provider"]
+balanced = []
+premium = []
+
+[health]
+check_interval = "2m"
+gateway_unit = "openclaw-gateway.service"
+
+[reporter]
+channel = "matrix"
+agent_id = "main"
+
+[api]
+bind = "127.0.0.1:8900"
+
+[dispatch.cli.missingbin]
+cmd = "definitely-not-a-real-executable-xyz"
+prompt_mode = "stdin"
+model_flag = "--model"
+
+[dispatch.routing]
+fast_backend = "headless_cli"
+`
+	path := writeTestConfig(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for missing CLI executable")
+	}
+	if !strings.Contains(err.Error(), "not found in PATH") {
+		t.Errorf("expected executable-not-found error, got: %v", err)
+	}
+}
+
+func TestLoadDispatchProviderCLIMissingModelFlag(t *testing.T) {
+	cfg := `
+[general]
+state_db = "/tmp/cortex-test.db"
+
+[projects.test]
+enabled = true
+beads_dir = "/tmp/test/.beads"
+workspace = "/tmp/test"
+priority = 1
+
+[rate_limits]
+window_5h_cap = 20
+weekly_cap = 200
+weekly_headroom_pct = 80
+
+[providers.test-provider]
+tier = "fast"
+authed = true
+model = "test-model"
+cli = "testcli"
+
+[tiers]
+fast = ["test-provider"]
+balanced = []
+premium = []
+
+[health]
+check_interval = "2m"
+gateway_unit = "openclaw-gateway.service"
+
+[reporter]
+channel = "matrix"
+agent_id = "main"
+
+[api]
+bind = "127.0.0.1:8900"
+
+[dispatch.cli.testcli]
+cmd = "sh"
+prompt_mode = "stdin"
+
+[dispatch.routing]
+fast_backend = "headless_cli"
+`
+	path := writeTestConfig(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for missing model_flag on provider-bound CLI")
+	}
+	if !strings.Contains(err.Error(), "missing required model_flag") {
+		t.Errorf("expected model_flag validation error, got: %v", err)
 	}
 }
 

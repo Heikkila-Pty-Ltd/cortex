@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -674,11 +675,20 @@ func ValidateDispatchConfig(cfg *Config) error {
 	}
 
 	// Validate provider->CLI bindings
-	for providerName, provider := range cfg.Providers {
-		if provider.CLI != "" {
-			if _, exists := cfg.Dispatch.CLI[provider.CLI]; !exists {
-				return fmt.Errorf("provider %q references undefined CLI config %q", providerName, provider.CLI)
-			}
+	for _, providerName := range collectTierProviders(cfg.Tiers) {
+		provider, exists := cfg.Providers[providerName]
+		if !exists || provider.CLI == "" {
+			continue
+		}
+		cliConfig, ok := cfg.Dispatch.CLI[provider.CLI]
+		if !ok {
+			return fmt.Errorf("provider %q references undefined CLI config %q", providerName, provider.CLI)
+		}
+		if strings.TrimSpace(cliConfig.ModelFlag) == "" {
+			return fmt.Errorf("provider %q CLI config %q missing required model_flag", providerName, provider.CLI)
+		}
+		if err := validateCLIExecutable(cliConfig.Cmd); err != nil {
+			return fmt.Errorf("provider %q CLI config %q: %w", providerName, provider.CLI, err)
 		}
 	}
 
@@ -716,5 +726,51 @@ func validateCLIConfig(name string, config CLIConfig) error {
 		}
 	}
 
+	return nil
+}
+
+func collectTierProviders(tiers Tiers) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(tiers.Fast)+len(tiers.Balanced)+len(tiers.Premium))
+	add := func(items []string) {
+		for _, name := range items {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			out = append(out, name)
+		}
+	}
+	add(tiers.Fast)
+	add(tiers.Balanced)
+	add(tiers.Premium)
+	return out
+}
+
+func validateCLIExecutable(cmd string) error {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return fmt.Errorf("cmd is required")
+	}
+	fields := strings.Fields(cmd)
+	if len(fields) == 0 {
+		return fmt.Errorf("cmd is required")
+	}
+	binary := fields[0]
+	path, err := exec.LookPath(binary)
+	if err != nil {
+		return fmt.Errorf("executable %q not found in PATH", binary)
+	}
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		return fmt.Errorf("executable %q not accessible: %w", binary, statErr)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("executable %q resolves to a directory", binary)
+	}
 	return nil
 }
