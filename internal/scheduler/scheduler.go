@@ -54,6 +54,32 @@ type Scheduler struct {
 	// Provider performance profiling
 	profiles           map[string]learner.ProviderProfile
 	lastProfileRebuild time.Time
+
+	// Concurrency control for coder/reviewer dispatch admission
+	concurrencyController     *ConcurrencyController
+	lastUtilizationSample     time.Time
+	utilizationSampleInterval time.Duration
+
+	// Async DoD processing queue to avoid blocking scheduler ticks.
+	dodWorkerOnce sync.Once
+	dodQueue      chan dodQueueItem
+	dodMu         sync.Mutex
+	dodQueued     map[string]struct{}
+	dodInFlight   map[string]struct{}
+	dodActive     dodExecutionState
+}
+
+type dodQueueItem struct {
+	projectName string
+	project     config.Project
+	bead        beads.Bead
+}
+
+type dodExecutionState struct {
+	projectName string
+	beadID      string
+	command     string
+	startedAt   time.Time
 }
 
 const (
@@ -89,6 +115,10 @@ const (
 	gatewayFailureThreshold = 5
 	gatewayCircuitDuration  = 10 * time.Minute
 	planGateLogInterval     = 2 * time.Minute
+
+	dodQueueCapacity      = 128
+	tickWatchdogThreshold = 90 * time.Second
+	sprintPlanningDedup   = 24 * time.Hour
 )
 
 func bdCommandContext(ctx context.Context, args ...string) *exec.Cmd {
@@ -114,13 +144,20 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 			"tmux":         dispatch.NewTmuxBackend(cfg.Dispatch.CLI, cfg.Dispatch.Tmux.HistoryLimit),
 			"openclaw":     dispatch.NewOpenClawBackend(openclawDispatcher),
 		},
-		logger:       logger,
-		dryRun:       dryRun,
-		quarantine:   make(map[string]time.Time),
-		churnBlock:   make(map[string]time.Time),
-		epicBreakup:  make(map[string]time.Time),
-		claimAnomaly: make(map[string]time.Time),
+		logger:                    logger,
+		dryRun:                    dryRun,
+		quarantine:                make(map[string]time.Time),
+		churnBlock:                make(map[string]time.Time),
+		epicBreakup:               make(map[string]time.Time),
+		claimAnomaly:              make(map[string]time.Time),
+		utilizationSampleInterval: 1 * time.Minute,
+		dodQueue:                  make(chan dodQueueItem, dodQueueCapacity),
+		dodQueued:                 make(map[string]struct{}),
+		dodInFlight:               make(map[string]struct{}),
 	}
+
+	// Initialize concurrency controller for admission control
+	scheduler.concurrencyController = NewConcurrencyController(cfg, s, logger)
 
 	// Initialize ceremony scheduler
 	scheduler.ceremonyScheduler = NewCeremonyScheduler(cfg, s, d, logger)
@@ -138,6 +175,8 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 
 // Start runs the scheduler tick loop until the context is cancelled.
 func (s *Scheduler) Start(ctx context.Context) {
+	s.startDoDWorker(ctx)
+
 	ticker := time.NewTicker(s.cfg.General.TickInterval.Duration)
 	defer ticker.Stop()
 
@@ -247,6 +286,11 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		return
 	}
 
+	s.startDoDWorker(ctx)
+	tickStarted := time.Now()
+	watchdogDone := s.startTickWatchdog(tickStarted)
+	defer close(watchdogDone)
+
 	s.logger.Info("tick started")
 
 	// Rebuild provider profiles periodically
@@ -254,6 +298,12 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 
 	// Check running dispatches first
 	s.checkRunningDispatches(ctx)
+
+	// Sample concurrency utilization and check for alerts
+	s.sampleConcurrencyUtilization()
+
+	// Try to dequeue overflow items now that running dispatches have been reconciled
+	s.processOverflowQueue(ctx)
 
 	// Process pending retries with backoff
 	s.processPendingRetries(ctx)
@@ -427,6 +477,34 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		if dispatch.HasLiveSession(agent) {
 			s.logger.Debug("agent has live tmux session, skipping", "agent", agent, "bead", item.bead.ID)
 			continue
+		}
+
+		// Concurrency admission control: enforce role + global limits
+		if IsDispatchableRole(role) {
+			admitResult, snapshot := s.concurrencyController.CheckAdmission(role)
+			if admitResult != AdmissionAllowed {
+				s.concurrencyController.LogCapacityDeny(role, item.bead.ID, item.name, admitResult, snapshot)
+
+				// Enqueue for retry when capacity frees
+				s.concurrencyController.Enqueue(QueueItem{
+					BeadID:   item.bead.ID,
+					Project:  item.name,
+					Role:     role,
+					AgentID:  agent,
+					Priority: item.bead.Priority,
+					Reason:   admitResult.String(),
+				})
+
+				// Record health event for significant denials
+				_ = s.store.RecordHealthEventWithDispatch("capacity_deny",
+					fmt.Sprintf("bead %s denied dispatch: %s (coders=%d/%d, reviewers=%d/%d, total=%d/%d)",
+						item.bead.ID, admitResult.String(),
+						snapshot.ActiveCoders, snapshot.MaxCoders,
+						snapshot.ActiveReviewers, snapshot.MaxReviewers,
+						snapshot.ActiveTotal, snapshot.MaxTotal),
+					0, item.bead.ID)
+				continue
+			}
 		}
 
 		// Detect complexity -> tier
@@ -650,6 +728,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 	}
 
 	// Check and trigger ceremonies (runs after regular dispatches but within same tick)
+	s.checkSprintPlanningTriggers(ctx)
 	s.checkCeremonies(ctx)
 
 	// Check for beads in DoD stage and process them
@@ -668,14 +747,306 @@ func (s *Scheduler) checkCeremonies(ctx context.Context) {
 	}
 }
 
-// processDoDStage checks for beads in stage:dod and runs DoD validation
+func (s *Scheduler) checkSprintPlanningTriggers(ctx context.Context) {
+	if s.ceremonyScheduler == nil || !s.cfg.Chief.Enabled {
+		return
+	}
+
+	type planningTrigger struct {
+		project     string
+		triggerType string
+		backlogSize int
+		threshold   int
+		triggeredAt time.Time
+	}
+
+	now := time.Now()
+	triggered := make([]planningTrigger, 0)
+
+	for projectName, project := range s.cfg.Projects {
+		if !project.Enabled {
+			continue
+		}
+		if strings.TrimSpace(project.SprintPlanningDay) == "" && project.BacklogThreshold <= 0 {
+			continue
+		}
+
+		backlogSize := 0
+		if project.BacklogThreshold > 0 {
+			backlogBeads, err := s.store.GetBacklogBeadsCtx(ctx, projectName, config.ExpandHome(project.BeadsDir))
+			if err != nil {
+				s.logger.Warn("failed to evaluate backlog threshold for sprint planning",
+					"project", projectName, "error", err)
+			} else {
+				backlogSize = len(backlogBeads)
+			}
+		}
+
+		scheduled := false
+		threshold := project.BacklogThreshold > 0 && backlogSize > project.BacklogThreshold
+		triggerType := ""
+
+		if day, ok := parseWeekday(project.SprintPlanningDay); ok {
+			if target, err := parsePlanningTimeOnDate(now, project.SprintPlanningTime); err != nil {
+				s.logger.Warn("invalid sprint planning time while evaluating trigger",
+					"project", projectName, "time", project.SprintPlanningTime, "error", err)
+			} else if now.Weekday() == day && !now.Before(target) {
+				scheduled = true
+			}
+		}
+
+		switch {
+		case scheduled && threshold:
+			triggerType = "scheduled+threshold"
+		case scheduled:
+			triggerType = "scheduled"
+		case threshold:
+			triggerType = "threshold"
+		default:
+			continue
+		}
+
+		last, err := s.store.GetLastSprintPlanning(projectName)
+		if err != nil {
+			s.logger.Warn("failed to load last sprint planning trigger",
+				"project", projectName, "error", err)
+			continue
+		}
+		if last != nil && now.Sub(last.TriggeredAt) < sprintPlanningDedup {
+			s.logger.Debug("sprint planning trigger deduplicated",
+				"project", projectName, "trigger", triggerType, "last", last.TriggeredAt)
+			continue
+		}
+
+		triggered = append(triggered, planningTrigger{
+			project:     projectName,
+			triggerType: triggerType,
+			backlogSize: backlogSize,
+			threshold:   project.BacklogThreshold,
+			triggeredAt: now,
+		})
+	}
+
+	if len(triggered) == 0 {
+		return
+	}
+
+	result := "triggered"
+	details := "multi-team sprint planning ceremony started"
+	if err := s.ceremonyScheduler.runMultiTeamPlanningCeremony(ctx); err != nil {
+		result = "failed"
+		details = err.Error()
+		s.logger.Error("failed to trigger sprint planning ceremony", "error", err)
+	}
+
+	for _, trigger := range triggered {
+		if err := s.store.RecordSprintPlanning(trigger.project, trigger.triggerType, trigger.backlogSize, trigger.threshold, result, details); err != nil {
+			s.logger.Warn("failed to record sprint planning trigger",
+				"project", trigger.project,
+				"trigger", trigger.triggerType,
+				"result", result,
+				"error", err)
+		}
+	}
+
+	s.logger.Info("sprint planning trigger processed",
+		"projects", len(triggered),
+		"result", result)
+}
+
+func parseWeekday(day string) (time.Weekday, bool) {
+	switch strings.ToLower(strings.TrimSpace(day)) {
+	case "sunday":
+		return time.Sunday, true
+	case "monday":
+		return time.Monday, true
+	case "tuesday":
+		return time.Tuesday, true
+	case "wednesday":
+		return time.Wednesday, true
+	case "thursday":
+		return time.Thursday, true
+	case "friday":
+		return time.Friday, true
+	case "saturday":
+		return time.Saturday, true
+	default:
+		return time.Sunday, false
+	}
+}
+
+func parsePlanningTimeOnDate(now time.Time, hhmm string) (time.Time, error) {
+	parsed, err := time.Parse("15:04", strings.TrimSpace(hhmm))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse planning time: %w", err)
+	}
+	return time.Date(
+		now.Year(), now.Month(), now.Day(),
+		parsed.Hour(), parsed.Minute(), 0, 0,
+		now.Location(),
+	), nil
+}
+
+func (s *Scheduler) startTickWatchdog(tickStarted time.Time) chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		timer := time.NewTimer(tickWatchdogThreshold)
+		defer timer.Stop()
+
+		select {
+		case <-done:
+			return
+		case <-timer.C:
+			fields := []any{
+				"elapsed", time.Since(tickStarted),
+				"threshold", tickWatchdogThreshold,
+			}
+			if active, ok := s.activeDoDState(); ok {
+				fields = append(fields,
+					"dod_project", active.projectName,
+					"dod_bead", active.beadID,
+					"dod_command", active.command,
+					"dod_elapsed", time.Since(active.startedAt),
+				)
+			}
+			s.logger.Warn("tick exceeded watchdog threshold", fields...)
+		}
+	}()
+	return done
+}
+
+func (s *Scheduler) startDoDWorker(ctx context.Context) {
+	s.dodWorkerOnce.Do(func() {
+		go s.runDoDWorker(ctx)
+		s.logger.Info("dod worker started", "queue_capacity", cap(s.dodQueue))
+	})
+}
+
+func (s *Scheduler) runDoDWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			s.logger.Info("dod worker stopped")
+			return
+		case item := <-s.dodQueue:
+			key := dodQueueKey(item.projectName, item.bead.ID)
+			s.markDoDInFlight(key)
+			s.setActiveDoDCommand(item.projectName, item.bead.ID, "validating:dod")
+
+			if bead, ok := s.lookupDoDBead(item.projectName, item.project, item.bead.ID); ok {
+				s.processSingleDoDCheck(ctx, item.projectName, item.project, bead)
+			}
+
+			s.clearActiveDoDCommand(item.projectName, item.bead.ID)
+			s.finishDoDInFlight(key)
+		}
+	}
+}
+
+func dodQueueKey(projectName, beadID string) string {
+	return projectName + ":" + beadID
+}
+
+func (s *Scheduler) markDoDInFlight(key string) {
+	s.dodMu.Lock()
+	defer s.dodMu.Unlock()
+	delete(s.dodQueued, key)
+	s.dodInFlight[key] = struct{}{}
+}
+
+func (s *Scheduler) finishDoDInFlight(key string) {
+	s.dodMu.Lock()
+	defer s.dodMu.Unlock()
+	delete(s.dodInFlight, key)
+}
+
+func (s *Scheduler) activeDoDState() (dodExecutionState, bool) {
+	s.dodMu.Lock()
+	defer s.dodMu.Unlock()
+	if s.dodActive.projectName == "" || s.dodActive.beadID == "" {
+		return dodExecutionState{}, false
+	}
+	return s.dodActive, true
+}
+
+func (s *Scheduler) setActiveDoDCommand(projectName, beadID, command string) {
+	s.dodMu.Lock()
+	defer s.dodMu.Unlock()
+	if s.dodActive.projectName != projectName || s.dodActive.beadID != beadID {
+		s.dodActive = dodExecutionState{
+			projectName: projectName,
+			beadID:      beadID,
+			startedAt:   time.Now(),
+		}
+	}
+	s.dodActive.command = command
+}
+
+func (s *Scheduler) clearActiveDoDCommand(projectName, beadID string) {
+	s.dodMu.Lock()
+	defer s.dodMu.Unlock()
+	if s.dodActive.projectName == projectName && s.dodActive.beadID == beadID {
+		s.dodActive = dodExecutionState{}
+	}
+}
+
+func (s *Scheduler) enqueueDoDCheck(projectName string, project config.Project, bead beads.Bead) bool {
+	key := dodQueueKey(projectName, bead.ID)
+
+	s.dodMu.Lock()
+	if _, exists := s.dodQueued[key]; exists {
+		s.dodMu.Unlock()
+		return false
+	}
+	if _, exists := s.dodInFlight[key]; exists {
+		s.dodMu.Unlock()
+		return false
+	}
+	s.dodQueued[key] = struct{}{}
+	queue := s.dodQueue
+	s.dodMu.Unlock()
+
+	item := dodQueueItem{
+		projectName: projectName,
+		project:     project,
+		bead:        bead,
+	}
+
+	select {
+	case queue <- item:
+		return true
+	default:
+		s.dodMu.Lock()
+		delete(s.dodQueued, key)
+		s.dodMu.Unlock()
+		s.logger.Warn("dod queue full; deferring check", "project", projectName, "bead", bead.ID, "queue_capacity", cap(queue))
+		return false
+	}
+}
+
+func (s *Scheduler) lookupDoDBead(projectName string, project config.Project, beadID string) (beads.Bead, bool) {
+	beadList, err := beads.ListBeads(config.ExpandHome(project.BeadsDir))
+	if err != nil {
+		s.logger.Error("failed to refresh bead for dod processing", "project", projectName, "bead", beadID, "error", err)
+		return beads.Bead{}, false
+	}
+	for _, bead := range beadList {
+		if bead.ID == beadID && bead.Status == "open" && hasIssueLabel(bead, "stage:dod") {
+			return bead, true
+		}
+	}
+	return beads.Bead{}, false
+}
+
+// processDoDStage checks for beads in stage:dod and queues asynchronous DoD validation.
 func (s *Scheduler) processDoDStage(ctx context.Context) {
+	_ = ctx
 	for projectName, project := range s.cfg.Projects {
 		if !project.Enabled {
 			continue
 		}
 
-		beadList, err := beads.ListBeads(project.BeadsDir)
+		beadList, err := beads.ListBeads(config.ExpandHome(project.BeadsDir))
 		if err != nil {
 			s.logger.Error("failed to list beads for DoD processing", "project", projectName, "error", err)
 			continue
@@ -689,8 +1060,14 @@ func (s *Scheduler) processDoDStage(ctx context.Context) {
 			}
 		}
 
+		queued := 0
 		for _, bead := range dodBeads {
-			s.processSingleDoDCheck(ctx, projectName, project, bead)
+			if s.enqueueDoDCheck(projectName, project, bead) {
+				queued++
+			}
+		}
+		if queued > 0 {
+			s.logger.Info("queued dod checks", "project", projectName, "queued", queued)
 		}
 	}
 }
@@ -701,6 +1078,9 @@ func (s *Scheduler) processSingleDoDCheck(ctx context.Context, projectName strin
 
 	// Create DoD checker from project config
 	dodChecker := NewDoDCheckerFromConfig(project.DoD)
+	dodChecker.SetOnCheckStart(func(command string) {
+		s.setActiveDoDCommand(projectName, bead.ID, command)
+	})
 	if !dodChecker.IsEnabled() {
 		s.logger.Debug("DoD checking not configured, auto-closing bead", "project", projectName, "bead", bead.ID)
 		s.closeBead(ctx, projectName, project, bead, "DoD checking not configured")
@@ -708,7 +1088,7 @@ func (s *Scheduler) processSingleDoDCheck(ctx context.Context, projectName strin
 	}
 
 	// Run DoD checks
-	result, err := dodChecker.Check(ctx, project.Workspace, bead)
+	result, err := dodChecker.Check(ctx, config.ExpandHome(project.Workspace), bead)
 	if err != nil {
 		s.logger.Error("DoD check failed with error", "project", projectName, "bead", bead.ID, "error", err)
 		s.transitionBeadToCoding(ctx, projectName, project, bead, fmt.Sprintf("DoD check error: %v", err))
@@ -910,6 +1290,64 @@ func (s *Scheduler) defaultModel() string {
 		return p.Model
 	}
 	return "claude-sonnet-4-20250514"
+}
+
+// sampleConcurrencyUtilization records a utilization snapshot and checks for alerts.
+func (s *Scheduler) sampleConcurrencyUtilization() {
+	// Only sample at configured interval
+	if time.Since(s.lastUtilizationSample) < s.utilizationSampleInterval {
+		return
+	}
+	s.lastUtilizationSample = time.Now()
+
+	snapshot, err := s.concurrencyController.GetSnapshot()
+	if err != nil {
+		s.logger.Warn("failed to get concurrency snapshot for sampling", "error", err)
+		return
+	}
+
+	// Record to persistent history
+	if err := s.store.RecordConcurrencyUtilization(
+		snapshot.ActiveCoders, snapshot.ActiveReviewers, snapshot.ActiveTotal,
+		snapshot.MaxCoders, snapshot.MaxReviewers, snapshot.MaxTotal,
+		snapshot.QueueDepth,
+	); err != nil {
+		s.logger.Warn("failed to record concurrency utilization", "error", err)
+	}
+
+	// Check for warning/critical thresholds
+	s.concurrencyController.CheckUtilizationAlerts(snapshot)
+}
+
+// processOverflowQueue attempts to dispatch queued items that now have capacity.
+func (s *Scheduler) processOverflowQueue(ctx context.Context) {
+	// Try to dequeue up to maxPerTick items
+	maxDequeue := s.cfg.General.MaxPerTick
+	if maxDequeue <= 0 {
+		maxDequeue = 3
+	}
+
+	dequeued := s.concurrencyController.TryDequeue(maxDequeue)
+	if len(dequeued) == 0 {
+		return
+	}
+
+	s.logger.Debug("overflow queue items ready for dispatch", "count", len(dequeued))
+
+	// Note: The dequeued items will be picked up in the normal dispatch loop
+	// since they remain in the ready beads list. The dequeue just removes them
+	// from the overflow queue to prevent duplicate tracking.
+	// If we wanted direct dispatch from overflow, we'd need to add that logic here.
+}
+
+// GetConcurrencySnapshot returns the current concurrency state for API exposure.
+func (s *Scheduler) GetConcurrencySnapshot() (ConcurrencySnapshot, error) {
+	return s.concurrencyController.GetSnapshot()
+}
+
+// GetOverflowQueue returns the current overflow queue for API exposure.
+func (s *Scheduler) GetOverflowQueue() []QueueItem {
+	return s.concurrencyController.ListQueue()
 }
 
 func (s *Scheduler) isDispatchCoolingDown(beadID, agent string) bool {

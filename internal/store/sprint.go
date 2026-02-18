@@ -22,26 +22,38 @@ type BacklogBead struct {
 
 // SprintContext provides comprehensive context for sprint planning decisions.
 type SprintContext struct {
-	BacklogBeads     []*BacklogBead        `json:"backlog_beads"`
-	InProgressBeads  []*BacklogBead        `json:"in_progress_beads"`
-	RecentCompletions []*BacklogBead       `json:"recent_completions"`
-	DependencyGraph  *beads.DepGraph       `json:"dependency_graph"`
-	SprintBoundary   *SprintBoundary       `json:"current_sprint,omitempty"`
-	TotalBeadCount   int                   `json:"total_bead_count"`
-	ReadyBeadCount   int                   `json:"ready_bead_count"`
-	BlockedBeadCount int                   `json:"blocked_bead_count"`
+	BacklogBeads      []*BacklogBead  `json:"backlog_beads"`
+	InProgressBeads   []*BacklogBead  `json:"in_progress_beads"`
+	RecentCompletions []*BacklogBead  `json:"recent_completions"`
+	DependencyGraph   *beads.DepGraph `json:"dependency_graph"`
+	SprintBoundary    *SprintBoundary `json:"current_sprint,omitempty"`
+	TotalBeadCount    int             `json:"total_bead_count"`
+	ReadyBeadCount    int             `json:"ready_bead_count"`
+	BlockedBeadCount  int             `json:"blocked_bead_count"`
 }
 
 // DependencyNode represents a node in the dependency graph with additional metadata.
 type DependencyNode struct {
-	BeadID           string   `json:"bead_id"`
-	Title            string   `json:"title"`
-	Priority         int      `json:"priority"`
-	Stage            string   `json:"stage,omitempty"`
-	DependsOn        []string `json:"depends_on"`
-	Blocks           []string `json:"blocks"`
-	IsReady          bool     `json:"is_ready"`
-	EstimateMinutes  int      `json:"estimate_minutes"`
+	BeadID          string   `json:"bead_id"`
+	Title           string   `json:"title"`
+	Priority        int      `json:"priority"`
+	Stage           string   `json:"stage,omitempty"`
+	DependsOn       []string `json:"depends_on"`
+	Blocks          []string `json:"blocks"`
+	IsReady         bool     `json:"is_ready"`
+	EstimateMinutes int      `json:"estimate_minutes"`
+}
+
+// SprintPlanningRecord tracks automatic sprint planning trigger execution.
+type SprintPlanningRecord struct {
+	ID          int64     `json:"id"`
+	Project     string    `json:"project"`
+	Trigger     string    `json:"trigger"`
+	Backlog     int       `json:"backlog"`
+	Threshold   int       `json:"threshold"`
+	Result      string    `json:"result"`
+	Details     string    `json:"details,omitempty"`
+	TriggeredAt time.Time `json:"triggered_at"`
 }
 
 // GetBacklogBeads retrieves all beads that are in the backlog (no stage or stage:backlog).
@@ -58,7 +70,7 @@ func (s *Store) GetBacklogBeadsCtx(ctx context.Context, project string, beadsDir
 	}
 
 	var backlogBeads []*BacklogBead
-	
+
 	for _, bead := range allBeads {
 		// Skip closed beads
 		if bead.Status == "closed" {
@@ -68,7 +80,7 @@ func (s *Store) GetBacklogBeadsCtx(ctx context.Context, project string, beadsDir
 		// Check if bead has stage label indicating it's not in backlog
 		hasStageLabel := false
 		isBacklog := false
-		
+
 		for _, label := range bead.Labels {
 			if label == "stage:backlog" {
 				isBacklog = true
@@ -186,10 +198,10 @@ func (s *Store) enrichBacklogBead(project string, backlogBead *BacklogBead) {
 	}
 
 	backlogBead.DispatchCount = len(dispatches)
-	
+
 	var lastDispatch *time.Time
 	failureCount := 0
-	
+
 	for _, dispatch := range dispatches {
 		if lastDispatch == nil || dispatch.DispatchedAt.After(*lastDispatch) {
 			lastDispatch = &dispatch.DispatchedAt
@@ -198,7 +210,7 @@ func (s *Store) enrichBacklogBead(project string, backlogBead *BacklogBead) {
 			failureCount++
 		}
 	}
-	
+
 	backlogBead.LastDispatchAt = lastDispatch
 	backlogBead.FailureCount = failureCount
 }
@@ -211,7 +223,7 @@ func (s *Store) getInProgressBeadsCtx(ctx context.Context, project string, beads
 	}
 
 	var inProgressBeads []*BacklogBead
-	
+
 	for _, bead := range allBeads {
 		// Skip closed beads
 		if bead.Status == "closed" {
@@ -221,8 +233,8 @@ func (s *Store) getInProgressBeadsCtx(ctx context.Context, project string, beads
 		// Check for in-progress stage labels
 		isInProgress := false
 		for _, label := range bead.Labels {
-			if label == "stage:in_progress" || label == "stage:review" || 
-			   label == "stage:testing" || label == "stage:development" {
+			if label == "stage:in_progress" || label == "stage:review" ||
+				label == "stage:testing" || label == "stage:development" {
 				isInProgress = true
 				break
 			}
@@ -251,7 +263,7 @@ func (s *Store) getRecentCompletionsCtx(ctx context.Context, project string, bea
 
 	cutoff := time.Now().AddDate(0, 0, -daysBack)
 	var recentCompletions []*BacklogBead
-	
+
 	for _, bead := range allBeads {
 		// Only include closed beads that were updated recently
 		if bead.Status == "closed" && bead.UpdatedAt.After(cutoff) {
@@ -287,7 +299,7 @@ func (s *Store) calculateReadinessStats(backlogBeads []*BacklogBead, depGraph *b
 			readyCount++
 		}
 	}
-	
+
 	return readyCount, blockedCount
 }
 
@@ -297,7 +309,7 @@ func (s *Store) isBeadBlocked(bead *BacklogBead, graph *beads.DepGraph) bool {
 		// If no dependency graph, assume bead with dependencies is blocked
 		return len(bead.DependsOn) > 0
 	}
-	
+
 	for _, depID := range bead.DependsOn {
 		if dep, exists := graph.Nodes()[depID]; exists {
 			if dep.Status != "closed" {
@@ -316,7 +328,7 @@ func (s *Store) getBlockingReasons(bead *BacklogBead, graph *beads.DepGraph) []s
 	if graph == nil {
 		return bead.DependsOn // Return all dependencies as blocking reasons
 	}
-	
+
 	var blockingReasons []string
 	for _, depID := range bead.DependsOn {
 		if dep, exists := graph.Nodes()[depID]; exists {
@@ -336,18 +348,125 @@ func (s *Store) GetCurrentSprintBoundary() (*SprintBoundary, error) {
 			 FROM sprint_boundaries 
 			 WHERE sprint_start <= datetime('now') AND sprint_end >= datetime('now') 
 			 ORDER BY sprint_start DESC LIMIT 1`
-	
+
 	var sb SprintBoundary
 	err := s.db.QueryRow(query).Scan(
 		&sb.ID, &sb.SprintNumber, &sb.SprintStart, &sb.SprintEnd, &sb.CreatedAt,
 	)
-	
+
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get current sprint boundary: %w", err)
 	}
-	
+
 	return &sb, nil
+}
+
+// RecordSprintPlanning stores a sprint planning trigger record for auditing and deduplication.
+func (s *Store) RecordSprintPlanning(project, trigger string, backlogSize, threshold int, result, details string) error {
+	if err := s.ensureSprintPlanningTable(); err != nil {
+		return err
+	}
+
+	_, err := s.db.Exec(
+		`INSERT INTO sprint_planning_runs
+			(project, trigger_type, backlog_size, backlog_threshold, result, details, triggered_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		project,
+		trigger,
+		backlogSize,
+		threshold,
+		result,
+		details,
+		time.Now().UTC().Format(time.DateTime),
+	)
+	if err != nil {
+		return fmt.Errorf("record sprint planning: %w", err)
+	}
+	return nil
+}
+
+// GetLastSprintPlanning retrieves the most recent sprint planning record for a project.
+func (s *Store) GetLastSprintPlanning(project string) (*SprintPlanningRecord, error) {
+	if err := s.ensureSprintPlanningTable(); err != nil {
+		return nil, err
+	}
+
+	var (
+		record      SprintPlanningRecord
+		triggeredAt string
+	)
+	err := s.db.QueryRow(
+		`SELECT id, project, trigger_type, backlog_size, backlog_threshold, result, details, triggered_at
+		 FROM sprint_planning_runs
+		 WHERE project = ?
+		 ORDER BY triggered_at DESC
+		 LIMIT 1`,
+		project,
+	).Scan(
+		&record.ID,
+		&record.Project,
+		&record.Trigger,
+		&record.Backlog,
+		&record.Threshold,
+		&record.Result,
+		&record.Details,
+		&triggeredAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get last sprint planning: %w", err)
+	}
+
+	parsed, err := time.ParseInLocation(time.DateTime, triggeredAt, time.UTC)
+	if err != nil {
+		parsed, err = parseSQLiteTime(triggeredAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse last sprint planning timestamp: %w", err)
+		}
+	}
+	record.TriggeredAt = parsed
+
+	return &record, nil
+}
+
+func (s *Store) ensureSprintPlanningTable() error {
+	if _, err := s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS sprint_planning_runs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			project TEXT NOT NULL,
+			trigger_type TEXT NOT NULL,
+			backlog_size INTEGER NOT NULL DEFAULT 0,
+			backlog_threshold INTEGER NOT NULL DEFAULT 0,
+			result TEXT NOT NULL DEFAULT '',
+			details TEXT NOT NULL DEFAULT '',
+			triggered_at DATETIME NOT NULL DEFAULT (datetime('now'))
+		)`); err != nil {
+		return fmt.Errorf("ensure sprint_planning_runs table: %w", err)
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_sprint_planning_project_time ON sprint_planning_runs(project, triggered_at)`); err != nil {
+		return fmt.Errorf("ensure sprint_planning_runs index: %w", err)
+	}
+	return nil
+}
+
+func parseSQLiteTime(value string) (time.Time, error) {
+	layouts := []string{
+		time.DateTime,
+		time.RFC3339Nano,
+		time.RFC3339,
+	}
+	var lastErr error
+	for _, layout := range layouts {
+		parsed, err := time.Parse(layout, value)
+		if err == nil {
+			return parsed.UTC(), nil
+		}
+		lastErr = err
+	}
+	return time.Time{}, lastErr
 }
