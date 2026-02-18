@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -214,6 +215,86 @@ func TestMergeBranchIntoBaseConflict(t *testing.T) {
 	}
 	if !errors.Is(err, ErrMergeConflict) {
 		t.Fatalf("expected ErrMergeConflict, got %v", err)
+	}
+}
+
+func TestMergeBranchIntoBaseRebaseWithAdvancedBase(t *testing.T) {
+	repo := setupTestRepo(t)
+
+	baseBranch, _ := GetCurrentBranch(repo)
+	beadID := "rebase-111"
+	featureBranch := "ctx/" + beadID
+	if err := EnsureFeatureBranchWithBase(repo, beadID, baseBranch, "ctx/"); err != nil {
+		t.Fatalf("EnsureFeatureBranchWithBase failed: %v", err)
+	}
+
+	readmePath := filepath.Join(repo, "README.md")
+	if err := os.WriteFile(readmePath, []byte("# Test Repo\nfeature line\n"), 0644); err != nil {
+		t.Fatalf("failed to write feature change: %v", err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "feature change")
+
+	runGit(t, repo, "checkout", baseBranch)
+	baseFile := filepath.Join(repo, "BASE.md")
+	if err := os.WriteFile(baseFile, []byte("base advanced\n"), 0644); err != nil {
+		t.Fatalf("failed to write base file: %v", err)
+	}
+	runGit(t, repo, "add", "BASE.md")
+	runGit(t, repo, "commit", "-m", "base advanced")
+
+	if err := MergeBranchIntoBase(repo, featureBranch, baseBranch, "rebase"); err != nil {
+		t.Fatalf("MergeBranchIntoBase rebase failed: %v", err)
+	}
+
+	data, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	if string(data) != "# Test Repo\nfeature line\n" {
+		t.Fatalf("expected rebased feature content in README, got %q", string(data))
+	}
+
+	if _, err := os.Stat(baseFile); err != nil {
+		t.Fatalf("expected base advanced file to remain after rebase merge: %v", err)
+	}
+}
+
+func TestMergeBranchIntoBaseRebaseConflict(t *testing.T) {
+	repo := setupTestRepo(t)
+
+	baseBranch, _ := GetCurrentBranch(repo)
+	beadID := "rebase-conflict-222"
+	featureBranch := "ctx/" + beadID
+	if err := EnsureFeatureBranchWithBase(repo, beadID, baseBranch, "ctx/"); err != nil {
+		t.Fatalf("EnsureFeatureBranchWithBase failed: %v", err)
+	}
+
+	readmePath := filepath.Join(repo, "README.md")
+	if err := os.WriteFile(readmePath, []byte("# Test Repo\nfeature line\n"), 0644); err != nil {
+		t.Fatalf("failed to write feature change: %v", err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "feature change")
+
+	runGit(t, repo, "checkout", baseBranch)
+	if err := os.WriteFile(readmePath, []byte("# Test Repo\nbase line\n"), 0644); err != nil {
+		t.Fatalf("failed to write base change: %v", err)
+	}
+	runGit(t, repo, "add", "README.md")
+	runGit(t, repo, "commit", "-m", "base change")
+
+	err := MergeBranchIntoBase(repo, featureBranch, baseBranch, "rebase")
+	if err == nil {
+		t.Fatal("expected rebase conflict error")
+	}
+	if !errors.Is(err, ErrMergeConflict) {
+		t.Fatalf("expected ErrMergeConflict, got %v", err)
+	}
+
+	status := runGit(t, repo, "status", "--porcelain")
+	if strings.TrimSpace(status) != "" {
+		t.Fatalf("expected clean repository after rebase conflict abort, got status %q", status)
 	}
 }
 

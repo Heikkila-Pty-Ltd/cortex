@@ -136,10 +136,8 @@ func MergeBranchIntoBase(workspace, featureBranch, baseBranch, mergeStrategy str
 		baseBranch = "main"
 	}
 
-	cmd := exec.Command("git", "checkout", baseBranch)
-	cmd.Dir = workspace
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to checkout base branch %s: %w (%s)", baseBranch, err, strings.TrimSpace(string(out)))
+	if _, err := runGitCommand(workspace, "checkout", baseBranch); err != nil {
+		return fmt.Errorf("failed to checkout base branch %s: %w", baseBranch, err)
 	}
 
 	strategy := strings.ToLower(strings.TrimSpace(mergeStrategy))
@@ -147,32 +145,58 @@ func MergeBranchIntoBase(workspace, featureBranch, baseBranch, mergeStrategy str
 		strategy = "merge"
 	}
 
+	mergeOrRebaseConflict := func(op string, err error) error {
+		text := strings.TrimSpace(err.Error())
+		if isMergeConflictText(text) {
+			return fmt.Errorf("%w: %s", ErrMergeConflict, text)
+		}
+		return fmt.Errorf("failed to %s branch %s into %s: %w", op, featureBranch, baseBranch, err)
+	}
+
+	var (
+		output string
+		err    error
+	)
 	switch strategy {
 	case "merge":
-		cmd = exec.Command("git", "merge", "--no-ff", "--no-edit", featureBranch)
+		output, err = runGitCommand(workspace, "merge", "--no-ff", "--no-edit", featureBranch)
 	case "squash":
-		cmd = exec.Command("git", "merge", "--squash", featureBranch)
+		output, err = runGitCommand(workspace, "merge", "--squash", featureBranch)
 	case "rebase":
-		cmd = exec.Command("git", "merge", "--ff-only", featureBranch)
+		if _, checkoutErr := runGitCommand(workspace, "checkout", featureBranch); checkoutErr != nil {
+			return fmt.Errorf("failed to checkout feature branch %s for rebase: %w", featureBranch, checkoutErr)
+		}
+		if _, rebaseErr := runGitCommand(workspace, "rebase", baseBranch); rebaseErr != nil {
+			if isMergeConflictText(rebaseErr.Error()) {
+				_, _ = runGitCommand(workspace, "rebase", "--abort")
+				_, _ = runGitCommand(workspace, "checkout", baseBranch)
+				return fmt.Errorf("%w: %s", ErrMergeConflict, strings.TrimSpace(rebaseErr.Error()))
+			}
+			_, _ = runGitCommand(workspace, "checkout", baseBranch)
+			return fmt.Errorf("failed to rebase branch %s onto %s: %w", featureBranch, baseBranch, rebaseErr)
+		}
+		if _, checkoutErr := runGitCommand(workspace, "checkout", baseBranch); checkoutErr != nil {
+			return fmt.Errorf("failed to checkout base branch %s after rebase: %w", baseBranch, checkoutErr)
+		}
+		output, err = runGitCommand(workspace, "merge", "--ff-only", featureBranch)
 	default:
 		return fmt.Errorf("unsupported merge strategy %q", mergeStrategy)
 	}
-	cmd.Dir = workspace
-	if out, err := cmd.CombinedOutput(); err != nil {
-		text := strings.TrimSpace(string(out))
-		lower := strings.ToLower(text)
-		if strings.Contains(lower, "conflict") || strings.Contains(lower, "merge conflict") || strings.Contains(lower, "automatic merge failed") {
-			return fmt.Errorf("%w: %s", ErrMergeConflict, text)
+	if err != nil {
+		if output != "" {
+			err = fmt.Errorf("%w (%s)", err, strings.TrimSpace(output))
 		}
-		return fmt.Errorf("failed to merge branch %s into %s: %w (%s)", featureBranch, baseBranch, err, text)
+		op := "merge"
+		if strategy == "rebase" {
+			op = "fast-forward merge rebased"
+		}
+		return mergeOrRebaseConflict(op, err)
 	}
 
 	if strategy == "squash" {
 		commitMsg := fmt.Sprintf("squash merge %s", featureBranch)
-		cmd = exec.Command("git", "commit", "-m", commitMsg)
-		cmd.Dir = workspace
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("failed to commit squash merge for %s: %w (%s)", featureBranch, err, strings.TrimSpace(string(out)))
+		if _, err := runGitCommand(workspace, "commit", "-m", commitMsg); err != nil {
+			return fmt.Errorf("failed to commit squash merge for %s: %w", featureBranch, err)
 		}
 	}
 
@@ -181,10 +205,42 @@ func MergeBranchIntoBase(workspace, featureBranch, baseBranch, mergeStrategy str
 
 // DeleteBranch deletes a local branch after successful merge.
 func DeleteBranch(workspace, branch string) error {
-	cmd := exec.Command("git", "branch", "-d", branch)
-	cmd.Dir = workspace
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to delete branch %s: %w (%s)", branch, err, strings.TrimSpace(string(out)))
+	if _, err := runGitCommand(workspace, "branch", "-d", branch); err != nil {
+		return fmt.Errorf("failed to delete branch %s: %w", branch, err)
 	}
 	return nil
+}
+
+func isMergeConflictText(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	conflictMarkers := []string{
+		"conflict",
+		"merge conflict",
+		"automatic merge failed",
+		"could not apply",
+		"resolve all conflicts manually",
+	}
+	for _, marker := range conflictMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func runGitCommand(workspace string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = workspace
+	out, err := cmd.CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if err != nil {
+		if text == "" {
+			return "", err
+		}
+		return text, fmt.Errorf("%w (%s)", err, text)
+	}
+	return text, nil
 }
