@@ -1412,8 +1412,7 @@ func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, project
 		if d.DispatchedAt.Before(cutoff) {
 			continue
 		}
-		switch d.Status {
-		case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
+		if isChurnCountableStatus(d.Status) {
 			recent++
 		}
 	}
@@ -1480,6 +1479,15 @@ func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, project
 		0, bead.ID)
 	s.churnBlock[key] = now
 	return true
+}
+
+func isChurnCountableStatus(status string) bool {
+	switch status {
+	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Scheduler) isFailureQuarantined(beadID string) bool {

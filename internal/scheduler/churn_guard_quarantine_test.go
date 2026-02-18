@@ -45,7 +45,7 @@ func TestIsChurnBlocked_RecordsEscalationWhenNotQuarantined(t *testing.T) {
 	installFakeBDForChurnGuardTest(t)
 
 	const beadID = "cortex-non-quarantine"
-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
+	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
 
 	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "churn test"}, "cortex", beadsDir)
 	if !blocked {
@@ -62,6 +62,28 @@ func TestIsChurnBlocked_RecordsEscalationWhenNotQuarantined(t *testing.T) {
 	}
 	if hasHealthEventType(events, "bead_quarantined") {
 		t.Fatal("did not expect quarantine event for non-failure history")
+	}
+}
+
+func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
+	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+	installFakeBDForChurnGuardTest(t)
+
+	const beadID = "cortex-completed-only"
+	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold+2)
+
+	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only churn test"}, "cortex", beadsDir)
+	if blocked {
+		t.Fatal("did not expect churn guard block for completed-only history")
+	}
+
+	events, err := st.GetRecentHealthEvents(10)
+	if err != nil {
+		t.Fatalf("get health events: %v", err)
+	}
+
+	if hasHealthEventType(events, "bead_churn_blocked") {
+		t.Fatal("did not expect churn escalation health event for completed-only history")
 	}
 }
 
@@ -95,7 +117,7 @@ func TestIsChurnBlocked_SuppressesDuplicateEscalationWhenRecentClosedEscalationE
 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
 
 	const beadID = "cortex-duplicate-escalation"
-	recordDispatchHistory(t, st, beadID, "completed", churnDispatchThreshold)
+	recordDispatchHistory(t, st, beadID, "running", churnDispatchThreshold)
 
 	createLog := filepath.Join(t.TempDir(), "create.log")
 	recentClosedEscalation := fmt.Sprintf(`[{
