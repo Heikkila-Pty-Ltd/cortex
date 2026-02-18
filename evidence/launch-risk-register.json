@@ -1,0 +1,296 @@
+{
+  "version": "1.0",
+  "generated_at": "2026-02-18T02:30:00Z",
+  "project": "cortex",
+  "decision_contract": {
+    "required_approvers": [
+      "project_owner",
+      "ops_owner"
+    ],
+    "gates": [
+      {
+        "id": "G-001",
+        "name": "open_p1_bugs",
+        "operator": "==",
+        "threshold": 0
+      },
+      {
+        "id": "G-002",
+        "name": "open_p2_bugs",
+        "operator": "<=",
+        "threshold": 3
+      },
+      {
+        "id": "G-003",
+        "name": "failed_needs_check_unresolved_over_24h",
+        "operator": "==",
+        "threshold": 0
+      },
+      {
+        "id": "G-004",
+        "name": "burnin_7d_slo_overall_pass",
+        "operator": "==",
+        "threshold": true
+      }
+    ]
+  },
+  "gate_snapshot": {
+    "as_of": "2026-02-18",
+    "open_p1_bugs": 0,
+    "open_p2_bugs": 0,
+    "failed_needs_check_unresolved_over_24h": 0,
+    "burnin_7d_slo_overall_pass": false,
+    "burnin_metrics": {
+      "unknown_disappeared_pct": 0.1958863858961802,
+      "unknown_disappeared_pct_threshold": 1.0,
+      "intervention_pct": 1.6650342801175317,
+      "intervention_pct_threshold": 5.0,
+      "critical_event_total": 113,
+      "critical_event_total_threshold": 0
+    }
+  },
+  "risk_scoring": {
+    "likelihood_scale": "1 (rare) .. 5 (almost certain)",
+    "impact_scale": "1 (minor) .. 5 (critical)",
+    "formula": "score = likelihood * impact",
+    "bands": {
+      "high": "15-25",
+      "medium": "8-14",
+      "low": "1-7"
+    }
+  },
+  "launch_recommendation": {
+    "decision": "NO_GO",
+    "next_review_date": "2026-02-19",
+    "rationale": [
+      "Reliability burn-in gate fails due to critical event volume.",
+      "Security and safety evidence are incomplete for sign-off."
+    ]
+  },
+  "risks": [
+    {
+      "id": "R-001",
+      "title": "Burn-in critical event gate failure",
+      "dimension": "technical",
+      "likelihood": 4,
+      "impact": 5,
+      "score": 20,
+      "launch_blocker": true,
+      "status": "open",
+      "owner_role": "platform_owner",
+      "evidence": [
+        "artifacts/launch/burnin/burnin-final-2026-02-18.json"
+      ],
+      "mitigation_ids": [
+        "M-001",
+        "M-002"
+      ],
+      "residual_risk": "medium after 7-day clean burn-in",
+      "next_review_date": "2026-02-19"
+    },
+    {
+      "id": "R-002",
+      "title": "Session disappearance and failed_needs_check recurrence",
+      "dimension": "integration",
+      "likelihood": 4,
+      "impact": 4,
+      "score": 16,
+      "launch_blocker": true,
+      "status": "open",
+      "owner_role": "scheduler_owner",
+      "evidence": [
+        "~/.local/share/cortex/cortex.db:dispatches",
+        "~/.local/share/cortex/cortex.db:health_events"
+      ],
+      "mitigation_ids": [
+        "M-002",
+        "M-003"
+      ],
+      "residual_risk": "medium with enforced quarantine and aging control",
+      "next_review_date": "2026-02-19"
+    },
+    {
+      "id": "R-003",
+      "title": "Security scan artifacts missing for launch sign-off",
+      "dimension": "technical",
+      "likelihood": 3,
+      "impact": 5,
+      "score": 15,
+      "launch_blocker": true,
+      "status": "open",
+      "owner_role": "security_owner",
+      "evidence": [
+        "evidence/launch-readiness-matrix.md",
+        "evidence/validation-report.md"
+      ],
+      "mitigation_ids": [
+        "M-004"
+      ],
+      "residual_risk": "low after recurring scans with zero critical findings",
+      "next_review_date": "2026-02-20"
+    },
+    {
+      "id": "R-004",
+      "title": "Safety trial and compliance evidence gap",
+      "dimension": "safety",
+      "likelihood": 3,
+      "impact": 5,
+      "score": 15,
+      "launch_blocker": true,
+      "status": "open",
+      "owner_role": "safety_owner",
+      "evidence": [
+        "docs/llm-safety-trial-protocol.md",
+        "templates/safety-trial-log-template.md"
+      ],
+      "mitigation_ids": [
+        "M-005"
+      ],
+      "residual_risk": "medium after first production month monitoring",
+      "next_review_date": "2026-02-21"
+    },
+    {
+      "id": "R-005",
+      "title": "DoD failure churn from missing bead quality metadata",
+      "dimension": "operational",
+      "likelihood": 4,
+      "impact": 3,
+      "score": 12,
+      "launch_blocker": false,
+      "status": "open",
+      "owner_role": "scrum_master",
+      "evidence": [
+        "~/.local/share/cortex/cortex.db:health_events (dod_failure)"
+      ],
+      "mitigation_ids": [
+        "M-006"
+      ],
+      "residual_risk": "low with pre-dispatch validation",
+      "next_review_date": "2026-02-19"
+    },
+    {
+      "id": "R-006",
+      "title": "Multi-agent workspace collision risk",
+      "dimension": "operational",
+      "likelihood": 3,
+      "impact": 4,
+      "score": 12,
+      "launch_blocker": false,
+      "status": "open",
+      "owner_role": "project_owner",
+      "evidence": [
+        "worktree isolation policy discussions",
+        "ownership lock implementation requirement"
+      ],
+      "mitigation_ids": [
+        "M-007"
+      ],
+      "residual_risk": "low with mandatory worktree separation",
+      "next_review_date": "2026-02-19"
+    },
+    {
+      "id": "R-007",
+      "title": "Backup/restore drift vs production reality",
+      "dimension": "data",
+      "likelihood": 2,
+      "impact": 4,
+      "score": 8,
+      "launch_blocker": false,
+      "status": "open",
+      "owner_role": "data_owner",
+      "evidence": [
+        "artifacts/launch/runbooks/backup-restore-drill-20260218.md"
+      ],
+      "mitigation_ids": [
+        "M-008"
+      ],
+      "residual_risk": "low with weekly restore validation",
+      "next_review_date": "2026-02-22"
+    },
+    {
+      "id": "R-008",
+      "title": "Premature launch reputational impact",
+      "dimension": "business",
+      "likelihood": 3,
+      "impact": 5,
+      "score": 15,
+      "launch_blocker": true,
+      "status": "open",
+      "owner_role": "project_owner",
+      "evidence": [
+        "evidence/risk-assessment-report.md",
+        "docs/LAUNCH_READINESS_CHECKLIST.md"
+      ],
+      "mitigation_ids": [
+        "M-009"
+      ],
+      "residual_risk": "medium pending stakeholder confidence rebuild",
+      "next_review_date": "2026-02-22"
+    }
+  ],
+  "mitigations": [
+    {
+      "id": "M-001",
+      "title": "Finalize critical event taxonomy and burn-in gate semantics",
+      "owner_role": "platform_owner",
+      "due_date": "2026-02-19",
+      "status": "planned"
+    },
+    {
+      "id": "M-002",
+      "title": "Reduce session disappearance incidents and stabilize retries",
+      "owner_role": "scheduler_owner",
+      "due_date": "2026-02-20",
+      "status": "planned"
+    },
+    {
+      "id": "M-003",
+      "title": "Enforce failed_needs_check aging zero-tolerance",
+      "owner_role": "ops_owner",
+      "due_date": "2026-02-19",
+      "status": "planned"
+    },
+    {
+      "id": "M-004",
+      "title": "Run security scans and publish launch artifacts",
+      "owner_role": "security_owner",
+      "due_date": "2026-02-20",
+      "status": "planned"
+    },
+    {
+      "id": "M-005",
+      "title": "Execute safety trial and compliance review",
+      "owner_role": "safety_owner",
+      "due_date": "2026-02-21",
+      "status": "planned"
+    },
+    {
+      "id": "M-006",
+      "title": "Add pre-dispatch bead quality validation",
+      "owner_role": "scrum_master",
+      "due_date": "2026-02-19",
+      "status": "planned"
+    },
+    {
+      "id": "M-007",
+      "title": "Enforce worktree isolation and ownership lock policy",
+      "owner_role": "project_owner",
+      "due_date": "2026-02-19",
+      "status": "planned"
+    },
+    {
+      "id": "M-008",
+      "title": "Automate backup integrity and restore drills",
+      "owner_role": "data_owner",
+      "due_date": "2026-02-22",
+      "status": "planned"
+    },
+    {
+      "id": "M-009",
+      "title": "Run formal go/no-go with required approvers",
+      "owner_role": "project_owner",
+      "due_date": "2026-02-22",
+      "status": "planned"
+    }
+  ]
+}
