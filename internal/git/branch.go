@@ -148,6 +148,10 @@ func MergeBranchIntoBase(workspace, featureBranch, baseBranch, mergeStrategy str
 	mergeOrRebaseConflict := func(op string, err error) error {
 		text := strings.TrimSpace(err.Error())
 		if isMergeConflictText(text) {
+			if strategy != "rebase" {
+				abortMergeInProgress(workspace)
+				_, _ = runGitCommand(workspace, "checkout", baseBranch)
+			}
 			return fmt.Errorf("%w: %s", ErrMergeConflict, text)
 		}
 		return fmt.Errorf("failed to %s branch %s into %s: %w", op, featureBranch, baseBranch, err)
@@ -243,4 +247,10 @@ func runGitCommand(workspace string, args ...string) (string, error) {
 		return text, fmt.Errorf("%w (%s)", err, text)
 	}
 	return text, nil
+}
+
+func abortMergeInProgress(workspace string) {
+	if _, err := runGitCommand(workspace, "merge", "--abort"); err != nil {
+		_, _ = runGitCommand(workspace, "reset", "--merge")
+	}
 }

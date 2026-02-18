@@ -206,3 +206,35 @@ func TestGetFastTierCLIComparison(t *testing.T) {
 		t.Fatalf("unexpected aider stats: %+v", byCLI["aider"])
 	}
 }
+
+func TestGetProviderStatsIgnoresNonFailedStatusesInFailureCategories(t *testing.T) {
+	s := tempInMemoryStore(t)
+	now := time.Now().Add(-time.Hour)
+
+	seedDispatch(t, s, "status-filter-1", "project-a", "provider-a", "fast", "failed", 0, now)
+	seedDispatch(t, s, "status-filter-2", "project-a", "provider-a", "fast", "pending_retry", 0, now.Add(time.Minute))
+	seedDispatch(t, s, "status-filter-3", "project-a", "provider-a", "fast", "running", 0, now.Add(2*time.Minute))
+
+	if _, err := s.DB().Exec(`UPDATE dispatches SET failure_category = 'test_failure' WHERE bead_id = ?`, "status-filter-1"); err != nil {
+		t.Fatalf("update failed dispatch category: %v", err)
+	}
+	if _, err := s.DB().Exec(`UPDATE dispatches SET failure_category = 'unknown' WHERE bead_id = ?`, "status-filter-2"); err != nil {
+		t.Fatalf("update pending_retry dispatch category: %v", err)
+	}
+	if _, err := s.DB().Exec(`UPDATE dispatches SET failure_category = 'unknown' WHERE bead_id = ?`, "status-filter-3"); err != nil {
+		t.Fatalf("update running dispatch category: %v", err)
+	}
+
+	stats, err := GetProviderStats(s, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("GetProviderStats failed: %v", err)
+	}
+
+	ps := stats["provider-a"]
+	if got := ps.FailureCategories["test_failure"]; got != 1 {
+		t.Fatalf("expected test_failure=1, got %d (%v)", got, ps.FailureCategories)
+	}
+	if got := ps.FailureCategories["unknown"]; got != 0 {
+		t.Fatalf("expected unknown failures from non-failed statuses to be ignored, got %d (%v)", got, ps.FailureCategories)
+	}
+}

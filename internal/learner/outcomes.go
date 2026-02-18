@@ -256,7 +256,7 @@ func enrichProviderFailureCategories(s *store.Store, cutoff string, stats map[st
 		if err := rows.Scan(&dispatchID, &provider, &status, &failureCategory, &logPath, &output); err != nil {
 			return fmt.Errorf("learner: scan provider failure categories: %w", err)
 		}
-		if strings.EqualFold(strings.TrimSpace(status), "completed") {
+		if !strings.EqualFold(strings.TrimSpace(status), "failed") {
 			continue
 		}
 
