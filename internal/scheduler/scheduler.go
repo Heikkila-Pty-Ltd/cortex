@@ -856,6 +856,7 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 		exitCode := 0
 		finalStage := "completed"
 		retryPending := false
+		retryReason := ""
 
 		// For tmux sessions, capture output and get exit code from the session
 		if d.Backend == "tmux" || d.SessionName != "" {
@@ -906,6 +907,7 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 						if category == "gateway_closed" {
 							retryPending = true
 							finalStage = "pending_retry"
+							retryReason = "gateway_closed"
 						}
 						if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
 							s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
@@ -988,6 +990,7 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 					if category == "gateway_closed" {
 						retryPending = true
 						finalStage = "pending_retry"
+						retryReason = "gateway_closed"
 					}
 					if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
 						s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
@@ -996,6 +999,15 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 			}
 			if backend != nil {
 				_ = backend.Cleanup(handle)
+			}
+		}
+
+		if status == "failed" && !retryPending && finalStage == "failed" && duration <= 10 && exitCode != 0 {
+			retryPending = true
+			retryReason = "cli_broken"
+			if err := s.store.UpdateFailureDiagnosis(d.ID, "cli_broken",
+				fmt.Sprintf("dispatch failed quickly (%.1fs, exit=%d); scheduling within-tier CLI fallback", duration, exitCode)); err != nil {
+				s.logger.Warn("failed to store cli fallback diagnosis", "dispatch_id", d.ID, "error", err)
 			}
 		}
 
@@ -1016,15 +1028,28 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 				if nextTier == "" {
 					nextTier = "balanced"
 				}
+				if retryReason == "cli_broken" {
+					if !s.hasAlternativeProviderInTier(nextTier, d.Provider) {
+						if shifted := nextTierAfterExhaustion(nextTier); shifted != "" {
+							nextTier = shifted
+						}
+					}
+				}
 				if err := s.store.MarkDispatchPendingRetry(d.ID, nextTier); err != nil {
 					s.logger.Warn("failed to queue gateway retry; leaving dispatch failed", "dispatch_id", d.ID, "bead", d.BeadID, "error", err)
 					finalStage = "failed_needs_check"
 				} else {
 					status = "pending_retry"
 					finalStage = "pending_retry"
+					eventType := "dispatch_retry_queued_gateway"
+					details := fmt.Sprintf("bead %s dispatch %d queued for retry due to transient gateway closure", d.BeadID, d.ID)
+					if retryReason == "cli_broken" {
+						eventType = "dispatch_retry_queued_cli_fallback"
+						details = fmt.Sprintf("bead %s dispatch %d queued for CLI fallback retry in tier %s", d.BeadID, d.ID, nextTier)
+					}
 					_ = s.store.RecordHealthEventWithDispatch(
-						"dispatch_retry_queued_gateway",
-						fmt.Sprintf("bead %s dispatch %d queued for retry due to transient gateway closure", d.BeadID, d.ID),
+						eventType,
+						details,
 						d.ID,
 						d.BeadID,
 					)
@@ -1654,7 +1679,11 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 		}
 
 		retryRole := roleFromAgentID(retry.Project, retry.AgentID)
-		provider := s.providerByModel(retry.Provider)
+		excludedModels := map[string]bool{}
+		if strings.EqualFold(strings.TrimSpace(retry.FailureCategory), "cli_broken") && strings.TrimSpace(retry.Provider) != "" {
+			excludedModels[retry.Provider] = true
+		}
+		provider, _, selectedTier := s.pickProviderForRetry(retry.Tier, excludedModels)
 		if provider == nil {
 			s.logger.Error("retry provider selection failed", "bead", retry.BeadID, "tier", retry.Tier, "failure_category", retry.FailureCategory)
 			duration := time.Since(retry.DispatchedAt).Seconds()
@@ -1668,10 +1697,6 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 				s.logger.Warn("failed to release claim after retry provider selection failure", "dispatch_id", retry.ID, "bead", retry.BeadID, "error", err)
 			}
 			continue
-		}
-		selectedTier := retry.Tier
-		if strings.TrimSpace(selectedTier) == "" {
-			selectedTier = "balanced"
 		}
 
 		backend, backendName, err := s.selectBackend(retryRole, selectedTier, retry.Retries+1)
@@ -2295,6 +2320,76 @@ func (s *Scheduler) pickProviderForBead(bead beads.Bead, initialTier string, exc
 		}
 		return nil, "", currentTier
 	}
+}
+
+func (s *Scheduler) pickProviderForRetry(initialTier string, excludeModels map[string]bool) (*config.Provider, string, string) {
+	currentTier := initialTier
+	if strings.TrimSpace(currentTier) == "" {
+		currentTier = "balanced"
+	}
+
+	tried := map[string]bool{currentTier: true}
+	for {
+		provider, providerName := s.pickProviderFromCandidates(currentTier, s.tierCandidates(currentTier), excludeModels)
+		if provider != nil {
+			return provider, providerName, currentTier
+		}
+
+		nextTier := nextTierAfterExhaustion(currentTier)
+		if nextTier == "" || tried[nextTier] {
+			return nil, "", currentTier
+		}
+		s.logger.Info("tier shift for retry provider selection", "from", currentTier, "to", nextTier)
+		tried[nextTier] = true
+		currentTier = nextTier
+	}
+}
+
+func (s *Scheduler) tierCandidates(tier string) []string {
+	switch tier {
+	case "fast":
+		return s.cfg.Tiers.Fast
+	case "balanced":
+		return s.cfg.Tiers.Balanced
+	case "premium":
+		return s.cfg.Tiers.Premium
+	default:
+		return s.cfg.Tiers.Balanced
+	}
+}
+
+func nextTierAfterExhaustion(tier string) string {
+	switch tier {
+	case "premium":
+		return "balanced"
+	case "balanced":
+		return "fast"
+	case "fast":
+		return "balanced"
+	default:
+		return ""
+	}
+}
+
+func (s *Scheduler) hasAlternativeProviderInTier(tier, failedModel string) bool {
+	trimmed := strings.TrimSpace(failedModel)
+	for _, name := range s.tierCandidates(tier) {
+		provider, ok := s.cfg.Providers[name]
+		if !ok {
+			continue
+		}
+		if trimmed != "" && provider.Model == trimmed {
+			continue
+		}
+		if !provider.Authed {
+			return true
+		}
+		okToDispatch, _ := s.rateLimiter.CanDispatchAuthed()
+		if okToDispatch {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Scheduler) selectBackend(role, tier string, retryCount int) (dispatch.Backend, string, error) {
