@@ -85,6 +85,12 @@ const (
 	gatewayCircuitDuration  = 10 * time.Minute
 )
 
+func bdCommandContext(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "bd", args...)
+	cmd.Env = append(os.Environ(), "BEADS_NO_DAEMON=1")
+	return cmd
+}
+
 // New creates a new Scheduler with all dependencies.
 func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatch.DispatcherInterface, logger *slog.Logger, dryRun bool) *Scheduler {
 	openclawDispatcher, ok := d.(*dispatch.Dispatcher)
@@ -677,7 +683,7 @@ func (s *Scheduler) closeBead(ctx context.Context, projectName string, project c
 func (s *Scheduler) transitionBeadToCoding(ctx context.Context, projectName string, project config.Project, bead beads.Bead, failureReason string) {
 	// Update bead to stage:coding using bd CLI
 	projectRoot := strings.TrimSuffix(project.BeadsDir, "/.beads")
-	cmd := exec.CommandContext(ctx, "bd", "update", bead.ID, "--set-labels", "stage:coding")
+	cmd := bdCommandContext(ctx, "update", bead.ID, "--set-labels", "stage:coding")
 	cmd.Dir = projectRoot
 
 	// Capture both stdout and stderr for better error reporting
@@ -769,7 +775,7 @@ func (s *Scheduler) handleOpsQaCompletion(ctx context.Context, dispatch store.Di
 func (s *Scheduler) transitionBeadToDod(ctx context.Context, projectName string, project config.Project, bead beads.Bead) {
 	// Update bead to stage:dod using bd CLI
 	projectRoot := strings.TrimSuffix(project.BeadsDir, "/.beads")
-	cmd := exec.CommandContext(ctx, "bd", "update", bead.ID, "--set-labels", "stage:dod")
+	cmd := bdCommandContext(ctx, "update", bead.ID, "--set-labels", "stage:dod")
 	cmd.Dir = projectRoot
 
 	// Capture both stdout and stderr for better error reporting

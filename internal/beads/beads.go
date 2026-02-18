@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -77,6 +78,7 @@ func runBD(ctx context.Context, projectDir string, args ...string) ([]byte, erro
 
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Dir = projectDir
+	cmd.Env = append(os.Environ(), "BEADS_NO_DAEMON=1")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
