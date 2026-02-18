@@ -15,16 +15,20 @@ type Sender interface {
 type OpenClawSender struct {
 	runner  Runner
 	account string
+	direct  Sender
 }
 
 // NewOpenClawSender constructs a sender with an optional account id.
 func NewOpenClawSender(runner Runner, account string) *OpenClawSender {
+	var direct Sender
 	if runner == nil {
 		runner = ExecRunner{}
+		direct = NewHTTPSender(nil, account)
 	}
 	return &OpenClawSender{
 		runner:  runner,
 		account: strings.TrimSpace(account),
+		direct:  direct,
 	}
 }
 
@@ -37,6 +41,15 @@ func (s *OpenClawSender) SendMessage(ctx context.Context, roomID, message string
 	message = strings.TrimSpace(message)
 	if message == "" {
 		return fmt.Errorf("message is required")
+	}
+
+	var directErr error
+	if s.direct != nil {
+		if err := s.direct.SendMessage(ctx, roomID, message); err == nil {
+			return nil
+		} else {
+			directErr = err
+		}
 	}
 
 	args := []string{
@@ -52,6 +65,9 @@ func (s *OpenClawSender) SendMessage(ctx context.Context, roomID, message string
 
 	out, err := s.runner.Run(ctx, "openclaw", args...)
 	if err != nil {
+		if directErr != nil {
+			return fmt.Errorf("direct matrix send failed: %v; openclaw message send failed: %w (%s)", directErr, err, compactOutput(out))
+		}
 		return fmt.Errorf("openclaw message send failed: %w (%s)", err, compactOutput(out))
 	}
 	return nil
