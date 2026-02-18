@@ -13,6 +13,85 @@ var filePathRe = regexp.MustCompile(`(?:^|\s)((?:src|internal|cmd|pkg|lib|app|pu
 
 // stageInstructions maps roles to stage-specific prompt instructions.
 var stageInstructions = map[string]func(bead beads.Bead, useBranches bool, prDiff string) string{
+	"sprint_planning": func(b beads.Bead, useBranches bool, prDiff string) string {
+		return `## Instructions (Sprint Planning)
+You are facilitating sprint planning. Review the backlog and select items for the upcoming sprint.
+
+### 1. Backlog Review & Refinement
+For each candidate item:
+- **Review description** - Is it clear and actionable?
+- **Check acceptance criteria** - Are they specific and testable?
+- **Add estimates** - Use story points (1, 2, 3, 5, 8, 13) based on complexity
+- **Refine if needed**:
+  * bd update <id> --acceptance="Clear, testable criteria"
+  * bd update <id> --design="Implementation notes and approach"
+  * bd update <id> --estimate=<points>
+
+### 2. Sprint Capacity Planning
+Consider:
+- **Team capacity** - Available developer hours/story points for sprint
+- **Dependencies** - Items blocked by others should wait
+- **Priority** - Focus on P0 (critical) and P1 (high) items first
+- **Risk** - Balance safe wins with challenging work
+
+### 3. Sprint Selection Commands
+When selecting items for sprint:
+` + "```" + `bash
+# Mark items as ready for sprint
+bd update <id> --set-labels stage:ready,sprint:selected
+
+# Set sprint milestone (optional)
+bd update <id> --milestone="Sprint 2024-01"
+
+# Assign initial ownership if known
+bd update <id> --assignee=<team-member>
+` + "```" + `
+
+### 4. Sprint Commitments
+Create sprint summary with:
+- **Sprint Goal** - What are we trying to achieve?
+- **Selected Items** - List with IDs, titles, and estimates
+- **Total Capacity** - Story points committed vs. available
+- **Risks** - Dependencies, unknowns, holidays
+
+### 5. Transition to Execution
+After sprint planning:
+` + "```" + `bash
+# Transition selected items to planning stage
+for id in <selected-ids>; do
+  bd update $id --set-labels stage:planning --assignee=planner
+done
+
+# Close this planning session
+bd close <planning-session-id> --reason="Sprint planning completed"
+` + "```" + `
+
+### Sprint Planning Template
+Use this format for sprint documentation:
+
+**Sprint Goal:** [What we're trying to achieve this sprint]
+
+**Team Capacity:** [Available story points/hours]
+
+**Selected Items:**
+- [ID] [Title] ([Points]pts) - [Brief description]
+- [ID] [Title] ([Points]pts) - [Brief description]
+
+**Total Committed:** [X points out of Y capacity]
+
+**Key Dependencies:** [Any blockers or prerequisites]
+
+**Success Metrics:** [How we'll know we succeeded]
+
+---
+**Sprint Planning Commands Summary:**
+- bd list --status=open --priority=P0,P1,P2  # View backlog
+- bd update <id> --acceptance="..."  # Add acceptance criteria
+- bd update <id> --estimate=<points>  # Add story point estimate
+- bd update <id> --set-labels stage:ready,sprint:selected  # Select for sprint
+- bd update <id> --assignee=planner  # Assign for detailed planning
+`
+	},
 	"scrum": func(b beads.Bead, useBranches bool, prDiff string) string {
 		return fmt.Sprintf(`## Instructions (Scrum Master)
 1. Review and refine the task description
