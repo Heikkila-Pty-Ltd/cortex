@@ -16,6 +16,9 @@ const (
 	RecommendationTier     RecommendationType = "tier"
 	RecommendationRetry    RecommendationType = "retry"
 	RecommendationCost     RecommendationType = "cost"
+
+	minComparableProvidersForRecommendations   = 2
+	minTerminalSamplesPerProviderRecommendation = 10
 )
 
 // Recommendation represents a system improvement suggestion.
@@ -74,6 +77,9 @@ func (e *RecommendationEngine) generateProviderRecommendations(window time.Durat
 	if err != nil {
 		return nil, err
 	}
+	if !hasComparableProviderCoverage(stats) {
+		return nil, nil
+	}
 	
 	var recs []Recommendation
 	now := time.Now()
@@ -81,10 +87,11 @@ func (e *RecommendationEngine) generateProviderRecommendations(window time.Durat
 	for provider, stat := range stats {
 		// Recommend avoiding providers with very low success rates
 		if stat.Total >= 10 && stat.SuccessRate < 60 {
+			effectStrength := clamp01((60.0 - stat.SuccessRate) / 60.0)
 			recs = append(recs, Recommendation{
 				ID:              fmt.Sprintf("provider-avoid-%s-%d", provider, now.Unix()),
 				Type:            RecommendationProvider,
-				Confidence:      85.0,
+				Confidence:      CalculateConfidence(stat.Total, effectStrength),
 				EvidenceWindow:  window,
 				SuggestedAction: fmt.Sprintf("Consider reducing usage of provider '%s' or investigating failure causes", provider),
 				Rationale:       fmt.Sprintf("Provider has %.1f%% success rate over %d dispatches in the last %v", stat.SuccessRate, stat.Total, window),
@@ -101,10 +108,11 @@ func (e *RecommendationEngine) generateProviderRecommendations(window time.Durat
 		
 		// Recommend promoting providers with excellent performance
 		if stat.Total >= 20 && stat.SuccessRate > 95 && stat.AvgDuration > 0 {
+			effectStrength := clamp01((stat.SuccessRate - 95.0) / 5.0)
 			recs = append(recs, Recommendation{
 				ID:              fmt.Sprintf("provider-promote-%s-%d", provider, now.Unix()),
 				Type:            RecommendationProvider,
-				Confidence:      75.0,
+				Confidence:      CalculateConfidence(stat.Total, effectStrength),
 				EvidenceWindow:  window,
 				SuggestedAction: fmt.Sprintf("Consider increasing usage of provider '%s' due to excellent reliability", provider),
 				Rationale:       fmt.Sprintf("Provider has %.1f%% success rate with avg duration %.1fs over %d dispatches", stat.SuccessRate, stat.AvgDuration, stat.Total),
@@ -271,6 +279,27 @@ func isRecommendationEvent(eventType string) bool {
 		eventType == "recommendation_tier" ||
 		eventType == "recommendation_cost" ||
 		eventType == "recommendation_retry"
+}
+
+func hasComparableProviderCoverage(stats map[string]ProviderStats) bool {
+	comparableProviders := 0
+	for _, stat := range stats {
+		if stat.Total >= minTerminalSamplesPerProviderRecommendation {
+			comparableProviders++
+		}
+	}
+	return comparableProviders >= minComparableProvidersForRecommendations
+}
+
+func clamp01(v float64) float64 {
+	switch {
+	case v < 0:
+		return 0
+	case v > 1:
+		return 1
+	default:
+		return v
+	}
 }
 
 // CalculateConfidence calculates confidence based on sample size and effect strength.

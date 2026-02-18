@@ -8,6 +8,11 @@ import (
 	"github.com/antigravity-dev/cortex/internal/store"
 )
 
+const (
+	minComparableProvidersForFiltering = 2
+	minRelevantSamplesPerCandidate     = 3
+)
+
 // ProviderProfile holds performance statistics for a single provider.
 type ProviderProfile struct {
 	Provider        string
@@ -154,6 +159,10 @@ func ApplyProfileToTierSelection(profiles map[string]ProviderProfile, bead beads
 		// No profile data available yet, return all candidates
 		return candidates
 	}
+	if !hasComparableCoverageForBead(profiles, bead, candidates) {
+		// Do not mutate routing with low-confidence profile evidence.
+		return candidates
+	}
 
 	weaknesses := DetectWeaknesses(profiles)
 	weaknessMap := make(map[string]map[string]bool)
@@ -196,4 +205,33 @@ func ApplyProfileToTierSelection(profiles map[string]ProviderProfile, bead beads
 	}
 
 	return filtered
+}
+
+func hasComparableCoverageForBead(profiles map[string]ProviderProfile, bead beads.Bead, candidates []string) bool {
+	comparable := 0
+	for _, candidate := range candidates {
+		profile, ok := profiles[candidate]
+		if !ok {
+			continue
+		}
+		if providerHasRelevantBeadEvidence(profile, bead) {
+			comparable++
+		}
+	}
+	return comparable >= minComparableProvidersForFiltering
+}
+
+func providerHasRelevantBeadEvidence(profile ProviderProfile, bead beads.Bead) bool {
+	maxSamples := 0
+
+	if perf, ok := profile.TypeStats[bead.Type]; ok && perf.Total > maxSamples {
+		maxSamples = perf.Total
+	}
+	for _, label := range bead.Labels {
+		if perf, ok := profile.LabelStats[label]; ok && perf.Total > maxSamples {
+			maxSamples = perf.Total
+		}
+	}
+
+	return maxSamples >= minRelevantSamplesPerCandidate
 }

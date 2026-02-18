@@ -67,6 +67,40 @@ func TestApplyProfileToTierSelection_NoWeaknesses(t *testing.T) {
 	}
 }
 
+func TestApplyProfileToTierSelection_RequiresComparableCoverage(t *testing.T) {
+	// Only one candidate has relevant bead evidence; filtering should be disabled.
+	profiles := map[string]ProviderProfile{
+		"openai": {
+			Provider:    "openai",
+			SuccessRate: 0.4,
+			LabelStats: map[string]LabelPerformance{
+				"go": {SuccessRate: 0.5, Total: 10},
+			},
+			TypeStats: map[string]LabelPerformance{
+				"task": {SuccessRate: 0.5, Total: 10},
+			},
+		},
+		"anthropic": {
+			Provider:    "anthropic",
+			SuccessRate: 0.95,
+			LabelStats:  map[string]LabelPerformance{},
+			TypeStats:   map[string]LabelPerformance{},
+		},
+	}
+
+	bead := beads.Bead{
+		ID:     "test-bead",
+		Type:   "task",
+		Labels: []string{"go"},
+	}
+	candidates := []string{"openai", "anthropic"}
+
+	result := ApplyProfileToTierSelection(profiles, bead, candidates)
+	if len(result) != len(candidates) {
+		t.Fatalf("expected original candidates due to insufficient comparable coverage, got %v", result)
+	}
+}
+
 func TestApplyProfileToTierSelection_FilterWeakProvider(t *testing.T) {
 	// Provider weak for "go" label should be filtered out
 	profiles := map[string]ProviderProfile{

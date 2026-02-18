@@ -57,7 +57,7 @@ func GetProviderStats(s *store.Store, window time.Duration) (map[string]Provider
 			SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) as failed,
 			AVG(CASE WHEN status='completed' THEN duration_s ELSE NULL END) as avg_dur
 		FROM dispatches
-		WHERE dispatched_at >= ?
+		WHERE dispatched_at >= ? AND status IN ('completed', 'failed')
 		GROUP BY provider
 	`, cutoff)
 	if err != nil {

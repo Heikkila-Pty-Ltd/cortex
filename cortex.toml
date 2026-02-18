@@ -98,6 +98,12 @@ agent_id = "main"
 daily_digest_time = "09:00"
 weekly_retro_day = "Monday"
 
+[learner]
+enabled = true
+analysis_window = "48h"
+cycle_interval = "6h"
+include_in_digest = true
+
 [api]
 bind = "127.0.0.1:8900"
 

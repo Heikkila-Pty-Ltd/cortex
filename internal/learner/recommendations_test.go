@@ -52,6 +52,26 @@ func TestRecommendationEngineProviderRecommendations(t *testing.T) {
 		}
 	}
 
+	// Add a second provider with sufficient terminal samples to satisfy
+	// comparable-coverage gates for provider recommendations.
+	for i := 0; i < 15; i++ {
+		beadID := fmt.Sprintf("good-bead-%d", i)
+		_, err := s.RecordDispatch(
+			beadID, "test-project", "agent-1",
+			"good-provider", "fast", 12346, "", "test prompt", "", "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		dispatchTime := baseTime.Add(time.Duration(i) * time.Minute)
+		_, err = s.DB().Exec(
+			"UPDATE dispatches SET dispatched_at = ?, status = 'completed', exit_code = 0 WHERE bead_id = ?",
+			dispatchTime.UTC().Format(time.DateTime), beadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	recommendations, err := engine.generateProviderRecommendations(4 * time.Hour)
 	if err != nil {
 		t.Fatalf("Failed to generate provider recommendations: %v", err)
@@ -73,6 +93,46 @@ func TestRecommendationEngineProviderRecommendations(t *testing.T) {
 
 	if !found {
 		t.Error("Expected recommendation to avoid poor provider")
+	}
+}
+
+func TestRecommendationEngineProviderRecommendations_RequiresComparableCoverage(t *testing.T) {
+	s := tempStoreForRecs(t)
+	engine := NewRecommendationEngine(s)
+
+	// Only one provider has data; provider recommendations should be suppressed.
+	baseTime := time.Now().Add(-2 * time.Hour)
+	for i := 0; i < 15; i++ {
+		status := "completed"
+		exitCode := 0
+		if i < 10 {
+			status = "failed"
+			exitCode = 1
+		}
+		beadID := fmt.Sprintf("single-provider-bead-%d", i)
+
+		_, err := s.RecordDispatch(
+			beadID, "test-project", "agent-1",
+			"single-provider", "fast", 22345, "", "test prompt", "", "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		dispatchTime := baseTime.Add(time.Duration(i) * time.Minute)
+		_, err = s.DB().Exec(
+			"UPDATE dispatches SET dispatched_at = ?, status = ?, exit_code = ? WHERE bead_id = ?",
+			dispatchTime.UTC().Format(time.DateTime), status, exitCode, beadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	recommendations, err := engine.generateProviderRecommendations(4 * time.Hour)
+	if err != nil {
+		t.Fatalf("Failed to generate provider recommendations: %v", err)
+	}
+	if len(recommendations) != 0 {
+		t.Fatalf("expected no provider recommendations without comparable coverage, got %d", len(recommendations))
 	}
 }
 
