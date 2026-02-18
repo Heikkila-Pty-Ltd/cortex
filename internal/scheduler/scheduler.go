@@ -22,32 +22,34 @@ import (
 	"github.com/antigravity-dev/cortex/internal/git"
 	"github.com/antigravity-dev/cortex/internal/health"
 	"github.com/antigravity-dev/cortex/internal/learner"
+	"github.com/antigravity-dev/cortex/internal/matrix"
 	"github.com/antigravity-dev/cortex/internal/store"
 	"github.com/antigravity-dev/cortex/internal/team"
 )
 
 // Scheduler is the core orchestration loop.
 type Scheduler struct {
-	cfg                 *config.Config
-	store               *store.Store
-	rateLimiter         *dispatch.RateLimiter
-	dispatcher          dispatch.DispatcherInterface
-	lifecycleReporter   lifecycleReporter
-	backends            map[string]dispatch.Backend
-	logger              *slog.Logger
-	dryRun              bool
-	mu                  sync.Mutex
-	paused              bool
-	quarantine          map[string]time.Time
-	churnBlock          map[string]time.Time
-	epicBreakup         map[string]time.Time
-	claimAnomaly        map[string]time.Time
-	gatewayCircuitUntil time.Time
-	gatewayCircuitLogAt time.Time
-	planGateLogAt       time.Time
-	ceremonyScheduler   *CeremonyScheduler
-	completionVerifier  *CompletionVerifier
-	lastCompletionCheck time.Time
+	cfg                   *config.Config
+	store                 *store.Store
+	rateLimiter           *dispatch.RateLimiter
+	dispatcher            dispatch.DispatcherInterface
+	lifecycleMatrixSender lifecycleMatrixSender
+	lifecycleReporter     lifecycleReporter
+	backends              map[string]dispatch.Backend
+	logger                *slog.Logger
+	dryRun                bool
+	mu                    sync.Mutex
+	paused                bool
+	quarantine            map[string]time.Time
+	churnBlock            map[string]time.Time
+	epicBreakup           map[string]time.Time
+	claimAnomaly          map[string]time.Time
+	gatewayCircuitUntil   time.Time
+	gatewayCircuitLogAt   time.Time
+	planGateLogAt         time.Time
+	ceremonyScheduler     *CeremonyScheduler
+	completionVerifier    *CompletionVerifier
+	lastCompletionCheck   time.Time
 
 	// Provider performance profiling
 	profiles           map[string]learner.ProviderProfile
@@ -127,6 +129,7 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 	scheduler.completionVerifier = NewCompletionVerifier(s, logger.With("component", "completion_verifier"))
 	scheduler.completionVerifier.SetProjects(cfg.Projects)
 	if strings.EqualFold(strings.TrimSpace(cfg.Reporter.Channel), "matrix") {
+		scheduler.lifecycleMatrixSender = matrix.NewOpenClawSender(nil, cfg.Reporter.MatrixBotAccount)
 		scheduler.lifecycleReporter = learner.NewReporter(cfg.Reporter, s, d, logger.With("component", "lifecycle_reporter"))
 	}
 

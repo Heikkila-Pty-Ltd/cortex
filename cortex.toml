@@ -95,6 +95,7 @@ gateway_unit = "openclaw-gateway.service"
 [reporter]
 channel = "matrix"
 agent_id = "main"
+matrix_bot_account = "hg-reporter-scrum"
 default_room = "#cortex-coordination"
 daily_digest_time = "09:00"
 weekly_retro_day = "Monday"

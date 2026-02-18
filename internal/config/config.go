@@ -136,11 +136,12 @@ type Health struct {
 }
 
 type Reporter struct {
-	Channel         string `toml:"channel"`
-	AgentID         string `toml:"agent_id"`
-	DefaultRoom     string `toml:"default_room"` // fallback Matrix room when project has no explicit room
-	DailyDigestTime string `toml:"daily_digest_time"`
-	WeeklyRetroDay  string `toml:"weekly_retro_day"`
+	Channel          string `toml:"channel"`
+	AgentID          string `toml:"agent_id"`
+	MatrixBotAccount string `toml:"matrix_bot_account"` // optional OpenClaw matrix account id for direct reporting
+	DefaultRoom      string `toml:"default_room"`       // fallback Matrix room when project has no explicit room
+	DailyDigestTime  string `toml:"daily_digest_time"`
+	WeeklyRetroDay   string `toml:"weekly_retro_day"`
 }
 
 type Learner struct {

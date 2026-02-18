@@ -11,6 +11,10 @@ type lifecycleReporter interface {
 	SendProjectMessage(ctx context.Context, projectName, message string)
 }
 
+type lifecycleMatrixSender interface {
+	SendMessage(ctx context.Context, roomID, message string) error
+}
+
 type beadLifecycleEvent struct {
 	Project       string
 	BeadID        string
@@ -28,7 +32,10 @@ type beadLifecycleEvent struct {
 }
 
 func (s *Scheduler) reportBeadLifecycle(ctx context.Context, evt beadLifecycleEvent) {
-	if s == nil || s.dryRun || s.lifecycleReporter == nil || s.cfg == nil {
+	if s == nil || s.dryRun || s.cfg == nil {
+		return
+	}
+	if s.lifecycleMatrixSender == nil && s.lifecycleReporter == nil {
 		return
 	}
 
@@ -45,7 +52,22 @@ func (s *Scheduler) reportBeadLifecycle(ctx context.Context, evt beadLifecycleEv
 
 	evt.Project = project
 	evt.BeadID = beadID
-	s.lifecycleReporter.SendProjectMessage(ctx, project, formatLifecycleMatrixMessage(room, evt))
+	notification := formatLifecycleNotification(evt)
+
+	if s.lifecycleMatrixSender != nil {
+		if err := s.lifecycleMatrixSender.SendMessage(ctx, room, notification); err == nil {
+			return
+		} else if s.logger != nil {
+			s.logger.Warn("failed direct matrix lifecycle send; falling back to reporter dispatch",
+				"project", project,
+				"bead", beadID,
+				"room", room,
+				"error", err)
+		}
+	}
+	if s.lifecycleReporter != nil {
+		s.lifecycleReporter.SendProjectMessage(ctx, project, formatLifecycleMatrixAgentPrompt(room, notification))
+	}
 }
 
 func lifecycleEventForDispatchStatus(status string) string {
@@ -80,15 +102,14 @@ func workflowStageFromLabelsCSV(labelsCSV string) string {
 	return ""
 }
 
-func formatLifecycleMatrixMessage(room string, evt beadLifecycleEvent) string {
+func formatLifecycleNotification(evt beadLifecycleEvent) string {
 	event := strings.TrimSpace(evt.Event)
 	if event == "" {
 		event = "bead_updated"
 	}
 
 	var b strings.Builder
-	b.WriteString("# Matrix Bead Lifecycle Update\n\n")
-	fmt.Fprintf(&b, "Send the following update to Matrix room `%s`:\n\n", room)
+	b.WriteString("## Bead Lifecycle Update\n\n")
 	fmt.Fprintf(&b, "- **Project:** `%s`\n", evt.Project)
 	fmt.Fprintf(&b, "- **Bead:** `%s`\n", evt.BeadID)
 	fmt.Fprintf(&b, "- **Event:** `%s`\n", event)
@@ -124,5 +145,14 @@ func formatLifecycleMatrixMessage(room string, evt beadLifecycleEvent) string {
 		fmt.Fprintf(&b, "\nNote: %s\n", note)
 	}
 
+	return b.String()
+}
+
+func formatLifecycleMatrixAgentPrompt(room string, notification string) string {
+	var b strings.Builder
+	b.WriteString("# Matrix Bead Lifecycle Update\n\n")
+	fmt.Fprintf(&b, "Send the following update to Matrix room `%s`:\n\n", strings.TrimSpace(room))
+	b.WriteString(strings.TrimSpace(notification))
+	b.WriteString("\n")
 	return b.String()
 }

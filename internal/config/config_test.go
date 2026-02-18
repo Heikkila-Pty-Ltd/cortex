@@ -90,6 +90,17 @@ func withReporterDefaultRoom(t *testing.T, cfg, room string) string {
 	return updated
 }
 
+func withReporterMatrixBotAccount(t *testing.T, cfg, account string) string {
+	t.Helper()
+	target := "agent_id = \"main\"\n"
+	replacement := fmt.Sprintf("agent_id = \"main\"\nmatrix_bot_account = %q\n", account)
+	updated := strings.Replace(cfg, target, replacement, 1)
+	if updated == cfg {
+		t.Fatal("failed to inject reporter matrix_bot_account into test config")
+	}
+	return updated
+}
+
 func TestLoadValidConfig(t *testing.T) {
 	path := writeTestConfig(t, validConfig)
 	cfg, err := Load(path)
@@ -177,6 +188,18 @@ func TestResolveRoomBackwardCompatible(t *testing.T) {
 	}
 	if got := loaded.ResolveRoom("test"); got != "" {
 		t.Fatalf("ResolveRoom(test) = %q, want empty string", got)
+	}
+}
+
+func TestLoadReporterMatrixBotAccount(t *testing.T) {
+	cfg := withReporterMatrixBotAccount(t, validConfig, "hg-reporter-scrum")
+	path := writeTestConfig(t, cfg)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if loaded.Reporter.MatrixBotAccount != "hg-reporter-scrum" {
+		t.Fatalf("Reporter.MatrixBotAccount = %q, want hg-reporter-scrum", loaded.Reporter.MatrixBotAccount)
 	}
 }
 

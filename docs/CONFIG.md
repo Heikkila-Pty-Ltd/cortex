@@ -29,6 +29,25 @@ require_approved_plan = true
 
 - **`require_approved_plan`** - When `true`, Cortex will not dispatch implementation work unless an active approved plan is set through the scheduler plan gate API.
 
+## Reporter Configuration
+
+Use Reporter configuration for outbound status notifications:
+
+```toml
+[reporter]
+channel = "matrix"
+agent_id = "main"
+matrix_bot_account = "hg-reporter-scrum" # optional direct Matrix bot identity
+default_room = "#cortex-coordination"    # fallback when project has no matrix_room
+daily_digest_time = "09:00"
+weekly_retro_day = "Monday"
+```
+
+- **`channel`** - Notification channel. Use `matrix` for Matrix delivery.
+- **`agent_id`** - Agent identifier used by dispatch-based reporting.
+- **`matrix_bot_account`** - Optional OpenClaw Matrix account id for direct `openclaw message send` lifecycle notifications.
+- **`default_room`** - Fallback Matrix room if `projects.<name>.matrix_room` is unset.
+
 ## Project Configuration
 
 ### Basic Project Settings

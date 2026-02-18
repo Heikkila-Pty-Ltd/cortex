@@ -133,6 +133,8 @@ All configuration lives in `cortex.toml`:
 |-----|-------------|
 | `channel` | Notification channel (e.g., "matrix") |
 | `agent_id` | openclaw agent used for sending messages |
+| `matrix_bot_account` | Optional OpenClaw Matrix account id for direct bot posting (e.g., `hg-reporter-scrum`) |
+| `default_room` | Fallback Matrix room when a project does not define `matrix_room` |
 | `daily_digest_time` | Time for daily digest (e.g., "09:00") |
 | `weekly_retro_day` | Day for weekly retrospective (e.g., "Monday") |
 

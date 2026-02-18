@@ -24,8 +24,21 @@ func (r *recordingLifecycleReporter) SendProjectMessage(_ context.Context, proje
 	})
 }
 
+type recordingLifecycleMatrixSender struct {
+	rooms    []string
+	messages []string
+	err      error
+}
+
+func (s *recordingLifecycleMatrixSender) SendMessage(_ context.Context, roomID, message string) error {
+	s.rooms = append(s.rooms, roomID)
+	s.messages = append(s.messages, message)
+	return s.err
+}
+
 func TestReportBeadLifecycleSendsMessage(t *testing.T) {
 	reporter := &recordingLifecycleReporter{}
+	sender := &recordingLifecycleMatrixSender{}
 	s := &Scheduler{
 		cfg: &config.Config{
 			Reporter: config.Reporter{DefaultRoom: "!fallback:matrix.org"},
@@ -33,7 +46,8 @@ func TestReportBeadLifecycleSendsMessage(t *testing.T) {
 				"project-a": {Enabled: true},
 			},
 		},
-		lifecycleReporter: reporter,
+		lifecycleReporter:     reporter,
+		lifecycleMatrixSender: sender,
 	}
 
 	s.reportBeadLifecycle(context.Background(), beadLifecycleEvent{
@@ -49,17 +63,19 @@ func TestReportBeadLifecycleSendsMessage(t *testing.T) {
 		Tier:          "balanced",
 	})
 
-	if len(reporter.calls) != 1 {
-		t.Fatalf("expected one lifecycle report, got %d", len(reporter.calls))
+	if len(sender.rooms) != 1 {
+		t.Fatalf("expected one direct matrix send, got %d", len(sender.rooms))
 	}
-	if reporter.calls[0].project != "project-a" {
-		t.Fatalf("report project = %q, want project-a", reporter.calls[0].project)
+	if sender.rooms[0] != "!fallback:matrix.org" {
+		t.Fatalf("direct room = %q, want !fallback:matrix.org", sender.rooms[0])
+	}
+	if len(reporter.calls) != 0 {
+		t.Fatalf("expected no reporter fallback call on direct send success, got %d", len(reporter.calls))
 	}
 
-	msg := reporter.calls[0].message
+	msg := sender.messages[0]
 	expected := []string{
-		"Matrix Bead Lifecycle Update",
-		"`!fallback:matrix.org`",
+		"Bead Lifecycle Update",
 		"`bead-123`",
 		"`dispatch_started`",
 		"`stage:coding`",
@@ -76,13 +92,15 @@ func TestReportBeadLifecycleSendsMessage(t *testing.T) {
 
 func TestReportBeadLifecycleSkipsWhenNoRoom(t *testing.T) {
 	reporter := &recordingLifecycleReporter{}
+	sender := &recordingLifecycleMatrixSender{}
 	s := &Scheduler{
 		cfg: &config.Config{
 			Projects: map[string]config.Project{
 				"project-a": {Enabled: true},
 			},
 		},
-		lifecycleReporter: reporter,
+		lifecycleReporter:     reporter,
+		lifecycleMatrixSender: sender,
 	}
 
 	s.reportBeadLifecycle(context.Background(), beadLifecycleEvent{
@@ -93,6 +111,54 @@ func TestReportBeadLifecycleSkipsWhenNoRoom(t *testing.T) {
 
 	if len(reporter.calls) != 0 {
 		t.Fatalf("expected no lifecycle reports when room mapping is missing, got %d", len(reporter.calls))
+	}
+	if len(sender.rooms) != 0 {
+		t.Fatalf("expected no direct matrix sends when room mapping is missing, got %d", len(sender.rooms))
+	}
+}
+
+func TestReportBeadLifecycleFallsBackToReporterWhenDirectSendFails(t *testing.T) {
+	reporter := &recordingLifecycleReporter{}
+	sender := &recordingLifecycleMatrixSender{err: context.DeadlineExceeded}
+	s := &Scheduler{
+		cfg: &config.Config{
+			Reporter: config.Reporter{DefaultRoom: "!fallback:matrix.org"},
+			Projects: map[string]config.Project{
+				"project-a": {Enabled: true},
+			},
+		},
+		lifecycleReporter:     reporter,
+		lifecycleMatrixSender: sender,
+	}
+
+	s.reportBeadLifecycle(context.Background(), beadLifecycleEvent{
+		Project: "project-a",
+		BeadID:  "bead-123",
+		Event:   "dispatch_started",
+	})
+
+	if len(sender.rooms) != 1 {
+		t.Fatalf("expected direct sender attempt, got %d", len(sender.rooms))
+	}
+	if len(reporter.calls) != 1 {
+		t.Fatalf("expected reporter fallback call, got %d", len(reporter.calls))
+	}
+	msg := reporter.calls[0].message
+	if !strings.Contains(msg, "Send the following update to Matrix room `!fallback:matrix.org`") {
+		t.Fatalf("fallback message missing room targeting instructions: %s", msg)
+	}
+}
+
+func TestFormatLifecycleMatrixAgentPrompt(t *testing.T) {
+	msg := formatLifecycleMatrixAgentPrompt("!room:matrix.org", "hello world")
+	if !strings.Contains(msg, "Matrix Bead Lifecycle Update") {
+		t.Fatalf("missing heading: %s", msg)
+	}
+	if !strings.Contains(msg, "`!room:matrix.org`") {
+		t.Fatalf("missing room id: %s", msg)
+	}
+	if !strings.Contains(msg, "hello world") {
+		t.Fatalf("missing notification body: %s", msg)
 	}
 }
 
