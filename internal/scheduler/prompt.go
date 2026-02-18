@@ -20,6 +20,12 @@ You are the scrum master running one end-to-end sprint planning session using th
 ### Mission (single session)
 Refine backlog quality, estimate candidate work, select sprint scope by capacity, and transition selected beads to planning.
 
+### Input Contract (full backlog context)
+- Treat all backlog data in this task as the source of truth for this session.
+- Do not ignore any bead in context; every bead must end this session as selected, deferred, or blocked.
+- Resolve missing details with bd show <id> and write refinements back using bd update.
+- Keep decisions traceable: every sprint decision must cite estimate, priority, and dependency state.
+
 ### 1. Build a Backlog Digest from Context (required first step)
 Normalize the backlog context in this prompt into three compact planning views:
 
@@ -144,6 +150,7 @@ Use this exact structure in your final output:
 - [Short summary of total candidates, ready count, blocked count, and key dependency chain]
 - [Stage summary: ready / needs refinement / blocked / missing estimates]
 - [Table pasted in compact form, grouped by priority]
+- [Confirm every candidate bead is accounted for as selected/deferred/blocked]
 
 **Selected Beads:**
 - [ID] [Title] - P[0-2], [estimate min], [why selected], [dependency status]
