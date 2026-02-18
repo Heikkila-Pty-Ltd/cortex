@@ -164,6 +164,38 @@ func TestGetLatestDispatchBySession(t *testing.T) {
 	}
 }
 
+func TestGetLatestDispatchByPID(t *testing.T) {
+	s := tempStore(t)
+
+	firstID, err := s.RecordDispatch("bead-1", "proj", "agent-1", "cerebras", "fast", 777, "ctx-first", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondID, err := s.RecordDispatch("bead-2", "proj", "agent-1", "cerebras", "fast", 777, "ctx-second", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.GetLatestDispatchByPID(777)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil {
+		t.Fatal("expected latest dispatch, got nil")
+	}
+	if got.ID != secondID {
+		t.Fatalf("expected latest dispatch id %d (first was %d), got %d", secondID, firstID, got.ID)
+	}
+
+	missing, err := s.GetLatestDispatchByPID(999999)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing != nil {
+		t.Fatalf("expected nil for unknown pid, got %+v", missing)
+	}
+}
+
 func TestTickMetrics(t *testing.T) {
 	s := tempStore(t)
 

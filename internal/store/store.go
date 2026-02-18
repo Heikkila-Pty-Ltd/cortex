@@ -834,6 +834,22 @@ func (s *Store) GetLatestDispatchBySession(sessionName string) (*Dispatch, error
 	return &dispatches[0], nil
 }
 
+// GetLatestDispatchByPID returns the most recent dispatch for a PID.
+func (s *Store) GetLatestDispatchByPID(pid int) (*Dispatch, error) {
+	if pid <= 0 {
+		return nil, nil
+	}
+
+	dispatches, err := s.queryDispatches(`SELECT `+dispatchCols+` FROM dispatches WHERE pid = ? ORDER BY id DESC LIMIT 1`, pid)
+	if err != nil {
+		return nil, err
+	}
+	if len(dispatches) == 0 {
+		return nil, nil
+	}
+	return &dispatches[0], nil
+}
+
 // GetPendingRetryDispatches returns all dispatches with status "pending_retry", ordered by dispatched_at ASC.
 func (s *Store) GetPendingRetryDispatches() ([]Dispatch, error) {
 	return s.queryDispatches(`SELECT ` + dispatchCols + ` FROM dispatches WHERE status = 'pending_retry' ORDER BY dispatched_at ASC`)

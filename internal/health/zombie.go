@@ -7,9 +7,17 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/antigravity-dev/cortex/internal/dispatch"
 	"github.com/antigravity-dev/cortex/internal/store"
+)
+
+const zombiePIDOwnershipWindow = 24 * time.Hour
+
+var (
+	getOpenclawPIDsFn = getOpenclawPIDs
+	killProcessFn     = dispatch.KillProcess
 )
 
 // CleanZombies finds orphaned openclaw agent processes and kills them.
@@ -31,7 +39,7 @@ func CleanZombies(s *store.Store, dispatcher dispatch.DispatcherInterface, logge
 // cleanZombiePIDs cleans orphaned PID-based dispatches.
 func cleanZombiePIDs(s *store.Store, logger *slog.Logger) int {
 	// Get all PIDs running openclaw agent
-	allPIDs, err := getOpenclawPIDs()
+	allPIDs, err := getOpenclawPIDsFn()
 	if err != nil {
 		logger.Debug("no openclaw processes found", "error", err)
 		return 0
@@ -51,24 +59,47 @@ func cleanZombiePIDs(s *store.Store, logger *slog.Logger) int {
 
 	// Find orphans
 	killed := 0
+	now := time.Now()
 	for _, pid := range allPIDs {
 		if trackedPIDs[pid] {
 			continue
 		}
 
-		logger.Warn("killing zombie openclaw process", "pid", pid)
-		if err := dispatch.KillProcess(pid); err != nil {
+		latest, err := s.GetLatestDispatchByPID(pid)
+		if err != nil {
+			logger.Warn("failed to correlate openclaw pid to local dispatch", "pid", pid, "error", err)
+			continue
+		}
+		if latest == nil || !dispatchRecentEnoughForZombieOwnership(*latest, now) {
+			logger.Debug("skipping untracked openclaw pid not owned by local state db", "pid", pid)
+			continue
+		}
+
+		logger.Warn("killing zombie openclaw process",
+			"pid", pid,
+			"dispatch_id", latest.ID,
+			"bead", latest.BeadID,
+			"status", latest.Status)
+		if err := killProcessFn(pid); err != nil {
 			logger.Error("failed to kill zombie", "pid", pid, "error", err)
 			continue
 		}
 
-		if err := s.RecordHealthEventWithDispatch("zombie_killed", fmt.Sprintf("orphaned openclaw pid %d", pid), 0, ""); err != nil {
+		details := fmt.Sprintf("orphaned openclaw pid %d matched dispatch %d bead %s status %s", pid, latest.ID, latest.BeadID, latest.Status)
+		if err := s.RecordHealthEventWithDispatch("zombie_killed", details, latest.ID, latest.BeadID); err != nil {
 			logger.Error("failed to record zombie event", "pid", pid, "error", err)
 		}
 		killed++
 	}
 
 	return killed
+}
+
+func dispatchRecentEnoughForZombieOwnership(d store.Dispatch, now time.Time) bool {
+	if !d.CompletedAt.Valid {
+		return now.Sub(d.DispatchedAt) <= zombiePIDOwnershipWindow
+	}
+	return now.Sub(d.CompletedAt.Time) <= zombiePIDOwnershipWindow
 }
 
 // cleanZombieSessions cleans orphaned tmux sessions.
