@@ -215,6 +215,43 @@ func TestGetStuckDispatches(t *testing.T) {
 	}
 }
 
+func TestGetStuckDispatchesByTier(t *testing.T) {
+	s := tempStore(t)
+
+	fastID, err := s.RecordDispatch("bead-fast", "proj", "agent-fast", "cerebras", "fast", 100, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	balancedID, err := s.RecordDispatch("bead-balanced", "proj", "agent-balanced", "cerebras", "balanced", 101, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	premiumID, err := s.RecordDispatch("bead-premium", "proj", "agent-premium", "cerebras", "premium", 102, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDispatchTime(fastID, time.Now().Add(-20*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDispatchTime(balancedID, time.Now().Add(-20*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDispatchTime(premiumID, time.Now().Add(-20*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	stuck, err := s.GetStuckDispatchesByTier(15*time.Minute, 45*time.Minute, 120*time.Minute, 30*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stuck) != 1 {
+		t.Fatalf("expected 1 stuck dispatch, got %d", len(stuck))
+	}
+	if stuck[0].BeadID != "bead-fast" {
+		t.Fatalf("expected bead-fast to be stuck, got %s", stuck[0].BeadID)
+	}
+}
+
 func TestIsAgentBusy(t *testing.T) {
 	s := tempStore(t)
 

@@ -628,6 +628,40 @@ func (s *Store) GetStuckDispatches(timeout time.Duration) ([]Dispatch, error) {
 	return s.queryDispatches(`SELECT `+dispatchCols+` FROM dispatches WHERE status = 'running' AND dispatched_at < ?`, cutoff)
 }
 
+// GetStuckDispatchesByTier returns running dispatches older than tier-specific timeouts.
+// Unknown tiers use fallbackTimeout.
+func (s *Store) GetStuckDispatchesByTier(fastTimeout, balancedTimeout, premiumTimeout, fallbackTimeout time.Duration) ([]Dispatch, error) {
+	if fallbackTimeout <= 0 {
+		fallbackTimeout = 30 * time.Minute
+	}
+	if fastTimeout <= 0 {
+		fastTimeout = fallbackTimeout
+	}
+	if balancedTimeout <= 0 {
+		balancedTimeout = fallbackTimeout
+	}
+	if premiumTimeout <= 0 {
+		premiumTimeout = fallbackTimeout
+	}
+
+	fastCutoff := time.Now().Add(-fastTimeout).UTC().Format(time.DateTime)
+	balancedCutoff := time.Now().Add(-balancedTimeout).UTC().Format(time.DateTime)
+	premiumCutoff := time.Now().Add(-premiumTimeout).UTC().Format(time.DateTime)
+	fallbackCutoff := time.Now().Add(-fallbackTimeout).UTC().Format(time.DateTime)
+
+	return s.queryDispatches(
+		`SELECT `+dispatchCols+` FROM dispatches
+		  WHERE status = 'running'
+		    AND (
+		      (tier = 'fast' AND dispatched_at < ?)
+		      OR (tier = 'balanced' AND dispatched_at < ?)
+		      OR (tier = 'premium' AND dispatched_at < ?)
+		      OR (tier NOT IN ('fast', 'balanced', 'premium') AND dispatched_at < ?)
+		    )`,
+		fastCutoff, balancedCutoff, premiumCutoff, fallbackCutoff,
+	)
+}
+
 // GetDispatchesByBead returns all dispatches for a given bead ID, ordered by dispatched_at DESC.
 func (s *Store) GetDispatchesByBead(beadID string) ([]Dispatch, error) {
 	return s.queryDispatches(`SELECT `+dispatchCols+` FROM dispatches WHERE bead_id = ? ORDER BY dispatched_at DESC`, beadID)

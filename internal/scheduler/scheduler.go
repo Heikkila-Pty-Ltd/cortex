@@ -1686,6 +1686,7 @@ func (s *Scheduler) runHealthChecks() {
 		s.store,
 		s.dispatcher,
 		s.cfg.General.StuckTimeout.Duration,
+		s.cfg.Dispatch.Timeouts,
 		s.cfg.General.MaxRetries,
 		s.logger.With("scope", "stuck"),
 	)

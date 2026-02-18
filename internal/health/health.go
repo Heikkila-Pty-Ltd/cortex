@@ -65,6 +65,7 @@ func (m *Monitor) checkDispatchHealth() {
 			m.store,
 			m.dispatcher,
 			m.general.StuckTimeout.Duration,
+			config.DispatchTimeouts{},
 			m.general.MaxRetries,
 			m.logger.With("scope", "stuck"),
 		)

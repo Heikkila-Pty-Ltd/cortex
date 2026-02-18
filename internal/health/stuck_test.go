@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/antigravity-dev/cortex/internal/config"
 	"github.com/antigravity-dev/cortex/internal/dispatch"
 	"github.com/antigravity-dev/cortex/internal/store"
 )
@@ -79,7 +80,7 @@ func TestCheckStuckDispatches_QueuesPendingRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: false}, 30*time.Minute, 2, newTestLogger())
+	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: false}, 30*time.Minute, config.DispatchTimeouts{}, 2, newTestLogger())
 	if len(actions) != 1 {
 		t.Fatalf("expected 1 action, got %d", len(actions))
 	}
@@ -116,7 +117,7 @@ func TestCheckStuckDispatches_FailsPermanentlyAtMaxRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: false}, 30*time.Minute, 2, newTestLogger())
+	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: false}, 30*time.Minute, config.DispatchTimeouts{}, 2, newTestLogger())
 	if len(actions) != 1 {
 		t.Fatalf("expected 1 action, got %d", len(actions))
 	}

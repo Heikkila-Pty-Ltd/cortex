@@ -5,12 +5,14 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/antigravity-dev/cortex/internal/config"
 	"github.com/antigravity-dev/cortex/internal/dispatch"
 	"github.com/antigravity-dev/cortex/internal/store"
 )
 
 // StuckAction describes an action taken on a stuck dispatch.
 type StuckAction struct {
+	Project string
 	BeadID  string
 	Action  string // killed, retried, failed_permanently
 	OldTier string
@@ -19,8 +21,13 @@ type StuckAction struct {
 }
 
 // CheckStuckDispatches finds and handles dispatches that have been running too long.
-func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterface, timeout time.Duration, maxRetries int, logger *slog.Logger) []StuckAction {
-	stuck, err := s.GetStuckDispatches(timeout)
+func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterface, timeout time.Duration, tierTimeouts config.DispatchTimeouts, maxRetries int, logger *slog.Logger) []StuckAction {
+	stuck, err := s.GetStuckDispatchesByTier(
+		tierTimeouts.Fast.Duration,
+		tierTimeouts.Balanced.Duration,
+		tierTimeouts.Premium.Duration,
+		timeout,
+	)
 	if err != nil {
 		logger.Error("failed to get stuck dispatches", "error", err)
 		return nil
@@ -37,11 +44,9 @@ func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterfac
 		// Kill if still alive
 		if alive {
 			logger.Warn("killing stuck dispatch", "bead", d.BeadID, "handle", d.PID, "handle_type", dispatcher.GetHandleType())
-			var killErr error
-			if dispatcher.GetHandleType() == "session" && d.SessionName != "" {
+			killErr := dispatcher.Kill(d.PID)
+			if killErr != nil && dispatcher.GetHandleType() == "session" && d.SessionName != "" {
 				killErr = dispatch.KillSession(d.SessionName)
-			} else {
-				killErr = dispatcher.Kill(d.PID)
 			}
 			if killErr != nil {
 				logger.Error("failed to kill stuck process", "handle", d.PID, "error", killErr)
@@ -77,6 +82,7 @@ func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterfac
 			}
 
 			actions = append(actions, StuckAction{
+				Project: d.Project,
 				BeadID:  d.BeadID,
 				Action:  "retried",
 				OldTier: d.Tier,
@@ -94,6 +100,7 @@ func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterfac
 			}
 
 			actions = append(actions, StuckAction{
+				Project: d.Project,
 				BeadID:  d.BeadID,
 				Action:  "failed_permanently",
 				Retries: d.Retries,
