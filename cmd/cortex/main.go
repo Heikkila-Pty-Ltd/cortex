@@ -24,6 +24,8 @@ func main() {
 	once := flag.Bool("once", false, "run a single tick then exit")
 	dev := flag.Bool("dev", false, "use text log format (default is JSON)")
 	dryRun := flag.Bool("dry-run", false, "run tick logic without actually dispatching agents")
+	disableAnthropic := flag.Bool("disable-anthropic", false, "remove Anthropic/Claude providers from config and exit")
+	fallbackModel := flag.String("fallback-model", "gpt-5.3-codex", "fallback chief model used with -disable-anthropic")
 	flag.Parse()
 
 	// Bootstrap logger (text, info) for early startup
@@ -31,6 +33,16 @@ func main() {
 	slog.SetDefault(logger)
 
 	logger.Info("cortex starting", "config", *configPath)
+
+	if *disableAnthropic {
+		changed, err := disableAnthropicInConfigFile(*configPath, *fallbackModel)
+		if err != nil {
+			logger.Error("failed to disable anthropic providers in config", "config", *configPath, "error", err)
+			os.Exit(1)
+		}
+		logger.Info("disable-anthropic complete", "config", *configPath, "changed", changed, "fallback_model", *fallbackModel)
+		return
+	}
 
 	// Load config
 	cfg, err := config.Load(*configPath)

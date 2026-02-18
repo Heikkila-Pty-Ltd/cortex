@@ -10,6 +10,7 @@ import (
 	neturl "net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -65,7 +66,7 @@ func (s *HTTPSender) SendMessage(ctx context.Context, roomID, message string) er
 		return fmt.Errorf("marshal matrix payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("build matrix request: %w", err)
 	}
@@ -165,23 +166,68 @@ type openClawConfigFile struct {
 }
 
 type openClawMatrixChannel struct {
-	Homeserver string                `json:"homeserver"`
-	UserID     string                `json:"userId"`
-	Accounts   []openClawMatrixEntry `json:"accounts"`
+	Homeserver string                 `json:"homeserver"`
+	UserID     string                 `json:"userId"`
+	Accounts   openClawMatrixAccounts `json:"accounts"`
 }
 
 type openClawMatrixEntry struct {
+	ID          string `json:"-"`
 	UserID      string `json:"userId"`
 	AccessToken string `json:"accessToken"`
 	Homeserver  string `json:"homeserver"`
 	BaseURL     string `json:"baseUrl"`
 }
 
+type openClawMatrixAccounts []openClawMatrixEntry
+
+func (a *openClawMatrixAccounts) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || string(data) == "null" {
+		*a = nil
+		return nil
+	}
+
+	switch data[0] {
+	case '[':
+		var entries []openClawMatrixEntry
+		if err := json.Unmarshal(data, &entries); err != nil {
+			return err
+		}
+		*a = entries
+		return nil
+	case '{':
+		var byID map[string]openClawMatrixEntry
+		if err := json.Unmarshal(data, &byID); err != nil {
+			return err
+		}
+		keys := make([]string, 0, len(byID))
+		for key := range byID {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+
+		entries := make([]openClawMatrixEntry, 0, len(keys))
+		for _, key := range keys {
+			entry := byID[key]
+			entry.ID = strings.TrimSpace(key)
+			if strings.TrimSpace(entry.UserID) == "" && strings.HasPrefix(entry.ID, "@") {
+				entry.UserID = entry.ID
+			}
+			entries = append(entries, entry)
+		}
+		*a = entries
+		return nil
+	default:
+		return fmt.Errorf("unsupported matrix accounts format")
+	}
+}
+
 func selectMatrixAccount(accounts []openClawMatrixEntry, defaultUserID string, requested string) (openClawMatrixEntry, error) {
 	requested = strings.TrimSpace(requested)
 	if requested != "" {
 		for _, candidate := range accounts {
-			if matrixAccountMatches(candidate.UserID, requested) {
+			if matrixAccountMatches(candidate, requested) {
 				return candidate, nil
 			}
 		}
@@ -191,28 +237,34 @@ func selectMatrixAccount(accounts []openClawMatrixEntry, defaultUserID string, r
 	defaultUserID = strings.TrimSpace(defaultUserID)
 	if defaultUserID != "" {
 		for _, candidate := range accounts {
-			if strings.EqualFold(strings.TrimSpace(candidate.UserID), defaultUserID) {
+			if matrixAccountMatches(candidate, defaultUserID) {
 				return candidate, nil
 			}
 		}
 	}
 
 	for _, candidate := range accounts {
-		if strings.TrimSpace(candidate.UserID) != "" {
+		if strings.TrimSpace(candidate.UserID) != "" || strings.TrimSpace(candidate.ID) != "" {
 			return candidate, nil
 		}
 	}
 
-	return openClawMatrixEntry{}, fmt.Errorf("no matrix accounts with user ids configured")
+	return openClawMatrixEntry{}, fmt.Errorf("no matrix accounts configured")
 }
 
-func matrixAccountMatches(userID string, selector string) bool {
-	userID = strings.TrimSpace(userID)
+func matrixAccountMatches(account openClawMatrixEntry, selector string) bool {
 	selector = strings.TrimSpace(selector)
-	if userID == "" || selector == "" {
+	if selector == "" {
 		return false
 	}
-	if strings.EqualFold(userID, selector) {
+
+	userID := strings.TrimSpace(account.UserID)
+	accountID := strings.TrimSpace(account.ID)
+
+	if userID != "" && strings.EqualFold(userID, selector) {
+		return true
+	}
+	if accountID != "" && strings.EqualFold(accountID, selector) {
 		return true
 	}
 	if strings.HasPrefix(selector, "@") && strings.Contains(selector, ":") {
@@ -222,7 +274,10 @@ func matrixAccountMatches(userID string, selector string) bool {
 	if selector == "" {
 		return false
 	}
-	return strings.EqualFold(matrixUserLocalpart(userID), selector)
+	if userID != "" && strings.EqualFold(matrixUserLocalpart(userID), selector) {
+		return true
+	}
+	return accountID != "" && strings.EqualFold(strings.TrimPrefix(accountID, "@"), selector)
 }
 
 func matrixUserLocalpart(userID string) string {
@@ -238,6 +293,9 @@ func availableMatrixAccounts(accounts []openClawMatrixEntry) []string {
 	seen := make(map[string]struct{}, len(accounts))
 	for _, account := range accounts {
 		name := strings.TrimSpace(matrixUserLocalpart(account.UserID))
+		if name == "" {
+			name = strings.TrimSpace(strings.TrimPrefix(account.ID, "@"))
+		}
 		if name == "" {
 			continue
 		}

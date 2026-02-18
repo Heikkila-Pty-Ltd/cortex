@@ -14,6 +14,7 @@ import (
 func TestHTTPSenderSendMessageSuccess(t *testing.T) {
 	var (
 		gotAuth    string
+		gotMethod  string
 		gotPath    string
 		gotEscPath string
 		gotPayload map[string]any
@@ -22,6 +23,7 @@ func TestHTTPSenderSendMessageSuccess(t *testing.T) {
 	client := &http.Client{
 		Transport: fakeRoundTripper(func(req *http.Request) (*http.Response, error) {
 			gotAuth = req.Header.Get("Authorization")
+			gotMethod = req.Method
 			gotPath = req.URL.Path
 			gotEscPath = req.URL.EscapedPath()
 			defer req.Body.Close()
@@ -49,6 +51,9 @@ func TestHTTPSenderSendMessageSuccess(t *testing.T) {
 
 	if gotAuth != "Bearer token-spritz" {
 		t.Fatalf("authorization header = %q, want Bearer token-spritz", gotAuth)
+	}
+	if gotMethod != http.MethodPut {
+		t.Fatalf("http method = %q, want %q", gotMethod, http.MethodPut)
 	}
 	if !strings.Contains(gotEscPath, "/_matrix/client/v3/rooms/%21room:matrix.org/send/m.room.message/") {
 		t.Fatalf("escaped request path = %q (decoded=%q), want matrix room in send path", gotEscPath, gotPath)
@@ -81,6 +86,47 @@ func TestHTTPSenderSendMessageUsesDefaultConfiguredAccount(t *testing.T) {
 	})
 
 	sender := NewHTTPSender(client, "")
+	sender.configPath = cfgPath
+
+	if err := sender.SendMessage(context.Background(), "!room:matrix.org", "hello"); err != nil {
+		t.Fatalf("SendMessage returned error: %v", err)
+	}
+	if gotAuth != "Bearer token-spritz" {
+		t.Fatalf("authorization header = %q, want Bearer token-spritz", gotAuth)
+	}
+}
+
+func TestHTTPSenderSendMessageSupportsObjectAccountsFormat(t *testing.T) {
+	var gotAuth string
+	client := &http.Client{
+		Transport: fakeRoundTripper(func(req *http.Request) (*http.Response, error) {
+			gotAuth = req.Header.Get("Authorization")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"event_id":"$evt"}`)),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	raw := `{
+  "channels": {
+    "matrix": {
+      "homeserver": "http://matrix.local",
+      "userId": "@spritzbot:example.org",
+      "accounts": {
+        "spritzbot": {
+          "userId": "@spritzbot:example.org",
+          "accessToken": "token-spritz"
+        }
+      }
+    }
+  }
+}`
+	cfgPath := writeRawOpenClawConfig(t, raw)
+
+	sender := NewHTTPSender(client, "spritzbot")
 	sender.configPath = cfgPath
 
 	if err := sender.SendMessage(context.Background(), "!room:matrix.org", "hello"); err != nil {
@@ -163,6 +209,15 @@ func writeOpenClawMatrixConfig(t *testing.T, homeserver string, defaultUserID st
 	path := filepath.Join(t.TempDir(), "openclaw.json")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
+func writeRawOpenClawConfig(t *testing.T, raw string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "openclaw.json")
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write raw config: %v", err)
 	}
 	return path
 }
