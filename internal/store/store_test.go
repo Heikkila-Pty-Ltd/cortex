@@ -1089,6 +1089,88 @@ func TestGetProviderLabelStats(t *testing.T) {
 	}
 }
 
+func TestProviderStatsExcludeNonTerminalDispatches(t *testing.T) {
+	s := tempStore(t)
+
+	// Terminal completed dispatch.
+	id1, err := s.RecordDispatch("bead-term-ok", "proj", "agent-1", "openai", "fast", 100, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchLabels(id1, []string{"go"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(id1, "completed", 0, 10.0); err != nil {
+		t.Fatal(err)
+	}
+
+	// Terminal failed dispatch.
+	id2, err := s.RecordDispatch("bead-term-fail", "proj", "agent-1", "openai", "fast", 101, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchLabels(id2, []string{"go"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(id2, "failed", 1, 5.0); err != nil {
+		t.Fatal(err)
+	}
+
+	// Running dispatch should be excluded.
+	id3, err := s.RecordDispatch("bead-running", "proj", "agent-1", "openai", "fast", 102, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchLabels(id3, []string{"go"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pending retry (in-flight) should be excluded.
+	id4, err := s.RecordDispatch("bead-pending-retry", "proj", "agent-1", "openai", "fast", 103, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchLabels(id4, []string{"go"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(id4, "failed", 1, 2.0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkDispatchPendingRetry(id4, "balanced"); err != nil {
+		t.Fatal(err)
+	}
+
+	providerStats, err := s.GetProviderStats(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	openAI, ok := providerStats["openai"]
+	if !ok {
+		t.Fatalf("expected openai provider stats")
+	}
+	if openAI.Total != 2 {
+		t.Fatalf("expected only 2 terminal dispatches in provider stats, got %d", openAI.Total)
+	}
+	if openAI.Successes != 1 {
+		t.Fatalf("expected 1 success in provider stats, got %d", openAI.Successes)
+	}
+
+	labelStats, err := s.GetProviderLabelStats(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	openAIGo, ok := labelStats["openai"]["go"]
+	if !ok {
+		t.Fatalf("expected openai/go label stats")
+	}
+	if openAIGo.Total != 2 {
+		t.Fatalf("expected only 2 terminal dispatches in label stats, got %d", openAIGo.Total)
+	}
+	if openAIGo.Successes != 1 {
+		t.Fatalf("expected 1 success in label stats, got %d", openAIGo.Successes)
+	}
+}
+
 func TestBeadStagesCrossProjectCollisions(t *testing.T) {
 	s := tempStore(t)
 

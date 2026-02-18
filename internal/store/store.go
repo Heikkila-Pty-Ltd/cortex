@@ -1551,7 +1551,9 @@ func (s *Store) GetProviderStats(window time.Duration) (map[string]ProviderStat,
 	rows, err := s.db.Query(`
 		SELECT provider, status, duration_s 
 		FROM dispatches 
-		WHERE dispatched_at > ? 
+		WHERE dispatched_at > ?
+		  AND completed_at IS NOT NULL
+		  AND status IN ('completed', 'failed', 'cancelled', 'interrupted', 'retried')
 		ORDER BY dispatched_at DESC`,
 		cutoff,
 	)
@@ -1597,6 +1599,8 @@ func (s *Store) GetProviderLabelStats(window time.Duration) (map[string]map[stri
 		SELECT provider, status, duration_s, labels
 		FROM dispatches
 		WHERE dispatched_at > ?
+		  AND completed_at IS NOT NULL
+		  AND status IN ('completed', 'failed', 'cancelled', 'interrupted', 'retried')
 		ORDER BY dispatched_at DESC`,
 		cutoff,
 	)
