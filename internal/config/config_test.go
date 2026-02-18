@@ -732,6 +732,23 @@ balanced_backend = "tmux"
 	}
 }
 
+func TestLoadDispatchOpenClawBackendValid(t *testing.T) {
+	cfg := validConfig + `
+
+[dispatch.routing]
+fast_backend = "headless_cli"
+comms_backend = "openclaw"
+`
+	path := writeTestConfig(t, cfg)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected openclaw backend to be valid: %v", err)
+	}
+	if loaded.Dispatch.Routing.CommsBackend != "openclaw" {
+		t.Fatalf("expected comms_backend openclaw, got %q", loaded.Dispatch.Routing.CommsBackend)
+	}
+}
+
 func TestLoadDispatchMissingCLIConfig(t *testing.T) {
 	cfg := validConfig + `
 
