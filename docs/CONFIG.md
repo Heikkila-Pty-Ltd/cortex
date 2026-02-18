@@ -15,6 +15,20 @@ Cortex uses TOML format for configuration. The main configuration sections are:
 - `[api]` - API server settings
 - `[chief]` - Chief Scrum Master settings
 
+## Chief Configuration
+
+Use Chief configuration to control planning governance:
+
+```toml
+[chief]
+enabled = true
+matrix_room = "#cortex-coordination"
+agent_id = "cortex-chief-scrum"
+require_approved_plan = true
+```
+
+- **`require_approved_plan`** - When `true`, Cortex will not dispatch implementation work unless an active approved plan is set through the scheduler plan gate API.
+
 ## Project Configuration
 
 ### Basic Project Settings

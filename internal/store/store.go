@@ -231,6 +231,15 @@ CREATE TABLE IF NOT EXISTS sprint_boundaries (
 	created_at DATETIME NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS execution_plan_gate (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	active_plan_id TEXT NOT NULL DEFAULT '',
+	approved_by TEXT NOT NULL DEFAULT '',
+	approved_at DATETIME,
+	activated_at DATETIME,
+	updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bead_stages_project_bead ON bead_stages(project, bead_id);
 CREATE INDEX IF NOT EXISTS idx_bead_stages_project_stage ON bead_stages(project, current_stage);
 CREATE INDEX IF NOT EXISTS idx_dispatches_status ON dispatches(status);
@@ -239,6 +248,7 @@ CREATE INDEX IF NOT EXISTS idx_claim_leases_project ON claim_leases(project);
 CREATE INDEX IF NOT EXISTS idx_claim_leases_heartbeat ON claim_leases(heartbeat_at);
 CREATE INDEX IF NOT EXISTS idx_sprint_boundaries_start ON sprint_boundaries(sprint_start);
 CREATE INDEX IF NOT EXISTS idx_sprint_boundaries_end ON sprint_boundaries(sprint_end);
+CREATE INDEX IF NOT EXISTS idx_execution_plan_gate_active ON execution_plan_gate(active_plan_id);
 CREATE INDEX IF NOT EXISTS idx_usage_provider ON provider_usage(provider, dispatched_at);
 CREATE INDEX IF NOT EXISTS idx_dispatch_output_dispatch ON dispatch_output(dispatch_id);
 `
@@ -492,6 +502,20 @@ func migrate(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_sprint_boundaries_end ON sprint_boundaries(sprint_end)`); err != nil {
 		return fmt.Errorf("create sprint_boundaries end index: %w", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS execution_plan_gate (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			active_plan_id TEXT NOT NULL DEFAULT '',
+			approved_by TEXT NOT NULL DEFAULT '',
+			approved_at DATETIME,
+			activated_at DATETIME,
+			updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+		)`); err != nil {
+		return fmt.Errorf("create execution_plan_gate table: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_execution_plan_gate_active ON execution_plan_gate(active_plan_id)`); err != nil {
+		return fmt.Errorf("create execution_plan_gate active index: %w", err)
 	}
 
 	if err := migrateBeadStagesTable(db); err != nil {

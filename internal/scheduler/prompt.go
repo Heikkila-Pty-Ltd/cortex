@@ -21,7 +21,15 @@ You are the scrum master running one end-to-end sprint planning session with the
 Refine backlog quality, estimate candidate work, select sprint scope by capacity, and transition selected beads to planning.
 
 ### 1. Build a Backlog Digest from Context (required)
-Read the full backlog context in this prompt and normalize it into one planning digest table:
+Read the full backlog context in this prompt and normalize it into two compact views for planning:
+
+View A: quick stage summary (counts + blockers)
+- Ready count
+- Needs refinement count
+- Blocked count
+- Missing estimate count
+
+View B: planning digest table (required)
 
 | ID | Title | Priority | Stage | Estimate (min) | Dependencies | Refinement Status | Risks/Blockers | Sprint Decision |
 |----|-------|----------|-------|----------------|--------------|-------------------|----------------|-----------------|
@@ -33,6 +41,7 @@ Digest rules:
 - Mark blockers explicitly and exclude blocked beads from commitment math.
 - Sprint Decision must be one of: selected, deferred, blocked.
 - Add a short header before the table with total candidate count, ready count, blocked count, and key dependency chains.
+- Keep each row single-line and concise so the table is scannable in terminal output.
 
 ### 2. Refine, Estimate, and Clarify Candidates
 Use these commands while reviewing and refining backlog candidates:
@@ -49,6 +58,7 @@ bd update <id> --acceptance="Specific, testable acceptance criteria"
 bd update <id> --design="Implementation notes, affected files, risks"
 bd update <id> --estimate=<minutes>
 bd update <id> --priority=<0-2>
+bd update <id> --status=in_progress
 
 # Capture or correct dependencies as needed
 bd dep add <id> <depends-on-id>
@@ -62,6 +72,7 @@ Quality bar:
 - Design notes should include approach, affected files, dependencies, and risks.
 - 'bd update --estimate' is in minutes only (do not store story points as estimate).
 - If a bead is too large for one sprint slice (for example, >120 minutes), split it and defer the remainder.
+- Do not select beads that are missing acceptance, design, or estimate fields after refinement.
 
 ### 3. Capacity-Based Sprint Selection
 Calculate capacity in minutes:
@@ -77,10 +88,12 @@ Selection policy:
 5. If a dependency is required, include it before dependent work or defer both with a note.
 6. Stop before overflow; do not exceed usable capacity.
 7. Produce short deferred and blocked lists with one reason each.
+8. If two candidates compete for remaining capacity, pick the lower-risk bead and note the tradeoff.
 
 ### 4. Update Beads and Transition Stage
 For each selected bead (committed this sprint):
 ~~~bash
+bd update <id> --status=open
 bd update <id> --set-labels stage:planning,sprint:selected
 bd update <id> --assignee=planner
 ~~~
@@ -121,6 +134,7 @@ Use this exact structure in your final output:
 
 **Backlog Digest:**
 - [Short summary of total candidates, ready count, blocked count, and key dependency chain]
+- [Stage summary: ready / needs refinement / blocked / missing estimates]
 - [Table pasted in compact form, grouped by priority]
 
 **Selected Beads:**

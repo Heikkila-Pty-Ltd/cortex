@@ -1,0 +1,91 @@
+# Cortex Interactive - Fast-tick orchestrator for workflows and tasks
+# Triggered by Chief Scrum Master (Hex), executes via agents
+
+[general]
+tick_interval = "15s"
+max_per_tick = 3
+stuck_timeout = "10m"
+max_retries = 2
+log_level = "info"
+state_db = "~/.local/share/cortex-interactive/cortex.db"
+lock_file = "/tmp/cortex-interactive.lock"
+
+# Interactive workflows project (workspace-main)
+[projects.workflows]
+enabled = true
+beads_dir = "~/.openclaw/workspace-main/.beads"
+workspace = "~/.openclaw/workspace-main"
+priority = 0
+
+# Rate limits - separate budget from dev
+[rate_limits]
+window_5h_cap = 50
+weekly_cap = 500
+weekly_headroom_pct = 80
+
+# Providers - prefer fast, reliable models for interactive work
+[providers.claude-sonnet]
+tier = "balanced"
+authed = true
+model = "claude-sonnet-4-20250514"
+
+[providers.claude-opus]
+tier = "premium"
+authed = true
+model = "claude-opus-4-5"
+
+[providers.gpt-4o]
+tier = "balanced"
+authed = true
+model = "gpt-4o"
+
+[providers.codex]
+tier = "fast"
+authed = true
+model = "gpt-5.3-codex"
+
+# Tier mappings - which providers for each complexity
+[tiers]
+fast = ["codex"]
+balanced = ["claude-sonnet", "gpt-4o"]
+premium = ["claude-opus"]
+
+# API on different port to avoid collision with cortex-dev
+[api]
+bind = "127.0.0.1:8901"
+
+# Health settings - faster detection for interactive
+[health]
+check_interval = "30s"
+stuck_threshold = "10m"
+
+# Dispatch configuration
+[dispatch.cli.claude]
+cmd = "claude"
+prompt_mode = "stdin"
+args = ["--print"]
+model_flag = "--model"
+approval_flags = ["--dangerously-skip-permissions"]
+
+[dispatch.cli.codex]
+cmd = "codex"
+prompt_mode = "stdin"
+args = ["exec", "--full-auto"]
+model_flag = "-m"
+approval_flags = []
+
+[dispatch.routing]
+fast_backend = "headless_cli"
+balanced_backend = "tmux"
+premium_backend = "tmux"
+comms_backend = "headless_cli"
+retry_backend = "tmux"
+
+[dispatch.timeouts]
+fast = "10m"
+balanced = "30m"
+premium = "60m"
+
+[dispatch.tmux]
+history_limit = 50000
+session_prefix = "cortex-int-"

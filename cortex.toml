@@ -155,3 +155,4 @@ enabled = true
 matrix_room = "#cortex-coordination"
 model = "claude-sonnet-4-20250514"
 agent_id = "cortex-chief-scrum"
+require_approved_plan = true

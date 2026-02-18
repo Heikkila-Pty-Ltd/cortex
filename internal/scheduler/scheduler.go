@@ -43,6 +43,7 @@ type Scheduler struct {
 	claimAnomaly        map[string]time.Time
 	gatewayCircuitUntil time.Time
 	gatewayCircuitLogAt time.Time
+	planGateLogAt       time.Time
 	ceremonyScheduler   *CeremonyScheduler
 	completionVerifier  *CompletionVerifier
 	lastCompletionCheck time.Time
@@ -83,6 +84,7 @@ const (
 	gatewayFailureWindow    = 2 * time.Minute
 	gatewayFailureThreshold = 5
 	gatewayCircuitDuration  = 10 * time.Minute
+	planGateLogInterval     = 2 * time.Minute
 )
 
 func bdCommandContext(ctx context.Context, args ...string) *exec.Cmd {
@@ -175,6 +177,13 @@ func (s *Scheduler) IsPaused() bool {
 	return s.paused
 }
 
+// PlanGateStatus returns the execution plan gate state used to control implementation dispatching.
+func (s *Scheduler) PlanGateStatus() (required bool, active bool, plan *store.ExecutionPlanGate, err error) {
+	required = s.cfg.Chief.RequireApprovedPlan
+	active, plan, err = s.store.HasActiveApprovedPlan()
+	return required, active, plan, err
+}
+
 // CancelDispatch stops a running dispatch by id and marks it cancelled.
 func (s *Scheduler) CancelDispatch(id int64) error {
 	d, err := s.store.GetDispatchByID(id)
@@ -235,6 +244,31 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 	// Reconcile stale ownership locks and evaluate gateway breaker before new dispatches.
 	s.reconcileExpiredClaimLeases(ctx)
 	gatewayCircuitOpen := s.evaluateGatewayCircuit(ctx)
+
+	// Enforce optional execution gate: implementation dispatch requires an active approved plan.
+	if required, active, plan, err := s.PlanGateStatus(); err != nil {
+		if s.planGateLogAt.IsZero() || time.Since(s.planGateLogAt) >= planGateLogInterval {
+			s.planGateLogAt = time.Now()
+			s.logger.Warn("execution plan gate check failed; suppressing dispatches", "error", err)
+		}
+		s.checkCeremonies(ctx)
+		s.processDoDStage(ctx)
+		s.runCompletionVerification(ctx)
+		s.logger.Info("tick complete", "dispatched", 0, "ready", 0, "plan_gate", "error")
+		return
+	} else if required && !active {
+		if s.planGateLogAt.IsZero() || time.Since(s.planGateLogAt) >= planGateLogInterval {
+			s.planGateLogAt = time.Now()
+			s.logger.Warn("execution plan gate closed; waiting for active approved plan")
+		}
+		s.checkCeremonies(ctx)
+		s.processDoDStage(ctx)
+		s.runCompletionVerification(ctx)
+		s.logger.Info("tick complete", "dispatched", 0, "ready", 0, "plan_gate", "closed")
+		return
+	} else if required && plan != nil {
+		s.logger.Debug("execution plan gate open", "plan_id", plan.PlanID, "approved_by", plan.ApprovedBy)
+	}
 
 	// Collect all ready beads across enabled projects
 	var allReady []struct {

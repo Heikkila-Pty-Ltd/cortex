@@ -15,8 +15,8 @@ import (
 
 // AuthMiddleware provides authentication and authorization for API endpoints
 type AuthMiddleware struct {
-	config *config.APISecurity
-	logger *slog.Logger
+	config    *config.APISecurity
+	logger    *slog.Logger
 	auditFile *os.File
 }
 
@@ -50,16 +50,16 @@ func (am *AuthMiddleware) Close() error {
 
 // AuditEvent represents an audit log entry
 type AuditEvent struct {
-	Timestamp   time.Time `json:"timestamp"`
-	RemoteAddr  string    `json:"remote_addr"`
-	Method      string    `json:"method"`
-	Path        string    `json:"path"`
-	UserAgent   string    `json:"user_agent,omitempty"`
-	Authorized  bool      `json:"authorized"`
-	Token       string    `json:"token,omitempty"` // Truncated for security
-	Error       string    `json:"error,omitempty"`
-	StatusCode  int       `json:"status_code"`
-	Duration    string    `json:"duration"`
+	Timestamp  time.Time `json:"timestamp"`
+	RemoteAddr string    `json:"remote_addr"`
+	Method     string    `json:"method"`
+	Path       string    `json:"path"`
+	UserAgent  string    `json:"user_agent,omitempty"`
+	Authorized bool      `json:"authorized"`
+	Token      string    `json:"token,omitempty"` // Truncated for security
+	Error      string    `json:"error,omitempty"`
+	StatusCode int       `json:"status_code"`
+	Duration   string    `json:"duration"`
 }
 
 // logAuditEvent writes an audit event to the log file
@@ -93,22 +93,22 @@ func isLocalRequest(remoteAddr string) bool {
 	if err != nil {
 		return false
 	}
-	
+
 	ip := net.ParseIP(host)
 	if ip == nil {
 		return false
 	}
-	
+
 	// Check for loopback addresses (127.x.x.x and ::1)
 	if ip.IsLoopback() {
 		return true
 	}
-	
+
 	// Check for private addresses (RFC 1918)
 	if ip.IsPrivate() {
 		return true
 	}
-	
+
 	return false
 }
 
@@ -118,12 +118,12 @@ func extractToken(r *http.Request) string {
 	if auth == "" {
 		return ""
 	}
-	
+
 	parts := strings.Split(auth, " ")
 	if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
 		return ""
 	}
-	
+
 	return parts[1]
 }
 
@@ -132,13 +132,13 @@ func (am *AuthMiddleware) isValidToken(token string) bool {
 	if token == "" {
 		return false
 	}
-	
+
 	for _, allowedToken := range am.config.AllowedTokens {
 		if token == allowedToken {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -147,25 +147,27 @@ func isControlEndpoint(method, path string) bool {
 	if method != http.MethodPost {
 		return false
 	}
-	
+
 	controlPaths := []string{
 		"/scheduler/pause",
 		"/scheduler/resume",
+		"/scheduler/plan/activate",
+		"/scheduler/plan/clear",
 	}
-	
+
 	for _, controlPath := range controlPaths {
 		if path == controlPath {
 			return true
 		}
 	}
-	
+
 	// Check for dispatch control endpoints with patterns
 	if strings.HasPrefix(path, "/dispatches/") {
 		if strings.HasSuffix(path, "/cancel") || strings.HasSuffix(path, "/retry") {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -173,13 +175,13 @@ func isControlEndpoint(method, path string) bool {
 func (am *AuthMiddleware) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		
+
 		// Check if this is a control endpoint
 		if !isControlEndpoint(r.Method, r.URL.Path) {
 			next(w, r)
 			return
 		}
-		
+
 		event := AuditEvent{
 			Timestamp:  start,
 			RemoteAddr: r.RemoteAddr,
@@ -187,12 +189,12 @@ func (am *AuthMiddleware) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 			Path:       r.URL.Path,
 			UserAgent:  r.Header.Get("User-Agent"),
 		}
-		
+
 		defer func() {
 			event.Duration = time.Since(start).String()
 			am.logAuditEvent(event)
 		}()
-		
+
 		// Check if auth is enabled
 		if !am.config.Enabled {
 			// If auth is disabled but require_local_only is set, check for local requests
@@ -203,26 +205,26 @@ func (am *AuthMiddleware) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 				writeError(w, http.StatusForbidden, "Access denied: non-local requests not allowed")
 				return
 			}
-			
+
 			event.Authorized = true
 			next(w, r)
 			return
 		}
-		
+
 		// Auth is enabled - extract and validate token
 		token := extractToken(r)
 		event.Token = truncateToken(token)
-		
+
 		if !am.isValidToken(token) {
 			event.Authorized = false
 			event.Error = "invalid or missing token"
 			event.StatusCode = http.StatusUnauthorized
-			
+
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeError(w, http.StatusUnauthorized, "Unauthorized: valid token required")
 			return
 		}
-		
+
 		event.Authorized = true
 		next(w, r)
 	}

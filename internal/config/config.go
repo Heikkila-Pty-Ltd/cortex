@@ -58,6 +58,7 @@ type General struct {
 	DispatchCooldown Duration `toml:"dispatch_cooldown"`
 	LogLevel         string   `toml:"log_level"`
 	StateDB          string   `toml:"state_db"`
+	LockFile         string   `toml:"lock_file"`
 }
 
 // Cadence defines shared sprint cadence across all projects.
@@ -214,10 +215,11 @@ type DispatchTmux struct {
 }
 
 type Chief struct {
-	Enabled    bool   `toml:"enabled"`     // Enable Chief Scrum Master
-	MatrixRoom string `toml:"matrix_room"` // Matrix room for coordination
-	Model      string `toml:"model"`       // Model to use (defaults to premium)
-	AgentID    string `toml:"agent_id"`    // Agent identifier (defaults to "cortex-chief-scrum")
+	Enabled             bool   `toml:"enabled"`               // Enable Chief Scrum Master
+	MatrixRoom          string `toml:"matrix_room"`           // Matrix room for coordination
+	Model               string `toml:"model"`                 // Model to use (defaults to premium)
+	AgentID             string `toml:"agent_id"`              // Agent identifier (defaults to "cortex-chief-scrum")
+	RequireApprovedPlan bool   `toml:"require_approved_plan"` // Block implementation dispatch without active approved plan
 }
 
 // Load reads and validates a Cortex TOML configuration file.

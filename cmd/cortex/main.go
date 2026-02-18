@@ -64,7 +64,11 @@ func main() {
 	slog.SetDefault(logger)
 
 	// Acquire single-instance lock
-	lockFile, err := health.AcquireFlock("/tmp/cortex.lock")
+	lockPath := "/tmp/cortex.lock"
+	if cfg.General.LockFile != "" {
+		lockPath = config.ExpandHome(cfg.General.LockFile)
+	}
+	lockFile, err := health.AcquireFlock(lockPath)
 	if err != nil {
 		logger.Error("failed to acquire lock", "error", err)
 		os.Exit(1)

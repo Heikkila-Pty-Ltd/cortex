@@ -81,6 +81,62 @@ func TestSchedulerPauseResume(t *testing.T) {
 	}
 }
 
+func TestSchedulerPlanGateStatus(t *testing.T) {
+	tmpDB := t.TempDir() + "/test.db"
+	st, err := store.Open(tmpDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cfg := &config.Config{
+		General: config.General{
+			TickInterval: config.Duration{Duration: 100 * time.Millisecond},
+			MaxPerTick:   1,
+		},
+		Chief: config.Chief{
+			RequireApprovedPlan: true,
+		},
+		RateLimits: config.RateLimits{},
+		Tiers:      config.Tiers{},
+		Providers:  map[string]config.Provider{},
+	}
+
+	rl := dispatch.NewRateLimiter(st, cfg.RateLimits)
+	d := dispatch.NewDispatcher()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	sched := New(cfg, st, rl, d, logger, false)
+
+	required, active, plan, err := sched.PlanGateStatus()
+	if err != nil {
+		t.Fatalf("PlanGateStatus failed: %v", err)
+	}
+	if !required {
+		t.Fatalf("expected required plan gate")
+	}
+	if active {
+		t.Fatalf("expected inactive gate before activation")
+	}
+	if plan != nil {
+		t.Fatalf("expected nil plan before activation")
+	}
+
+	if err := st.SetActiveApprovedPlan("plan-test-1", "tester"); err != nil {
+		t.Fatalf("SetActiveApprovedPlan failed: %v", err)
+	}
+
+	required, active, plan, err = sched.PlanGateStatus()
+	if err != nil {
+		t.Fatalf("PlanGateStatus after activation failed: %v", err)
+	}
+	if !required || !active {
+		t.Fatalf("expected required+active gate after activation")
+	}
+	if plan == nil || plan.PlanID != "plan-test-1" {
+		t.Fatalf("expected active plan plan-test-1, got %+v", plan)
+	}
+}
+
 // =============================================================================
 // Test Infrastructure for RunTick End-to-End Testing
 // =============================================================================
@@ -95,13 +151,13 @@ type MockDispatcher struct {
 }
 
 type MockDispatch struct {
-	Handle       int
-	Agent        string
-	Prompt       string
-	Provider     string
+	Handle        int
+	Agent         string
+	Prompt        string
+	Provider      string
 	ThinkingLevel string
-	WorkDir      string
-	SessionName  string
+	WorkDir       string
+	SessionName   string
 }
 
 func NewMockDispatcher() *MockDispatcher {
@@ -116,24 +172,24 @@ func NewMockDispatcher() *MockDispatcher {
 func (m *MockDispatcher) Dispatch(ctx context.Context, agent, prompt, provider, thinkingLevel, workDir string) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	handle := m.nextHandle
 	m.nextHandle++
-	
+
 	sessionName := fmt.Sprintf("mock-session-%s-%d", agent, handle)
 	m.sessions[handle] = sessionName
-	
+
 	dispatch := MockDispatch{
-		Handle:       handle,
-		Agent:        agent,
-		Prompt:       prompt,
-		Provider:     provider,
+		Handle:        handle,
+		Agent:         agent,
+		Prompt:        prompt,
+		Provider:      provider,
 		ThinkingLevel: thinkingLevel,
-		WorkDir:      workDir,
-		SessionName:  sessionName,
+		WorkDir:       workDir,
+		SessionName:   sessionName,
 	}
 	m.dispatches = append(m.dispatches, dispatch)
-	
+
 	return handle, nil
 }
 
@@ -164,7 +220,7 @@ func (m *MockDispatcher) GetSessionName(handle int) string {
 func (m *MockDispatcher) GetProcessState(handle int) dispatch.ProcessState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if m.killed[handle] {
 		return dispatch.ProcessState{
 			State:    "exited",
@@ -253,7 +309,7 @@ func createTestConfig(maxPerTick int) *config.Config {
 			RetryBackoffBase: config.Duration{Duration: 2 * time.Second},
 			RetryMaxDelay:    config.Duration{Duration: 300 * time.Second},
 			DispatchCooldown: config.Duration{Duration: 5 * time.Minute},
-			StateDB:         ":memory:",
+			StateDB:          ":memory:",
 		},
 		RateLimits: config.RateLimits{
 			Window5hCap: 100,
@@ -311,73 +367,73 @@ func TestRunTickTestInfrastructure(t *testing.T) {
 	t.Run("MockDispatcher", func(t *testing.T) {
 		mock := NewMockDispatcher()
 		ctx := context.Background()
-		
+
 		// Test dispatch
 		handle, err := mock.Dispatch(ctx, "test-agent", "test prompt", "test-provider", "normal", "/tmp")
 		if err != nil {
 			t.Fatalf("Dispatch failed: %v", err)
 		}
-		
+
 		if handle < 1000 {
 			t.Errorf("Expected handle >= 1000, got %d", handle)
 		}
-		
+
 		// Test IsAlive
 		if !mock.IsAlive(handle) {
 			t.Error("Expected dispatch to be alive")
 		}
-		
+
 		// Test GetSessionName
 		sessionName := mock.GetSessionName(handle)
 		if sessionName == "" {
 			t.Error("Expected non-empty session name")
 		}
-		
+
 		// Test recorded dispatches
 		dispatches := mock.GetDispatches()
 		if len(dispatches) != 1 {
 			t.Errorf("Expected 1 dispatch, got %d", len(dispatches))
 		}
-		
+
 		dispatch := dispatches[0]
 		if dispatch.Agent != "test-agent" {
 			t.Errorf("Expected agent 'test-agent', got %q", dispatch.Agent)
 		}
-		
+
 		// Test Kill
 		if err := mock.Kill(handle); err != nil {
 			t.Errorf("Kill failed: %v", err)
 		}
-		
+
 		if mock.IsAlive(handle) {
 			t.Error("Expected dispatch to be dead after kill")
 		}
 	})
-	
+
 	t.Run("MockBeadsLister", func(t *testing.T) {
 		lister := NewMockBeadsLister()
-		
+
 		testBeads := []beads.Bead{
 			createTestBead("test-1", "Test Bead 1", "task", "open", 1),
 			createTestBead("test-2", "Test Bead 2", "bug", "open", 2),
 		}
-		
+
 		beadsDir := "/tmp/test-beads"
 		lister.SetBeads(beadsDir, testBeads)
-		
+
 		retrieved, err := lister.ListBeads(beadsDir)
 		if err != nil {
 			t.Fatalf("ListBeads failed: %v", err)
 		}
-		
+
 		if len(retrieved) != 2 {
 			t.Errorf("Expected 2 beads, got %d", len(retrieved))
 		}
-		
+
 		if retrieved[0].ID != "test-1" {
 			t.Errorf("Expected first bead ID 'test-1', got %q", retrieved[0].ID)
 		}
-		
+
 		// Test empty directory
 		empty, err := lister.ListBeads("/nonexistent")
 		if err != nil {
@@ -387,7 +443,7 @@ func TestRunTickTestInfrastructure(t *testing.T) {
 			t.Errorf("Expected 0 beads for empty directory, got %d", len(empty))
 		}
 	})
-	
+
 	t.Run("TestDataBuilders", func(t *testing.T) {
 		bead := createTestBead("test-bead", "Test Title", "task", "open", 2)
 		if bead.ID != "test-bead" {
@@ -396,7 +452,7 @@ func TestRunTickTestInfrastructure(t *testing.T) {
 		if bead.Type != "task" {
 			t.Errorf("Expected type 'task', got %q", bead.Type)
 		}
-		
+
 		cfg := createTestConfig(5)
 		if cfg.General.MaxPerTick != 5 {
 			t.Errorf("Expected MaxPerTick 5, got %d", cfg.General.MaxPerTick)
@@ -404,7 +460,7 @@ func TestRunTickTestInfrastructure(t *testing.T) {
 		if len(cfg.Providers) != 3 {
 			t.Errorf("Expected 3 providers, got %d", len(cfg.Providers))
 		}
-		
+
 		store := createTestStore(t)
 		if store == nil {
 			t.Error("Expected non-nil store")

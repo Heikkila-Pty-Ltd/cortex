@@ -10,6 +10,7 @@ bd show <id>          # View issue details
 bd update <id> --status in_progress  # Claim work
 bd close <id>         # Complete work
 bd sync               # Sync with git
+scripts/test-safe.sh ./internal/learner/...  # Locked + timeout + JSON go test
 ```
 
 ## Landing the Plane (Session Completion)
@@ -20,6 +21,10 @@ bd sync               # Sync with git
 
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
+   ```bash
+   # Use locked test wrapper to avoid cross-agent test contention
+   scripts/test-safe.sh ./...
+   ```
 3. **Update issue status** - Close finished work, update in-progress items
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
@@ -85,12 +90,25 @@ bd sync               # Commit and push changes
 
 ```bash
 git status              # Check what changed
+scripts/test-safe.sh ./...  # Run tests with lock/timeout/json output
 git add <files>         # Stage code changes
 bd sync                 # Commit beads changes
 git commit -m "..."     # Commit code
 bd sync                 # Commit any new beads changes
 git push                # Push to remote
 ```
+
+### Test Contention Guardrail
+
+Use `scripts/test-safe.sh` instead of raw `go test` in shared workspaces.
+
+- Uses `flock` lock file: `.tmp/go-test.lock`
+- Uses bounded `go test -timeout` (default `10m`)
+- Emits `go test -json` for machine-readable logs
+- Optional env overrides:
+  - `TEST_SAFE_LOCK_WAIT_SEC=300`
+  - `TEST_SAFE_GO_TEST_TIMEOUT=15m`
+  - `TEST_SAFE_JSON_OUT=.tmp/test-$(date +%s).jsonl`
 
 ### Best Practices
 

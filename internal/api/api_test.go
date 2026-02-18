@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -301,6 +302,68 @@ func TestHandleSchedulerStatus(t *testing.T) {
 	}
 	if _, ok := resp["tick_interval"]; !ok {
 		t.Fatal("missing tick_interval field")
+	}
+	if _, ok := resp["plan_gate"]; !ok {
+		t.Fatal("missing plan_gate field")
+	}
+}
+
+func TestHandleSchedulerPlanStatus(t *testing.T) {
+	srv := setupTestServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/scheduler/plan", nil)
+	w := httptest.NewRecorder()
+	srv.handleSchedulerPlanStatus(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["required"]; !ok {
+		t.Fatal("missing required field")
+	}
+	if _, ok := resp["active"]; !ok {
+		t.Fatal("missing active field")
+	}
+}
+
+func TestHandleSchedulerPlanActivateAndClear(t *testing.T) {
+	srv := setupTestServer(t)
+
+	activateBody := []byte(`{"plan_id":"plan-2026-02-18-main","approved_by":"test-user"}`)
+	req := httptest.NewRequest(http.MethodPost, "/scheduler/plan/activate", bytes.NewReader(activateBody))
+	w := httptest.NewRecorder()
+	srv.handleSchedulerPlanActivate(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from activate, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	active, plan, err := srv.store.HasActiveApprovedPlan()
+	if err != nil {
+		t.Fatalf("HasActiveApprovedPlan failed: %v", err)
+	}
+	if !active || plan == nil {
+		t.Fatalf("expected active plan after activation")
+	}
+	if plan.PlanID != "plan-2026-02-18-main" {
+		t.Fatalf("plan id = %q, want %q", plan.PlanID, "plan-2026-02-18-main")
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/scheduler/plan/clear", nil)
+	w = httptest.NewRecorder()
+	srv.handleSchedulerPlanClear(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from clear, got %d body=%s", w.Code, w.Body.String())
+	}
+
+	active, plan, err = srv.store.HasActiveApprovedPlan()
+	if err != nil {
+		t.Fatalf("HasActiveApprovedPlan after clear failed: %v", err)
+	}
+	if active || plan != nil {
+		t.Fatalf("expected no active plan after clear")
 	}
 }
 

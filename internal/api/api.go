@@ -75,6 +75,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/recommendations", s.handleRecommendations)
 	mux.HandleFunc("/scheduler/status", s.handleSchedulerStatus)
+	mux.HandleFunc("/scheduler/plan", s.handleSchedulerPlanStatus)
 
 	// Dispatch endpoints (mixed read/write - auth applied per endpoint)
 	mux.HandleFunc("/dispatches/", s.authMiddleware.RequireAuth(s.routeDispatches))
@@ -82,6 +83,8 @@ func (s *Server) Start(ctx context.Context) error {
 	// Control endpoints (write operations - require auth)
 	mux.HandleFunc("/scheduler/pause", s.authMiddleware.RequireAuth(s.handleSchedulerPause))
 	mux.HandleFunc("/scheduler/resume", s.authMiddleware.RequireAuth(s.handleSchedulerResume))
+	mux.HandleFunc("/scheduler/plan/activate", s.authMiddleware.RequireAuth(s.handleSchedulerPlanActivate))
+	mux.HandleFunc("/scheduler/plan/clear", s.authMiddleware.RequireAuth(s.handleSchedulerPlanClear))
 
 	s.httpServer = &http.Server{
 		Addr:        s.cfg.API.Bind,
@@ -594,9 +597,112 @@ func (s *Server) handleSchedulerStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	required, active, plan, err := s.scheduler.PlanGateStatus()
+	if err != nil {
+		s.logger.Warn("failed to load plan gate status", "error", err)
+	}
+
+	planGate := map[string]any{
+		"required": required,
+		"active":   active,
+	}
+	if plan != nil {
+		planGate["plan_id"] = plan.PlanID
+		planGate["approved_by"] = plan.ApprovedBy
+		planGate["approved_at"] = plan.ApprovedAt.Format(time.RFC3339)
+		planGate["activated_at"] = plan.ActivatedAt.Format(time.RFC3339)
+	}
+
 	writeJSON(w, map[string]any{
 		"paused":        s.scheduler.IsPaused(),
 		"tick_interval": s.cfg.General.TickInterval.Duration.String(),
+		"plan_gate":     planGate,
+	})
+}
+
+// GET /scheduler/plan - Get execution plan gate status.
+func (s *Server) handleSchedulerPlanStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	required, active, plan, err := s.scheduler.PlanGateStatus()
+	if err != nil {
+		s.logger.Error("failed to read scheduler plan gate", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to read scheduler plan gate")
+		return
+	}
+
+	resp := map[string]any{
+		"required": required,
+		"active":   active,
+	}
+	if plan != nil {
+		resp["plan_id"] = plan.PlanID
+		resp["approved_by"] = plan.ApprovedBy
+		resp["approved_at"] = plan.ApprovedAt.Format(time.RFC3339)
+		resp["activated_at"] = plan.ActivatedAt.Format(time.RFC3339)
+	}
+
+	writeJSON(w, resp)
+}
+
+// POST /scheduler/plan/activate - Activate an approved plan for execution.
+func (s *Server) handleSchedulerPlanActivate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req struct {
+		PlanID     string `json:"plan_id"`
+		ApprovedBy string `json:"approved_by"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json request body")
+		return
+	}
+	req.PlanID = strings.TrimSpace(req.PlanID)
+	req.ApprovedBy = strings.TrimSpace(req.ApprovedBy)
+	if req.PlanID == "" {
+		writeError(w, http.StatusBadRequest, "plan_id is required")
+		return
+	}
+	if req.ApprovedBy == "" {
+		req.ApprovedBy = "api"
+	}
+
+	if err := s.store.SetActiveApprovedPlan(req.PlanID, req.ApprovedBy); err != nil {
+		s.logger.Error("failed to activate execution plan gate", "plan_id", req.PlanID, "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to activate execution plan gate")
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"required":    s.cfg.Chief.RequireApprovedPlan,
+		"active":      true,
+		"plan_id":     req.PlanID,
+		"approved_by": req.ApprovedBy,
+	})
+}
+
+// POST /scheduler/plan/clear - Clear active plan gate.
+func (s *Server) handleSchedulerPlanClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	if err := s.store.ClearActiveApprovedPlan(); err != nil {
+		s.logger.Error("failed to clear execution plan gate", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to clear execution plan gate")
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"required": s.cfg.Chief.RequireApprovedPlan,
+		"active":   false,
 	})
 }
 
