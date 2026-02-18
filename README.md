@@ -72,6 +72,16 @@ make service-install
 make service-start
 ```
 
+## Testing
+
+```bash
+# Run focused race tests for concurrency-critical packages
+make test-race
+```
+
+`make test-race` runs through `scripts/test-safe.sh` with explicit package selection:
+`internal/scheduler`, `internal/store`, `internal/learner`, `internal/dispatch`, and `internal/chief`.
+
 ## Configuration Reference
 
 All configuration lives in `cortex.toml`:

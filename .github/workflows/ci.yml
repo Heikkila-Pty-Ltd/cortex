@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+jobs:
+  race-tests:
+    name: Race Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Prime temp directory
+        run: mkdir -p .tmp
+
+      - name: Run race test target
+        env:
+          TEST_SAFE_GO_TEST_TIMEOUT: 25m
+          TEST_SAFE_LOCK_WAIT_SEC: 60
+          TEST_SAFE_JSON_OUT: .tmp/test-race.jsonl
+        run: |
+          set -o pipefail
+          make test-race 2>&1 | tee .tmp/test-race.log
+
+      - name: Summarize failing package and test names
+        if: failure()
+        run: |
+          if [[ -f .tmp/test-race.jsonl ]]; then
+            echo "Failed package/test entries from .tmp/test-race.jsonl:"
+            jq -r '
+              select(.Action == "fail") |
+              [.Package, (.Test // "<package>")] |
+              @tsv
+            ' .tmp/test-race.jsonl | sort -u || true
+          fi
+
+      - name: Upload race logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: race-test-logs
+          if-no-files-found: warn
+          path: |
+            .tmp/test-race.log
+            .tmp/test-race.jsonl
