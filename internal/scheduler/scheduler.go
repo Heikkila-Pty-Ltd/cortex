@@ -908,6 +908,8 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 							retryPending = true
 							finalStage = "pending_retry"
 							retryReason = "gateway_closed"
+						} else {
+							retryReason = "terminal_output_failure"
 						}
 						if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
 							s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
@@ -919,6 +921,7 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 			handle := s.dispatchHandleFromRecord(d)
 			backend := s.backendByName(d.Backend)
 			state := dispatch.DispatchStatus{State: "unknown", ExitCode: -1}
+			output := ""
 			if backend != nil {
 				backendState, statusErr := backend.Status(handle)
 				if statusErr != nil {
@@ -926,48 +929,89 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 				} else {
 					state = backendState
 				}
-			}
-
-			switch state.State {
-			case "running":
-				continue
-			case "completed":
-				status = "completed"
-				exitCode = 0
-				finalStage = "completed"
-			case "failed":
-				status = "failed"
-				exitCode = state.ExitCode
-				finalStage = "failed"
-			default:
-				status = "failed"
-				exitCode = -1
-				finalStage = "failed_needs_check"
-
-				s.logger.Error("dispatch process state unknown - exit status unavailable",
-					"bead", d.BeadID,
-					"pid", d.PID,
-					"agent", d.AgentID,
-					"provider", d.Provider,
-					"duration_s", duration)
-
-				healthDetails := fmt.Sprintf("bead %s pid %d (agent=%s, provider=%s) died after %.1fs but exit status could not be determined - may indicate system instability",
-					d.BeadID, d.PID, d.AgentID, d.Provider, duration)
-				_ = s.store.RecordHealthEventWithDispatch("dispatch_pid_unknown_exit", healthDetails, d.ID, d.BeadID)
-
-				category := "unknown_exit_state"
-				summary := fmt.Sprintf("Process %d died but exit code could not be captured. This may indicate the process was killed by the system (OOM killer, etc.) or tracking was lost.", d.PID)
-				if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
-					s.logger.Error("failed to store failure diagnosis for unknown exit", "dispatch_id", d.ID, "error", err)
-				}
-			}
-
-			output := ""
-			if backend != nil {
 				if captured, captureErr := backend.CaptureOutput(handle); captureErr != nil {
 					s.logger.Warn("failed to capture backend output", "dispatch_id", d.ID, "backend", d.Backend, "error", captureErr)
 				} else {
 					output = captured
+				}
+				switch state.State {
+				case "running":
+					continue
+				case "completed":
+					status = "completed"
+					exitCode = 0
+					finalStage = "completed"
+				case "failed":
+					status = "failed"
+					exitCode = state.ExitCode
+					finalStage = "failed"
+				default:
+					status = "failed"
+					exitCode = -1
+					finalStage = "failed_needs_check"
+
+					s.logger.Error("dispatch process state unknown - exit status unavailable",
+						"bead", d.BeadID,
+						"pid", d.PID,
+						"agent", d.AgentID,
+						"provider", d.Provider,
+						"duration_s", duration)
+
+					healthDetails := fmt.Sprintf("bead %s pid %d (agent=%s, provider=%s) died after %.1fs but exit status could not be determined - may indicate system instability",
+						d.BeadID, d.PID, d.AgentID, d.Provider, duration)
+					_ = s.store.RecordHealthEventWithDispatch("dispatch_pid_unknown_exit", healthDetails, d.ID, d.BeadID)
+
+					category := "unknown_exit_state"
+					summary := fmt.Sprintf("Process %d died but exit code could not be captured. This may indicate the process was killed by the system (OOM killer, etc.) or tracking was lost.", d.PID)
+					if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
+						s.logger.Error("failed to store failure diagnosis for unknown exit", "dispatch_id", d.ID, "error", err)
+					}
+				}
+			} else {
+				// Backward compatibility for legacy rows without backend metadata.
+				processState := s.dispatcher.GetProcessState(d.PID)
+				switch processState.State {
+				case "running":
+					continue
+				case "exited":
+					if processState.ExitCode == 0 {
+						status = "completed"
+						exitCode = 0
+						finalStage = "completed"
+					} else {
+						status = "failed"
+						exitCode = processState.ExitCode
+						finalStage = "failed"
+					}
+					if strings.TrimSpace(processState.OutputPath) != "" {
+						if outputBytes, err := os.ReadFile(processState.OutputPath); err == nil {
+							output = string(outputBytes)
+						}
+					}
+				default:
+					status = "failed"
+					exitCode = -1
+					finalStage = "failed_needs_check"
+
+					s.logger.Error("dispatch process state unknown - exit status unavailable",
+						"bead", d.BeadID,
+						"pid", d.PID,
+						"agent", d.AgentID,
+						"provider", d.Provider,
+						"duration_s", duration)
+
+					healthDetails := fmt.Sprintf("bead %s pid %d (agent=%s, provider=%s) died after %.1fs but exit status could not be determined - may indicate system instability",
+						d.BeadID, d.PID, d.AgentID, d.Provider, duration)
+					_ = s.store.RecordHealthEventWithDispatch("dispatch_pid_unknown_exit", healthDetails, d.ID, d.BeadID)
+
+					category := "unknown_exit_state"
+					summary := fmt.Sprintf("Process %d died but exit code could not be captured. This may indicate the process was killed by the system (OOM killer, etc.) or tracking was lost.", d.PID)
+					if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
+						s.logger.Error("failed to store failure diagnosis for unknown exit", "dispatch_id", d.ID, "error", err)
+					}
+				}
+				if pidDispatcher, ok := s.dispatcher.(*dispatch.Dispatcher); ok {
+					pidDispatcher.CleanupProcess(d.PID)
 				}
 			}
 			if strings.TrimSpace(output) == "" && strings.TrimSpace(d.LogPath) != "" {
@@ -991,6 +1035,8 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 						retryPending = true
 						finalStage = "pending_retry"
 						retryReason = "gateway_closed"
+					} else {
+						retryReason = "terminal_output_failure"
 					}
 					if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
 						s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
@@ -1002,7 +1048,7 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 			}
 		}
 
-		if status == "failed" && !retryPending && finalStage == "failed" && duration <= 10 && exitCode != 0 {
+		if status == "failed" && !retryPending && retryReason == "" && finalStage == "failed" && duration <= 10 && exitCode != 0 {
 			retryPending = true
 			retryReason = "cli_broken"
 			if err := s.store.UpdateFailureDiagnosis(d.ID, "cli_broken",
