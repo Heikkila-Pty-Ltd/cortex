@@ -3,6 +3,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -320,8 +321,14 @@ func (c *ChiefSM) RunMultiTeamPlanning(ctx context.Context) error {
 		"provider_profiles", len(portfolioCtx.ProviderProfiles),
 		"project_planning_results", len(portfolioCtx.ProjectPlanningResults))
 
+	portfolioCtxJSON, err := json.MarshalIndent(portfolioCtx, "", "  ")
+	if err != nil {
+		return fmt.Errorf("serialize portfolio context: %w", err)
+	}
+	dispatchCtx := chiefpkg.WithMultiTeamPortfolioContext(ctx, string(portfolioCtxJSON))
+
 	// 7-11: dispatch Chief SM at premium/Opus tier to reason about trade-offs and publish plan.
-	if err := c.chief.RunMultiTeamPlanning(ctx); err != nil {
+	if err := c.chief.RunMultiTeamPlanning(dispatchCtx); err != nil {
 		return fmt.Errorf("dispatch chief multi-team planning: %w", err)
 	}
 
