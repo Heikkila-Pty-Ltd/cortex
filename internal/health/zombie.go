@@ -15,15 +15,11 @@ import (
 // CleanZombies finds orphaned openclaw agent processes and kills them.
 // Returns the count of killed processes.
 func CleanZombies(s *store.Store, dispatcher dispatch.DispatcherInterface, logger *slog.Logger) int {
-	var killed int
+	_ = dispatcher
 
-	if dispatcher.GetHandleType() == "session" {
-		// For tmux-based dispatching, clean up orphaned sessions
-		killed = cleanZombieSessions(s, logger)
-	} else {
-		// For PID-based dispatching, use the original logic
-		killed = cleanZombiePIDs(s, logger)
-	}
+	killedSessions := cleanZombieSessions(s, logger)
+	killedPIDs := cleanZombiePIDs(s, logger)
+	killed := killedSessions + killedPIDs
 
 	if killed > 0 {
 		logger.Info("zombie cleanup complete", "killed", killed)

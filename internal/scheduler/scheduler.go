@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -30,6 +31,7 @@ type Scheduler struct {
 	store               *store.Store
 	rateLimiter         *dispatch.RateLimiter
 	dispatcher          dispatch.DispatcherInterface
+	backends            map[string]dispatch.Backend
 	logger              *slog.Logger
 	dryRun              bool
 	mu                  sync.Mutex
@@ -84,11 +86,21 @@ const (
 
 // New creates a new Scheduler with all dependencies.
 func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatch.DispatcherInterface, logger *slog.Logger, dryRun bool) *Scheduler {
+	openclawDispatcher, ok := d.(*dispatch.Dispatcher)
+	if !ok || openclawDispatcher == nil {
+		openclawDispatcher = dispatch.NewDispatcher()
+	}
+
 	scheduler := &Scheduler{
 		cfg:          cfg,
 		store:        s,
 		rateLimiter:  rl,
 		dispatcher:   d,
+		backends: map[string]dispatch.Backend{
+			"headless_cli": dispatch.NewHeadlessBackend(cfg.Dispatch.CLI, config.ExpandHome(cfg.Dispatch.LogDir), cfg.Dispatch.LogRetentionDays),
+			"tmux":         dispatch.NewTmuxBackend(cfg.Dispatch.CLI, cfg.Dispatch.Tmux.HistoryLimit),
+			"openclaw":     dispatch.NewOpenClawBackend(openclawDispatcher),
+		},
 		logger:       logger,
 		dryRun:       dryRun,
 		quarantine:   make(map[string]time.Time),
@@ -356,34 +368,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		// Detect complexity -> tier
 		tier := DetectComplexity(item.bead)
 
-		// Pick provider — try downgrade first, then upgrade if no providers found
-		var provider *config.Provider
-		currentTier := tier
-		tried := map[string]bool{tier: true}
-		for {
-			provider = s.pickProviderWithProfileFiltering(currentTier, item.bead)
-			if provider != nil {
-				break
-			}
-			// Try downgrade
-			next := dispatch.DowngradeTier(currentTier)
-			if next != "" && !tried[next] {
-				s.logger.Info("tier downgrade", "bead", item.bead.ID, "from", currentTier, "to", next)
-				tried[next] = true
-				currentTier = next
-				continue
-			}
-			// Try upgrade
-			next = dispatch.UpgradeTier(currentTier)
-			if next != "" && !tried[next] {
-				s.logger.Info("tier upgrade", "bead", item.bead.ID, "from", currentTier, "to", next)
-				tried[next] = true
-				currentTier = next
-				continue
-			}
-			break
-		}
-
+		provider, _, currentTier := s.pickProviderForBead(item.bead, tier, nil)
 		if provider == nil {
 			s.logger.Warn("no provider available, deferring", "bead", item.bead.ID, "tier", tier)
 			continue
@@ -476,6 +461,8 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			lockHeld = false
 		}
 
+		branchName := ""
+
 		// Create feature branch if branch workflow is enabled
 		if item.project.UseBranches {
 			if err := git.EnsureFeatureBranchWithBase(workspace, item.bead.ID, item.project.BaseBranch, item.project.BranchPrefix); err != nil {
@@ -483,21 +470,21 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 				releaseLock("branch_setup_failed")
 				continue
 			}
+			branchName = item.project.BranchPrefix + item.bead.ID
 			s.logger.Debug("ensured feature branch", "bead", item.bead.ID, "branch", item.project.BranchPrefix+item.bead.ID)
 
 			// If stage is review, ensure PR exists
 			if stage == "stage:review" {
-				branch := item.project.BranchPrefix + item.bead.ID
-				status, err := git.GetPRStatus(workspace, branch)
+				status, err := git.GetPRStatus(workspace, branchName)
 				if err != nil {
-					s.logger.Warn("failed to check PR status", "bead", item.bead.ID, "branch", branch, "error", err)
+					s.logger.Warn("failed to check PR status", "bead", item.bead.ID, "branch", branchName, "error", err)
 				} else if status == nil {
 					// Create PR
 					title := fmt.Sprintf("feat(%s): %s", item.bead.ID, item.bead.Title)
 					body := fmt.Sprintf("## Task\n- **Title:** %s\n- **Bead:** %s\n\n## Description\n%s\n\n## Acceptance Criteria\n%s\n\n## Bead Link\n- `%s` (view with `bd show %s`)", item.bead.Title, item.bead.ID, item.bead.Description, item.bead.Acceptance, item.bead.ID, item.bead.ID)
-					url, num, err := git.CreatePR(workspace, branch, item.project.BaseBranch, title, body)
+					url, num, err := git.CreatePR(workspace, branchName, item.project.BaseBranch, title, body)
 					if err != nil {
-						s.logger.Error("failed to create PR", "bead", item.bead.ID, "branch", branch, "error", err)
+						s.logger.Error("failed to create PR", "bead", item.bead.ID, "branch", branchName, "error", err)
 					} else {
 						s.logger.Info("PR created", "bead", item.bead.ID, "url", url, "number", num)
 						// Update the most recent dispatch for this bead with the PR info
@@ -511,22 +498,44 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			}
 		}
 
-		handle, err := s.dispatcher.Dispatch(ctx, agent, prompt, provider.Model, thinkingLevel, workspace)
+		backend, backendName, err := s.selectBackend(role, currentTier, 0)
+		if err != nil {
+			s.logger.Error("failed to resolve backend", "bead", item.bead.ID, "tier", currentTier, "role", role, "error", err)
+			releaseLock("backend_resolution_failed")
+			continue
+		}
+		cliName := strings.TrimSpace(provider.CLI)
+		if cliName == "" {
+			cliName = s.defaultCLIConfigName()
+		}
+		logPath := s.buildDispatchLogPath(item.name, item.bead.ID, backendName)
+
+		handle, err := backend.Dispatch(ctx, dispatch.DispatchOpts{
+			Agent:         agent,
+			Prompt:        prompt,
+			Model:         provider.Model,
+			ThinkingLevel: thinkingLevel,
+			WorkDir:       workspace,
+			CLIConfig:     cliName,
+			Branch:        branchName,
+			LogPath:       logPath,
+		})
 		if err != nil {
 			s.logger.Error("dispatch failed", "bead", item.bead.ID, "agent", agent, "error", err)
 			releaseLock("dispatch_launch_failed")
 			continue
 		}
 
-		// Get session name for tmux dispatchers (empty for PID dispatchers)
-		sessionName := s.dispatcher.GetSessionName(handle)
+		sessionName := handle.SessionName
 
 		// Record dispatch with session name for crash-resilient tracking
-		dispatchID, err := s.store.RecordDispatch(item.bead.ID, item.name, agent, provider.Model, currentTier, handle, sessionName, prompt, "", "", "")
+		dispatchID, err := s.store.RecordDispatch(
+			item.bead.ID, item.name, agent, provider.Model, currentTier, handle.PID, sessionName, prompt, logPath, branchName, backendName,
+		)
 		if err != nil {
 			s.logger.Error("failed to record dispatch", "bead", item.bead.ID, "error", err)
-			if killErr := s.dispatcher.Kill(handle); killErr != nil {
-				s.logger.Warn("failed to terminate dispatch after record failure", "bead", item.bead.ID, "handle", handle, "error", killErr)
+			if killErr := backend.Kill(handle); killErr != nil {
+				s.logger.Warn("failed to terminate dispatch after record failure", "bead", item.bead.ID, "handle", handle.PID, "error", killErr)
 			}
 			releaseLock("dispatch_record_failed")
 			continue
@@ -553,8 +562,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			"stage", stage,
 			"provider", provider.Model,
 			"tier", currentTier,
-			"handle", handle,
+			"handle", handle.PID,
 			"session", sessionName,
+			"backend", backendName,
 		)
 		dispatched++
 	}
@@ -846,9 +856,10 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 		exitCode := 0
 		finalStage := "completed"
 		retryPending := false
+		retryReason := ""
 
 		// For tmux sessions, capture output and get exit code from the session
-		if d.SessionName != "" {
+		if d.Backend == "tmux" || d.SessionName != "" {
 			sessStatus, sessExit := dispatch.SessionStatus(d.SessionName)
 			switch sessStatus {
 			case "gone":
@@ -896,6 +907,7 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 						if category == "gateway_closed" {
 							retryPending = true
 							finalStage = "pending_retry"
+							retryReason = "gateway_closed"
 						}
 						if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
 							s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
@@ -904,55 +916,30 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 				}
 			}
 		} else {
-			// For PID dispatches, use the dispatcher's process state tracking
-			processState := s.dispatcher.GetProcessState(d.PID)
-
-			switch processState.State {
-			case "running":
-				// This shouldn't happen since IsAlive returned false, but handle it
-				s.logger.Warn("process state inconsistency: IsAlive=false but GetProcessState=running",
-					"bead", d.BeadID, "pid", d.PID)
-				continue // Skip this dispatch, will be processed next tick
-
-			case "exited":
-				if processState.ExitCode == 0 {
-					status = "completed"
-					exitCode = 0
-					finalStage = "completed"
+			handle := s.dispatchHandleFromRecord(d)
+			backend := s.backendByName(d.Backend)
+			state := dispatch.DispatchStatus{State: "unknown", ExitCode: -1}
+			if backend != nil {
+				backendState, statusErr := backend.Status(handle)
+				if statusErr != nil {
+					s.logger.Warn("failed to query backend status", "dispatch_id", d.ID, "backend", d.Backend, "error", statusErr)
 				} else {
-					status = "failed"
-					exitCode = processState.ExitCode
-					finalStage = "failed"
+					state = backendState
 				}
+			}
 
-				// Capture output if available
-				if processState.OutputPath != "" {
-					if outputBytes, err := os.ReadFile(processState.OutputPath); err != nil {
-						s.logger.Warn("failed to read process output", "pid", d.PID, "output_path", processState.OutputPath, "error", err)
-					} else if len(outputBytes) > 0 {
-						output := string(outputBytes)
-						if err := s.store.CaptureOutput(d.ID, output); err != nil {
-							s.logger.Error("failed to store process output", "dispatch_id", d.ID, "error", err)
-						}
-						if category, summary, flagged := detectTerminalOutputFailure(output); flagged {
-							if status == "completed" {
-								status = "failed"
-								exitCode = -1
-								finalStage = "failed"
-							}
-							if category == "gateway_closed" {
-								retryPending = true
-								finalStage = "pending_retry"
-							}
-							if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
-								s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
-							}
-						}
-					}
-				}
-
-			case "unknown":
-				// Process died but we couldn't determine exit status - treat as failure
+			switch state.State {
+			case "running":
+				continue
+			case "completed":
+				status = "completed"
+				exitCode = 0
+				finalStage = "completed"
+			case "failed":
+				status = "failed"
+				exitCode = state.ExitCode
+				finalStage = "failed"
+			default:
 				status = "failed"
 				exitCode = -1
 				finalStage = "failed_needs_check"
@@ -964,12 +951,10 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 					"provider", d.Provider,
 					"duration_s", duration)
 
-				// Record health event for tracking
 				healthDetails := fmt.Sprintf("bead %s pid %d (agent=%s, provider=%s) died after %.1fs but exit status could not be determined - may indicate system instability",
 					d.BeadID, d.PID, d.AgentID, d.Provider, duration)
 				_ = s.store.RecordHealthEventWithDispatch("dispatch_pid_unknown_exit", healthDetails, d.ID, d.BeadID)
 
-				// Set failure diagnosis
 				category := "unknown_exit_state"
 				summary := fmt.Sprintf("Process %d died but exit code could not be captured. This may indicate the process was killed by the system (OOM killer, etc.) or tracking was lost.", d.PID)
 				if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
@@ -977,9 +962,52 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 				}
 			}
 
-			// Clean up process tracking info after we've extracted what we need
-			if pidDispatcher, ok := s.dispatcher.(*dispatch.Dispatcher); ok {
-				pidDispatcher.CleanupProcess(d.PID)
+			output := ""
+			if backend != nil {
+				if captured, captureErr := backend.CaptureOutput(handle); captureErr != nil {
+					s.logger.Warn("failed to capture backend output", "dispatch_id", d.ID, "backend", d.Backend, "error", captureErr)
+				} else {
+					output = captured
+				}
+			}
+			if strings.TrimSpace(output) == "" && strings.TrimSpace(d.LogPath) != "" {
+				if outputBytes, readErr := os.ReadFile(d.LogPath); readErr == nil {
+					output = string(outputBytes)
+				} else {
+					s.logger.Debug("failed to read dispatch log output", "dispatch_id", d.ID, "path", d.LogPath, "error", readErr)
+				}
+			}
+			if strings.TrimSpace(output) != "" {
+				if err := s.store.CaptureOutput(d.ID, output); err != nil {
+					s.logger.Error("failed to store process output", "dispatch_id", d.ID, "error", err)
+				}
+				if category, summary, flagged := detectTerminalOutputFailure(output); flagged {
+					if status == "completed" {
+						status = "failed"
+						exitCode = -1
+						finalStage = "failed"
+					}
+					if category == "gateway_closed" {
+						retryPending = true
+						finalStage = "pending_retry"
+						retryReason = "gateway_closed"
+					}
+					if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
+						s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
+					}
+				}
+			}
+			if backend != nil {
+				_ = backend.Cleanup(handle)
+			}
+		}
+
+		if status == "failed" && !retryPending && finalStage == "failed" && duration <= 10 && exitCode != 0 {
+			retryPending = true
+			retryReason = "cli_broken"
+			if err := s.store.UpdateFailureDiagnosis(d.ID, "cli_broken",
+				fmt.Sprintf("dispatch failed quickly (%.1fs, exit=%d); scheduling within-tier CLI fallback", duration, exitCode)); err != nil {
+				s.logger.Warn("failed to store cli fallback diagnosis", "dispatch_id", d.ID, "error", err)
 			}
 		}
 
@@ -1000,15 +1028,28 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 				if nextTier == "" {
 					nextTier = "balanced"
 				}
+				if retryReason == "cli_broken" {
+					if !s.hasAlternativeProviderInTier(nextTier, d.Provider) {
+						if shifted := nextTierAfterExhaustion(nextTier); shifted != "" {
+							nextTier = shifted
+						}
+					}
+				}
 				if err := s.store.MarkDispatchPendingRetry(d.ID, nextTier); err != nil {
 					s.logger.Warn("failed to queue gateway retry; leaving dispatch failed", "dispatch_id", d.ID, "bead", d.BeadID, "error", err)
 					finalStage = "failed_needs_check"
 				} else {
 					status = "pending_retry"
 					finalStage = "pending_retry"
+					eventType := "dispatch_retry_queued_gateway"
+					details := fmt.Sprintf("bead %s dispatch %d queued for retry due to transient gateway closure", d.BeadID, d.ID)
+					if retryReason == "cli_broken" {
+						eventType = "dispatch_retry_queued_cli_fallback"
+						details = fmt.Sprintf("bead %s dispatch %d queued for CLI fallback retry in tier %s", d.BeadID, d.ID, nextTier)
+					}
 					_ = s.store.RecordHealthEventWithDispatch(
-						"dispatch_retry_queued_gateway",
-						fmt.Sprintf("bead %s dispatch %d queued for retry due to transient gateway closure", d.BeadID, d.ID),
+						eventType,
+						details,
 						d.ID,
 						d.BeadID,
 					)
@@ -1203,6 +1244,12 @@ func hasDiscoveredFromDependency(issue beads.Bead, beadID string) bool {
 // For tmux dispatches, it uses the stored session name (crash-resilient).
 // For PID dispatches, it falls back to the dispatcher's in-memory tracking.
 func (s *Scheduler) isDispatchAlive(d store.Dispatch) bool {
+	if backend := s.backendByName(d.Backend); backend != nil {
+		state, err := backend.Status(s.dispatchHandleFromRecord(d))
+		if err == nil {
+			return state.State == "running"
+		}
+	}
 	if d.SessionName != "" {
 		status, _ := dispatch.SessionStatus(d.SessionName)
 		return status == "running"
@@ -1631,8 +1678,59 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			}
 		}
 
-		// Re-use the original prompt
-		handle, err := s.dispatcher.Dispatch(ctx, retry.AgentID, retry.Prompt, retry.Provider, dispatch.ThinkingLevel(retry.Tier), workspace)
+		retryRole := roleFromAgentID(retry.Project, retry.AgentID)
+		excludedModels := map[string]bool{}
+		if strings.EqualFold(strings.TrimSpace(retry.FailureCategory), "cli_broken") && strings.TrimSpace(retry.Provider) != "" {
+			excludedModels[retry.Provider] = true
+		}
+		provider, _, selectedTier := s.pickProviderForRetry(retry.Tier, excludedModels)
+		if provider == nil {
+			s.logger.Error("retry provider selection failed", "bead", retry.BeadID, "tier", retry.Tier, "failure_category", retry.FailureCategory)
+			duration := time.Since(retry.DispatchedAt).Seconds()
+			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
+				s.logger.Error("failed to update retry status after provider selection failure", "id", retry.ID, "error", err)
+			}
+			if err := s.store.UpdateDispatchStage(retry.ID, "failed_needs_check"); err != nil {
+				s.logger.Warn("failed to update retry stage after provider selection failure", "id", retry.ID, "error", err)
+			}
+			if err := s.reconcileDispatchClaimOnTerminal(ctx, retry, "failed"); err != nil {
+				s.logger.Warn("failed to release claim after retry provider selection failure", "dispatch_id", retry.ID, "bead", retry.BeadID, "error", err)
+			}
+			continue
+		}
+
+		backend, backendName, err := s.selectBackend(retryRole, selectedTier, retry.Retries+1)
+		if err != nil {
+			s.logger.Error("retry backend resolution failed", "bead", retry.BeadID, "tier", selectedTier, "role", retryRole, "error", err)
+			duration := time.Since(retry.DispatchedAt).Seconds()
+			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
+				s.logger.Error("failed to update retry status after backend resolution failure", "id", retry.ID, "error", err)
+			}
+			if err := s.store.UpdateDispatchStage(retry.ID, "failed_needs_check"); err != nil {
+				s.logger.Warn("failed to update retry stage after backend resolution failure", "id", retry.ID, "error", err)
+			}
+			if err := s.reconcileDispatchClaimOnTerminal(ctx, retry, "failed"); err != nil {
+				s.logger.Warn("failed to release claim after retry backend resolution failure", "dispatch_id", retry.ID, "bead", retry.BeadID, "error", err)
+			}
+			continue
+		}
+
+		cliName := strings.TrimSpace(provider.CLI)
+		if cliName == "" {
+			cliName = s.defaultCLIConfigName()
+		}
+		logPath := s.buildDispatchLogPath(retry.Project, retry.BeadID, backendName)
+
+		handle, err := backend.Dispatch(ctx, dispatch.DispatchOpts{
+			Agent:         retry.AgentID,
+			Prompt:        retry.Prompt,
+			Model:         provider.Model,
+			ThinkingLevel: dispatch.ThinkingLevel(selectedTier),
+			WorkDir:       workspace,
+			CLIConfig:     cliName,
+			Branch:        retry.Branch,
+			LogPath:       logPath,
+		})
 		if err != nil {
 			s.logger.Error("retry dispatch failed", "bead", retry.BeadID, "error", err)
 
@@ -1649,13 +1747,12 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			continue
 		}
 
-		// Get session name for tmux dispatchers
-		sessionName := s.dispatcher.GetSessionName(handle)
+		sessionName := handle.SessionName
 
 		// Record new dispatch for the retry
 		newDispatchID, err := s.store.RecordDispatch(
-			retry.BeadID, retry.Project, retry.AgentID, retry.Provider, retry.Tier,
-			handle, sessionName, retry.Prompt, retry.LogPath, retry.Branch, retry.Backend)
+			retry.BeadID, retry.Project, retry.AgentID, provider.Model, selectedTier,
+			handle.PID, sessionName, retry.Prompt, logPath, retry.Branch, backendName)
 		if err != nil {
 			s.logger.Error("failed to record retry dispatch", "bead", retry.BeadID, "error", err)
 			continue
@@ -1679,7 +1776,7 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			"bead", retry.BeadID,
 			"old_dispatch_id", retry.ID,
 			"new_dispatch_id", newDispatchID,
-			"handle", handle,
+			"handle", handle.PID,
 			"session", sessionName)
 	}
 }
@@ -2136,7 +2233,7 @@ func (s *Scheduler) rebuildProfilesIfNeeded() {
 }
 
 // pickProviderWithProfileFiltering applies profile-aware filtering before provider selection.
-func (s *Scheduler) pickProviderWithProfileFiltering(tier string, bead beads.Bead) *config.Provider {
+func (s *Scheduler) pickProviderWithProfileFiltering(tier string, bead beads.Bead, excludeModels map[string]bool) (*config.Provider, string) {
 	// Get all provider names for this tier
 	var tierProviders []string
 	switch tier {
@@ -2165,28 +2262,259 @@ func (s *Scheduler) pickProviderWithProfileFiltering(tier string, bead beads.Bea
 	}
 	
 	// Use filtered providers with rate limiter
-	return s.pickProviderFromCandidates(tier, filteredProviders)
+	return s.pickProviderFromCandidates(tier, filteredProviders, excludeModels)
 }
 
 // pickProviderFromCandidates selects a provider from the filtered candidate list, respecting rate limits.
-func (s *Scheduler) pickProviderFromCandidates(tier string, candidates []string) *config.Provider {
+func (s *Scheduler) pickProviderFromCandidates(tier string, candidates []string, excludeModels map[string]bool) (*config.Provider, string) {
 	for _, name := range candidates {
 		p, ok := s.cfg.Providers[name]
 		if !ok {
 			continue
 		}
+		if excludeModels != nil && excludeModels[p.Model] {
+			continue
+		}
 
 		// Free-tier providers bypass rate limits
 		if !p.Authed {
-			return &p
+			return &p, name
 		}
 
 		// Check authed gates
 		canDispatch, _ := s.rateLimiter.CanDispatchAuthed()
 		if canDispatch {
-			return &p
+			return &p, name
 		}
 	}
 	
+	return nil, ""
+}
+
+func (s *Scheduler) pickProviderForBead(bead beads.Bead, initialTier string, excludeModels map[string]bool) (*config.Provider, string, string) {
+	currentTier := initialTier
+	if strings.TrimSpace(currentTier) == "" {
+		currentTier = "balanced"
+	}
+
+	tried := map[string]bool{currentTier: true}
+	for {
+		provider, providerName := s.pickProviderWithProfileFiltering(currentTier, bead, excludeModels)
+		if provider != nil {
+			return provider, providerName, currentTier
+		}
+
+		nextTier := dispatch.DowngradeTier(currentTier)
+		if nextTier != "" && !tried[nextTier] {
+			s.logger.Info("tier downgrade for provider selection", "bead", bead.ID, "from", currentTier, "to", nextTier)
+			tried[nextTier] = true
+			currentTier = nextTier
+			continue
+		}
+		nextTier = dispatch.UpgradeTier(currentTier)
+		if nextTier != "" && !tried[nextTier] {
+			s.logger.Info("tier upgrade for provider selection", "bead", bead.ID, "from", currentTier, "to", nextTier)
+			tried[nextTier] = true
+			currentTier = nextTier
+			continue
+		}
+		return nil, "", currentTier
+	}
+}
+
+func (s *Scheduler) pickProviderForRetry(initialTier string, excludeModels map[string]bool) (*config.Provider, string, string) {
+	currentTier := initialTier
+	if strings.TrimSpace(currentTier) == "" {
+		currentTier = "balanced"
+	}
+
+	tried := map[string]bool{currentTier: true}
+	for {
+		provider, providerName := s.pickProviderFromCandidates(currentTier, s.tierCandidates(currentTier), excludeModels)
+		if provider != nil {
+			return provider, providerName, currentTier
+		}
+
+		nextTier := nextTierAfterExhaustion(currentTier)
+		if nextTier == "" || tried[nextTier] {
+			return nil, "", currentTier
+		}
+		s.logger.Info("tier shift for retry provider selection", "from", currentTier, "to", nextTier)
+		tried[nextTier] = true
+		currentTier = nextTier
+	}
+}
+
+func (s *Scheduler) tierCandidates(tier string) []string {
+	switch tier {
+	case "fast":
+		return s.cfg.Tiers.Fast
+	case "balanced":
+		return s.cfg.Tiers.Balanced
+	case "premium":
+		return s.cfg.Tiers.Premium
+	default:
+		return s.cfg.Tiers.Balanced
+	}
+}
+
+func nextTierAfterExhaustion(tier string) string {
+	switch tier {
+	case "premium":
+		return "balanced"
+	case "balanced":
+		return "fast"
+	case "fast":
+		return "balanced"
+	default:
+		return ""
+	}
+}
+
+func (s *Scheduler) hasAlternativeProviderInTier(tier, failedModel string) bool {
+	trimmed := strings.TrimSpace(failedModel)
+	for _, name := range s.tierCandidates(tier) {
+		provider, ok := s.cfg.Providers[name]
+		if !ok {
+			continue
+		}
+		if trimmed != "" && provider.Model == trimmed {
+			continue
+		}
+		if !provider.Authed {
+			return true
+		}
+		okToDispatch, _ := s.rateLimiter.CanDispatchAuthed()
+		if okToDispatch {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Scheduler) selectBackend(role, tier string, retryCount int) (dispatch.Backend, string, error) {
+	backendName := s.backendNameFor(role, tier, retryCount)
+	backend := s.backendByName(backendName)
+	if backend != nil {
+		return backend, backendName, nil
+	}
+
+	if fallback := s.backendByName("openclaw"); fallback != nil {
+		return fallback, "openclaw", nil
+	}
+	return nil, "", fmt.Errorf("dispatch backend %q not configured", backendName)
+}
+
+func (s *Scheduler) backendNameFor(role, tier string, retryCount int) string {
+	routing := s.cfg.Dispatch.Routing
+
+	if retryCount > 0 && strings.TrimSpace(routing.RetryBackend) != "" {
+		return strings.TrimSpace(routing.RetryBackend)
+	}
+
+	switch role {
+	case "scrum", "planner":
+		if strings.TrimSpace(routing.CommsBackend) != "" {
+			return strings.TrimSpace(routing.CommsBackend)
+		}
+	}
+
+	switch tier {
+	case "fast":
+		if strings.TrimSpace(routing.FastBackend) != "" {
+			return strings.TrimSpace(routing.FastBackend)
+		}
+	case "premium":
+		if strings.TrimSpace(routing.PremiumBackend) != "" {
+			return strings.TrimSpace(routing.PremiumBackend)
+		}
+	default:
+		if strings.TrimSpace(routing.BalancedBackend) != "" {
+			return strings.TrimSpace(routing.BalancedBackend)
+		}
+	}
+
+	if strings.TrimSpace(routing.BalancedBackend) != "" {
+		return strings.TrimSpace(routing.BalancedBackend)
+	}
+	if strings.TrimSpace(routing.FastBackend) != "" {
+		return strings.TrimSpace(routing.FastBackend)
+	}
+	return "openclaw"
+}
+
+func (s *Scheduler) backendByName(name string) dispatch.Backend {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	return s.backends[name]
+}
+
+func (s *Scheduler) dispatchHandleFromRecord(d store.Dispatch) dispatch.Handle {
+	return dispatch.Handle{
+		PID:         d.PID,
+		SessionName: d.SessionName,
+		Backend:     d.Backend,
+	}
+}
+
+func (s *Scheduler) defaultCLIConfigName() string {
+	if _, ok := s.cfg.Dispatch.CLI["codex"]; ok {
+		return "codex"
+	}
+	keys := make([]string, 0, len(s.cfg.Dispatch.CLI))
+	for key := range s.cfg.Dispatch.CLI {
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	sort.Strings(keys)
+	return keys[0]
+}
+
+func (s *Scheduler) buildDispatchLogPath(project, beadID, backendName string) string {
+	root := strings.TrimSpace(config.ExpandHome(s.cfg.Dispatch.LogDir))
+	if root == "" {
+		return ""
+	}
+	safeProject := sanitizeLogComponent(project)
+	safeBead := sanitizeLogComponent(beadID)
+	safeBackend := sanitizeLogComponent(backendName)
+	filename := fmt.Sprintf("%s-%s-%s-%d.log", safeProject, safeBead, safeBackend, time.Now().UnixNano())
+	return filepath.Join(root, filename)
+}
+
+func sanitizeLogComponent(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "dispatch"
+	}
+	replacer := strings.NewReplacer("/", "-", "\\", "-", ":", "-", " ", "-", ".", "-")
+	return replacer.Replace(strings.TrimSpace(v))
+}
+
+func roleFromAgentID(project, agentID string) string {
+	prefix := strings.TrimSpace(project) + "-"
+	if strings.HasPrefix(agentID, prefix) {
+		role := strings.TrimPrefix(agentID, prefix)
+		if strings.TrimSpace(role) != "" {
+			return role
+		}
+	}
+	return "coder"
+}
+
+func (s *Scheduler) providerByModel(model string) *config.Provider {
+	trimmed := strings.TrimSpace(model)
+	if trimmed == "" {
+		return nil
+	}
+	for _, provider := range s.cfg.Providers {
+		if provider.Model == trimmed {
+			p := provider
+			return &p
+		}
+	}
 	return nil
 }

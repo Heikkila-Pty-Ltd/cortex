@@ -347,6 +347,12 @@ func TestDispatcherResolver_createDispatcherForBackend(t *testing.T) {
 			wantType:      "pid",
 		},
 		{
+			name:          "openclaw backend",
+			backend:       "openclaw",
+			tmuxAvailable: false,
+			wantType:      "pid",
+		},
+		{
 			name:          "tmux backend available",
 			backend:       "tmux",
 			tmuxAvailable: true,

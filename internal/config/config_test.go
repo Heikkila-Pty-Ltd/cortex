@@ -732,6 +732,23 @@ balanced_backend = "tmux"
 	}
 }
 
+func TestLoadDispatchOpenClawBackendValid(t *testing.T) {
+	cfg := validConfig + `
+
+[dispatch.routing]
+fast_backend = "headless_cli"
+comms_backend = "openclaw"
+`
+	path := writeTestConfig(t, cfg)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected openclaw backend to be valid: %v", err)
+	}
+	if loaded.Dispatch.Routing.CommsBackend != "openclaw" {
+		t.Fatalf("expected comms_backend openclaw, got %q", loaded.Dispatch.Routing.CommsBackend)
+	}
+}
+
 func TestLoadDispatchMissingCLIConfig(t *testing.T) {
 	cfg := validConfig + `
 
@@ -1569,5 +1586,51 @@ require_estimate = true
 	}
 	if dod.CoverageMin != 80 {
 		t.Errorf("expected coverage_min 80, got %d", dod.CoverageMin)
+	}
+}
+
+func TestLoadExpandsHomeInProjectPaths(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("user home dir unavailable")
+	}
+
+	cfg := strings.Replace(validConfig, `beads_dir = "/tmp/test/.beads"`, `beads_dir = "~/projects/demo/.beads"`, 1)
+	cfg = strings.Replace(cfg, `workspace = "/tmp/test"`, `workspace = "~/projects/demo"`, 1)
+
+	path := writeTestConfig(t, cfg)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	project := loaded.Projects["test"]
+	wantBeads := filepath.Join(home, "projects/demo/.beads")
+	if project.BeadsDir != wantBeads {
+		t.Fatalf("beads_dir = %q, want %q", project.BeadsDir, wantBeads)
+	}
+	wantWorkspace := filepath.Join(home, "projects/demo")
+	if project.Workspace != wantWorkspace {
+		t.Fatalf("workspace = %q, want %q", project.Workspace, wantWorkspace)
+	}
+}
+
+func TestLoadExpandsHomeInStateDBPath(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	if err := os.MkdirAll(filepath.Join(tempHome, ".local/share/cortex"), 0o755); err != nil {
+		t.Fatalf("mkdir state db dir: %v", err)
+	}
+
+	cfg := strings.Replace(validConfig, `state_db = "/tmp/cortex-test.db"`, `state_db = "~/.local/share/cortex/cortex.db"`, 1)
+	path := writeTestConfig(t, cfg)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	want := filepath.Join(tempHome, ".local/share/cortex/cortex.db")
+	if loaded.General.StateDB != want {
+		t.Fatalf("state_db = %q, want %q", loaded.General.StateDB, want)
 	}
 }
