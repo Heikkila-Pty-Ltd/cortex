@@ -15,6 +15,39 @@ import (
 	"github.com/antigravity-dev/cortex/internal/store"
 )
 
+func newSprintPlanningTestScheduler(t *testing.T, project config.Project, requirePlan bool) (*Scheduler, *store.Store) {
+	t.Helper()
+
+	tmpDB := t.TempDir() + "/test.db"
+	st, err := store.Open(tmpDB)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	cfg := &config.Config{
+		General: config.General{
+			TickInterval: config.Duration{Duration: 100 * time.Millisecond},
+			MaxPerTick:   1,
+		},
+		Chief: config.Chief{
+			Enabled:             true,
+			RequireApprovedPlan: requirePlan,
+		},
+		Projects: map[string]config.Project{
+			"test-project": project,
+		},
+		RateLimits: config.RateLimits{},
+		Tiers:      config.Tiers{},
+		Providers:  map[string]config.Provider{},
+	}
+
+	rl := dispatch.NewRateLimiter(st, cfg.RateLimits)
+	d := dispatch.NewDispatcher()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	return New(cfg, st, rl, d, logger, false), st
+}
+
 func TestSchedulerPauseResume(t *testing.T) {
 	// Create test store
 	tmpDB := t.TempDir() + "/test.db"
@@ -134,6 +167,137 @@ func TestSchedulerPlanGateStatus(t *testing.T) {
 	}
 	if plan == nil || plan.PlanID != "plan-test-1" {
 		t.Fatalf("expected active plan plan-test-1, got %+v", plan)
+	}
+}
+
+func TestEnqueueDoDCheck_Deduplicates(t *testing.T) {
+	tmpDB := t.TempDir() + "/test.db"
+	st, err := store.Open(tmpDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	cfg := &config.Config{
+		General: config.General{
+			TickInterval: config.Duration{Duration: 100 * time.Millisecond},
+			MaxPerTick:   1,
+		},
+		RateLimits: config.RateLimits{},
+		Tiers:      config.Tiers{},
+		Providers:  map[string]config.Provider{},
+	}
+
+	rl := dispatch.NewRateLimiter(st, cfg.RateLimits)
+	d := dispatch.NewDispatcher()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	sched := New(cfg, st, rl, d, logger, false)
+
+	project := config.Project{Enabled: true, BeadsDir: t.TempDir(), Workspace: t.TempDir()}
+	bead := beads.Bead{ID: "dod-1", Status: "open", Labels: []string{"stage:dod"}}
+
+	if !sched.enqueueDoDCheck("proj", project, bead) {
+		t.Fatal("expected first DoD enqueue to succeed")
+	}
+	if sched.enqueueDoDCheck("proj", project, bead) {
+		t.Fatal("expected duplicate DoD enqueue to be ignored")
+	}
+	if got := len(sched.dodQueue); got != 1 {
+		t.Fatalf("expected queue depth 1 after dedupe, got %d", got)
+	}
+}
+
+func TestCheckSprintPlanningTriggers_Scheduled(t *testing.T) {
+	now := time.Now()
+	beadsDir := t.TempDir()
+	project := config.Project{
+		Enabled:            true,
+		BeadsDir:           beadsDir,
+		Workspace:          t.TempDir(),
+		SprintPlanningDay:  now.Weekday().String(),
+		SprintPlanningTime: now.Add(-1 * time.Minute).Format("15:04"),
+	}
+	sched, st := newSprintPlanningTestScheduler(t, project, false)
+	sched.now = func() time.Time { return now }
+	sched.runSprintPlanning = func(context.Context) error { return nil }
+
+	sched.checkSprintPlanningTriggers(context.Background())
+
+	last, err := st.GetLastSprintPlanning("test-project")
+	if err != nil {
+		t.Fatalf("GetLastSprintPlanning failed: %v", err)
+	}
+	if last == nil {
+		t.Fatal("expected sprint planning record")
+	}
+	if last.Trigger != "scheduled" {
+		t.Fatalf("trigger = %q, want scheduled", last.Trigger)
+	}
+}
+
+func TestCheckSprintPlanningTriggers_ThresholdAndDedup(t *testing.T) {
+	now := time.Now()
+	project := config.Project{
+		Enabled:          true,
+		BeadsDir:         t.TempDir(),
+		Workspace:        t.TempDir(),
+		BacklogThreshold: 2,
+	}
+	sched, st := newSprintPlanningTestScheduler(t, project, false)
+	sched.now = func() time.Time { return now }
+	sched.runSprintPlanning = func(context.Context) error { return nil }
+	sched.getBacklogBeads = func(context.Context, string, string) ([]*store.BacklogBead, error) {
+		return []*store.BacklogBead{{}, {}, {}}, nil
+	}
+
+	sched.checkSprintPlanningTriggers(context.Background())
+
+	first, err := st.GetLastSprintPlanning("test-project")
+	if err != nil {
+		t.Fatalf("GetLastSprintPlanning failed: %v", err)
+	}
+	if first == nil {
+		t.Fatal("expected first sprint planning record")
+	}
+	if first.Trigger != "threshold" {
+		t.Fatalf("trigger = %q, want threshold", first.Trigger)
+	}
+
+	sched.checkSprintPlanningTriggers(context.Background())
+
+	second, err := st.GetLastSprintPlanning("test-project")
+	if err != nil {
+		t.Fatalf("GetLastSprintPlanning second read failed: %v", err)
+	}
+	if second == nil {
+		t.Fatal("expected sprint planning record after dedup check")
+	}
+	if second.ID != first.ID {
+		t.Fatalf("expected dedup to keep same record id; first=%d second=%d", first.ID, second.ID)
+	}
+}
+
+func TestRunTick_PlanGateClosedStillChecksSprintPlanning(t *testing.T) {
+	now := time.Now()
+	project := config.Project{
+		Enabled:            true,
+		BeadsDir:           t.TempDir(),
+		Workspace:          t.TempDir(),
+		SprintPlanningDay:  now.Weekday().String(),
+		SprintPlanningTime: now.Add(-1 * time.Minute).Format("15:04"),
+	}
+	sched, st := newSprintPlanningTestScheduler(t, project, true)
+	sched.now = func() time.Time { return now }
+	sched.runSprintPlanning = func(context.Context) error { return nil }
+
+	sched.RunTick(context.Background())
+
+	last, err := st.GetLastSprintPlanning("test-project")
+	if err != nil {
+		t.Fatalf("GetLastSprintPlanning failed: %v", err)
+	}
+	if last == nil {
+		t.Fatal("expected sprint planning trigger record even when plan gate is closed")
 	}
 }
 

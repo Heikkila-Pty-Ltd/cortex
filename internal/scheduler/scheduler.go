@@ -33,6 +33,9 @@ type Scheduler struct {
 	store                 *store.Store
 	rateLimiter           *dispatch.RateLimiter
 	dispatcher            dispatch.DispatcherInterface
+	now                   func() time.Time
+	getBacklogBeads       func(context.Context, string, string) ([]*store.BacklogBead, error)
+	runSprintPlanning     func(context.Context) error
 	lifecycleMatrixSender lifecycleMatrixSender
 	lifecycleReporter     lifecycleReporter
 	backends              map[string]dispatch.Backend
@@ -139,6 +142,7 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 		store:       s,
 		rateLimiter: rl,
 		dispatcher:  d,
+		now:         time.Now,
 		backends: map[string]dispatch.Backend{
 			"headless_cli": dispatch.NewHeadlessBackend(cfg.Dispatch.CLI, config.ExpandHome(cfg.Dispatch.LogDir), cfg.Dispatch.LogRetentionDays),
 			"tmux":         dispatch.NewTmuxBackend(cfg.Dispatch.CLI, cfg.Dispatch.Tmux.HistoryLimit),
@@ -161,6 +165,8 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 
 	// Initialize ceremony scheduler
 	scheduler.ceremonyScheduler = NewCeremonyScheduler(cfg, s, d, logger)
+	scheduler.getBacklogBeads = scheduler.store.GetBacklogBeadsCtx
+	scheduler.runSprintPlanning = scheduler.ceremonyScheduler.runMultiTeamPlanningCeremony
 
 	// Initialize completion verifier
 	scheduler.completionVerifier = NewCompletionVerifier(s, logger.With("component", "completion_verifier"))
@@ -324,6 +330,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			s.planGateLogAt = time.Now()
 			s.logger.Warn("execution plan gate check failed; suppressing dispatches", "error", err)
 		}
+		s.checkSprintPlanningTriggers(ctx)
 		s.checkCeremonies(ctx)
 		s.processDoDStage(ctx)
 		s.runCompletionVerification(ctx)
@@ -334,6 +341,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			s.planGateLogAt = time.Now()
 			s.logger.Warn("execution plan gate closed; waiting for active approved plan")
 		}
+		s.checkSprintPlanningTriggers(ctx)
 		s.checkCeremonies(ctx)
 		s.processDoDStage(ctx)
 		s.runCompletionVerification(ctx)
@@ -760,7 +768,7 @@ func (s *Scheduler) checkSprintPlanningTriggers(ctx context.Context) {
 		triggeredAt time.Time
 	}
 
-	now := time.Now()
+	now := s.now()
 	triggered := make([]planningTrigger, 0)
 
 	for projectName, project := range s.cfg.Projects {
@@ -773,7 +781,7 @@ func (s *Scheduler) checkSprintPlanningTriggers(ctx context.Context) {
 
 		backlogSize := 0
 		if project.BacklogThreshold > 0 {
-			backlogBeads, err := s.store.GetBacklogBeadsCtx(ctx, projectName, config.ExpandHome(project.BeadsDir))
+			backlogBeads, err := s.getBacklogBeads(ctx, projectName, config.ExpandHome(project.BeadsDir))
 			if err != nil {
 				s.logger.Warn("failed to evaluate backlog threshold for sprint planning",
 					"project", projectName, "error", err)
@@ -833,7 +841,7 @@ func (s *Scheduler) checkSprintPlanningTriggers(ctx context.Context) {
 
 	result := "triggered"
 	details := "multi-team sprint planning ceremony started"
-	if err := s.ceremonyScheduler.runMultiTeamPlanningCeremony(ctx); err != nil {
+	if err := s.runSprintPlanning(ctx); err != nil {
 		result = "failed"
 		details = err.Error()
 		s.logger.Error("failed to trigger sprint planning ceremony", "error", err)
