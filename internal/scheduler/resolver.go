@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/antigravity-dev/cortex/internal/config"
 	"github.com/antigravity-dev/cortex/internal/dispatch"
@@ -51,24 +52,50 @@ func (r *DispatcherResolver) CreateDispatcher() (dispatch.DispatcherInterface, e
 // CreateDispatcherForTier creates a dispatcher for a specific tier
 func (r *DispatcherResolver) CreateDispatcherForTier(tier string) (dispatch.DispatcherInterface, error) {
 	routing := &r.cfg.Dispatch.Routing
-	var backend string
-	
+	var backends []string
+
 	switch tier {
 	case "fast":
-		backend = routing.FastBackend
+		backends = append(backends, routing.FastBackend, routing.BalancedBackend, routing.PremiumBackend)
 	case "balanced":
-		backend = routing.BalancedBackend
+		backends = append(backends, routing.BalancedBackend, routing.FastBackend, routing.PremiumBackend)
 	case "premium":
-		backend = routing.PremiumBackend
+		backends = append(backends, routing.PremiumBackend, routing.BalancedBackend, routing.FastBackend)
 	default:
 		return nil, fmt.Errorf("unknown tier: %s", tier)
 	}
-	
-	if backend == "" {
+
+	ordered := make([]string, 0, len(backends)+1)
+	seen := make(map[string]struct{})
+	for _, backend := range backends {
+		if backend == "" {
+			continue
+		}
+		if _, ok := seen[backend]; ok {
+			continue
+		}
+		seen[backend] = struct{}{}
+		ordered = append(ordered, backend)
+	}
+
+	// Backward-compatible fallback if only one route is configured.
+	if _, ok := seen["headless_cli"]; !ok {
+		ordered = append(ordered, "headless_cli")
+	}
+
+	if len(ordered) == 0 {
 		return nil, fmt.Errorf("no backend configured for tier %s", tier)
 	}
-	
-	return r.createDispatcherForBackend(backend)
+
+	var errs []string
+	for _, backend := range ordered {
+		dispatcher, err := r.createDispatcherForBackend(backend)
+		if err == nil {
+			return dispatcher, nil
+		}
+		errs = append(errs, fmt.Sprintf("%s: %v", backend, err))
+	}
+	return nil, fmt.Errorf("no available backend for tier %s (%s)", tier, strings.Join(errs, "; "))
 }
 
 // createDispatcherForBackend creates a dispatcher for a specific backend type
@@ -80,6 +107,8 @@ func (r *DispatcherResolver) createDispatcherForBackend(backend string) (dispatc
 		}
 		return dispatch.NewTmuxDispatcher(), nil
 	case "headless_cli":
+		return dispatch.NewDispatcher(), nil
+	case "pid":
 		return dispatch.NewDispatcher(), nil
 	default:
 		return nil, fmt.Errorf("unknown backend type: %s", backend)
@@ -141,6 +170,9 @@ func (r *DispatcherResolver) validateBackend(backend string) error {
 		return nil
 	case "headless_cli":
 		// No additional validation needed for headless CLI
+		return nil
+	case "pid":
+		// No additional validation needed for pid backend
 		return nil
 	default:
 		return fmt.Errorf("unknown backend type")

@@ -30,6 +30,13 @@ func TestDispatcherResolver_CreateDispatcher(t *testing.T) {
 			wantType: "pid",
 		},
 		{
+			name: "pid backend - should use PID dispatcher",
+			routing: config.DispatchRouting{
+				FastBackend: "pid",
+			},
+			wantType: "pid",
+		},
+		{
 			name: "multiple backends - should use first available",
 			routing: config.DispatchRouting{
 				FastBackend:     "headless_cli",
@@ -138,10 +145,9 @@ func TestDispatcherResolver_CreateDispatcherForTier(t *testing.T) {
 			name: "tier with no configured backend",
 			tier: "fast",
 			routing: config.DispatchRouting{
-				BalancedBackend: "tmux", // fast not configured
+				BalancedBackend: "headless_cli", // fast not configured; should fallback
 			},
-			wantError: true,
-			errorContains: "no backend configured for tier fast",
+			wantType: "pid",
 		},
 		{
 			name: "tier with unknown backend type",
@@ -150,7 +156,15 @@ func TestDispatcherResolver_CreateDispatcherForTier(t *testing.T) {
 				FastBackend: "unknown",
 			},
 			wantError: true,
-			errorContains: "unknown backend type: unknown",
+			errorContains: "no available backend for tier fast",
+		},
+		{
+			name: "tier with pid backend",
+			tier: "fast",
+			routing: config.DispatchRouting{
+				FastBackend: "pid",
+			},
+			wantType: "pid",
 		},
 	}
 
@@ -240,6 +254,13 @@ func TestDispatcherResolver_ValidateConfiguration(t *testing.T) {
 			},
 			wantError: false,
 		},
+		{
+			name: "valid pid backend",
+			routing: config.DispatchRouting{
+				FastBackend: "pid",
+			},
+			wantError: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -285,6 +306,11 @@ func TestDispatcherResolver_createDispatcherForBackend(t *testing.T) {
 		{
 			name:     "headless_cli backend",
 			backend:  "headless_cli",
+			wantType: "pid",
+		},
+		{
+			name:     "pid backend",
+			backend:  "pid",
 			wantType: "pid",
 		},
 		{

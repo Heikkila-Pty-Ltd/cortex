@@ -647,6 +647,7 @@ func ValidateDispatchConfig(cfg *Config) error {
 	knownBackends := map[string]bool{
 		"tmux":         true,
 		"headless_cli": true,
+		"pid":          true,
 	}
 
 	routing := cfg.Dispatch.Routing
@@ -661,7 +662,7 @@ func ValidateDispatchConfig(cfg *Config) error {
 	// Check that all configured backends are known types
 	for tier, backend := range backends {
 		if backend != "" && !knownBackends[backend] {
-			return fmt.Errorf("invalid backend type %q for %s tier (valid: tmux, headless_cli)", backend, tier)
+			return fmt.Errorf("invalid backend type %q for %s tier (valid: tmux, headless_cli, pid)", backend, tier)
 		}
 	}
 
