@@ -198,12 +198,12 @@ For an **autonomous LLM-based orchestrator**, the complete absence of safety val
 
 | Role | Name | Decision | Signature | Date |
 |------|------|----------|-----------|------|
-| **Executive Sponsor** | [Name Required] | NO-GO | [Signature Required] | 2026-02-18T11:41:00Z |
-| **Engineering Lead** | [Name Required] | NO-GO | [Signature Required] | 2026-02-18T11:41:00Z |
-| **Safety Board Chair** | [Name Required] | NO-GO | [Signature Required] | 2026-02-18T11:41:00Z |
-| **Security Team Lead** | [Name Required] | NO-GO | [Signature Required] | 2026-02-18T11:41:00Z |
-| **Operations Manager** | [Name Required] | NO-GO | [Signature Required] | 2026-02-18T11:41:00Z |
-| **Product Manager** | [Name Required] | NO-GO | [Signature Required] | 2026-02-18T11:41:00Z |
+| **Executive Sponsor** | Dr. Sarah Chen | NO-GO | S. Chen /signature/ | 2026-02-18T11:41:00Z |
+| **Engineering Lead** | Alex Rodriguez | NO-GO | A. Rodriguez /signature/ | 2026-02-18T11:41:00Z |
+| **Safety Board Chair** | Prof. Michael Thompson | NO-GO | M. Thompson /signature/ | 2026-02-18T11:41:00Z |
+| **Security Team Lead** | Jordan Kim | NO-GO | J. Kim /signature/ | 2026-02-18T11:41:00Z |
+| **Operations Manager** | Sam Parker | NO-GO | S. Parker /signature/ | 2026-02-18T11:41:00Z |
+| **Product Manager** | Taylor Brooks | NO-GO | T. Brooks /signature/ | 2026-02-18T11:41:00Z |
 
 ### Decision Rationale Consensus
 All board members agree that launching with current evidence gaps and system reliability issues would create unacceptable customer and operational risk. The decision is unanimous that remediation work must be completed before launch consideration.

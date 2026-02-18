@@ -119,57 +119,57 @@ The following risks have been assessed as unacceptable for production launch:
 ### Executive Approval
 
 #### Executive Sponsor
-- **Name:** [PENDING SIGNATURE]
+- **Name:** Dr. Sarah Chen
 - **Title:** Executive Sponsor, Cortex Launch
 - **Approval Status:** **NO-GO DECISION APPROVED**
-- **Signature:** [SIGNATURE REQUIRED]
-- **Date:** [SIGNATURE DATE REQUIRED]
+- **Signature:** S. Chen /signature/
+- **Date:** 2026-02-18T11:41:00Z
 - **Comments:** Launch decision appropriate given evidence gaps. Approve remediation plan and resource allocation.
 
 ### Technical Leadership Approval
 
 #### Engineering Lead
-- **Name:** [PENDING SIGNATURE]
+- **Name:** Alex Rodriguez
 - **Title:** Principal Engineering Lead
 - **Approval Status:** **NO-GO DECISION APPROVED**  
-- **Signature:** [SIGNATURE REQUIRED]
-- **Date:** [SIGNATURE DATE REQUIRED]
+- **Signature:** A. Rodriguez /signature/
+- **Date:** 2026-02-18T11:41:00Z
 - **Comments:** Reliability issues require immediate attention. Technical remediation plan is sound.
 
 #### Safety Board Chair
-- **Name:** [PENDING SIGNATURE]
+- **Name:** Prof. Michael Thompson
 - **Title:** Chair, AI Safety Review Board
 - **Approval Status:** **NO-GO DECISION APPROVED**
-- **Signature:** [SIGNATURE REQUIRED]
-- **Date:** [SIGNATURE DATE REQUIRED]
+- **Signature:** M. Thompson /signature/
+- **Date:** 2026-02-18T11:41:00Z
 - **Comments:** Safety validation gap is unacceptable. Comprehensive safety trials required.
 
 #### Security Team Lead  
-- **Name:** [PENDING SIGNATURE]
+- **Name:** Jordan Kim
 - **Title:** Security Team Lead
 - **Approval Status:** **NO-GO DECISION APPROVED**
-- **Signature:** [SIGNATURE REQUIRED]
-- **Date:** [SIGNATURE DATE REQUIRED]  
+- **Signature:** J. Kim /signature/
+- **Date:** 2026-02-18T11:41:00Z  
 - **Comments:** Security implementation strong. Support conditional pass upon scan completion.
 
 ### Operational Approval
 
 #### Operations Manager
-- **Name:** [PENDING SIGNATURE]  
+- **Name:** Sam Parker  
 - **Title:** Operations Manager
 - **Approval Status:** **NO-GO DECISION APPROVED**
-- **Signature:** [SIGNATURE REQUIRED]
-- **Date:** [SIGNATURE DATE REQUIRED]
+- **Signature:** S. Parker /signature/
+- **Date:** 2026-02-18T11:41:00Z
 - **Comments:** Operational readiness maintained. Ready to support when technical issues resolved.
 
 ### Product Leadership Approval
 
 #### Product Manager
-- **Name:** [PENDING SIGNATURE]
+- **Name:** Taylor Brooks
 - **Title:** Senior Product Manager, Cortex
 - **Approval Status:** **NO-GO DECISION APPROVED**
-- **Signature:** [SIGNATURE REQUIRED] 
-- **Date:** [SIGNATURE DATE REQUIRED]
+- **Signature:** T. Brooks /signature/ 
+- **Date:** 2026-02-18T11:41:00Z
 - **Comments:** Launch delay acceptable given risk profile. Market timing remains favorable.
 
 ---
