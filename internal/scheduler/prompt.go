@@ -15,23 +15,24 @@ var filePathRe = regexp.MustCompile(`(?:^|\s)((?:src|internal|cmd|pkg|lib|app|pu
 var stageInstructions = map[string]func(bead beads.Bead, useBranches bool, prDiff string) string{
 	"sprint_planning": func(b beads.Bead, useBranches bool, prDiff string) string {
 		return fmt.Sprintf(`## Instructions (Sprint Planning)
-You are the scrum master facilitating sprint planning with the full backlog context in this task.
+You are the scrum master running one end-to-end sprint planning session with the full backlog context provided in this task.
 
-### 1. Build Backlog Digest First (required)
-Before selecting work, convert the raw backlog context in the task description into a compact table:
+### 1. Build a Backlog Digest from Context (required)
+Before selecting work, convert the backlog context into a readable planning table:
 
-| ID | Title | Pri | Stage | Est (min) | Depends On | Refined? | Notes |
-|----|-------|-----|-------|-----------|------------|----------|-------|
+| ID | Title | Pri | Stage | Est (min) | Depends On | Refinement Status | Blockers/Risks | Selection |
+|----|-------|-----|-------|-----------|------------|-------------------|----------------|-----------|
 
-Rules:
-- **Refined? = yes** only if acceptance criteria, design notes, and estimate minutes all exist.
-- If estimate is missing, mark TBD and refine it before sprint selection.
-- Flag blocked items clearly so they do not consume sprint capacity.
+Backlog digest rules:
+- Group rows by priority (P0, then P1, then P2) so the highest-value work is easiest to scan.
+- Refinement Status values: ready, needs_acceptance, needs_design, needs_estimate, blocked.
+- Use TBD for missing estimates and refine those items before capacity-based selection.
+- Mark blocked items explicitly and do not count them toward sprint commitment.
 
-### 2. Refine and Estimate Candidates
-Use these commands while reviewing each candidate bead:
+### 2. Refine, Estimate, and Clarify Candidates
+Use these commands while reviewing each bead:
 ~~~bash
-# Pull open backlog in priority order (P0-P2)
+# Pull open backlog in priority order
 bd list --status=open --priority-max=P2
 
 # Inspect full details for one item
@@ -41,12 +42,14 @@ bd show <id>
 bd update <id> --acceptance="Specific, testable acceptance criteria"
 bd update <id> --design="Implementation notes, affected files, risks"
 bd update <id> --estimate=<minutes>
+bd update <id> --priority=P0
 ~~~
 
 Quality bar:
-- Acceptance criteria must be specific and verifiable.
-- Design notes should include implementation approach plus dependency/risk notes.
-- bd --estimate is in **minutes** (do not store story points as estimate).
+- Acceptance criteria must be explicit and testable (clear done/not-done outcomes).
+- Design notes should include implementation approach, affected files, dependency notes, and risks.
+- bd --estimate is in **minutes** (never store story points as estimate).
+- If a bead is too large for one sprint slice (for example, >120 minutes), split it into follow-up beads.
 
 ### 3. Capacity-Based Sprint Selection
 Calculate capacity in minutes:
@@ -55,13 +58,14 @@ Calculate capacity in minutes:
 3. usable_capacity_min = total_capacity_min - buffer_min.
 
 Selection policy:
-1. Select only unblocked, refined beads.
-2. Prioritize by P0 -> P1 -> P2, then dependency criticality, then risk.
-3. Keep adding beads while total committed estimate <= usable capacity.
-4. Keep a short deferred list for the next sprint if there is overflow.
+1. Start with only unblocked beads marked ready.
+2. Order by P0 -> P1 -> P2, then dependency criticality, then risk.
+3. Add beads while committed_estimate_min <= usable_capacity_min.
+4. If a dependency is required, include it before dependent work or defer both with a note.
+5. Produce a short deferred list for overflow or not-ready items.
 
 ### 4. Update Beads and Transition Stage
-For each selected bead:
+For each selected bead (committed this sprint):
 ~~~bash
 bd update <id> --set-labels stage:planning,sprint:selected --assignee=planner
 ~~~
@@ -69,6 +73,11 @@ bd update <id> --set-labels stage:planning,sprint:selected --assignee=planner
 For refined but deferred beads:
 ~~~bash
 bd update <id> --set-labels stage:backlog,sprint:deferred
+~~~
+
+For blocked beads that cannot enter this sprint:
+~~~bash
+bd update <id> --set-labels stage:backlog,sprint:blocked
 ~~~
 
 ### 5. Close Planning Session
@@ -93,6 +102,9 @@ Use this exact structure in your final output:
 - Buffer: [Y min]
 - Usable: [Z min]
 - Committed: [N min]
+
+**Backlog Digest:**
+- [Short summary of total candidates, ready count, blocked count, and key dependency chain]
 
 **Selected Beads:**
 - [ID] [Title] - P[0-2], [estimate min], [why selected], [dependency status]
