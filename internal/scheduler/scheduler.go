@@ -126,6 +126,18 @@ type projectBeads struct {
 	beads   []beads.Bead
 }
 
+type tickCompletionCounts struct {
+	completedByProject map[string]int
+	failedByProject    map[string]int
+}
+
+func newTickCompletionCounts() tickCompletionCounts {
+	return tickCompletionCounts{
+		completedByProject: make(map[string]int),
+		failedByProject:    make(map[string]int),
+	}
+}
+
 // Pause pauses the scheduler, preventing new dispatches.
 func (s *Scheduler) Pause() {
 	s.mu.Lock()
@@ -195,13 +207,13 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 	s.logger.Info("tick started")
 
 	// Check running dispatches first
-	s.checkRunningDispatches(ctx)
+	completionCounts := s.checkRunningDispatches(ctx)
 
 	// Process pending retries with backoff
 	s.processPendingRetries(ctx)
 
 	// Run health checks - stuck dispatch detection and zombie cleanup
-	s.runHealthChecks()
+	stuckCounts := s.runHealthChecks()
 
 	// Reconcile stale ownership locks and evaluate gateway breaker before new dispatches.
 	s.reconcileExpiredClaimLeases(ctx)
@@ -213,6 +225,11 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		project config.Project
 		name    string
 	}
+	projectMetrics := make(map[string]struct {
+		open       int
+		ready      int
+		dispatched int
+	})
 
 	// Sort projects by priority
 	type namedProject struct {
@@ -271,7 +288,14 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 				openCount++
 			}
 		}
-		s.store.RecordTickMetrics(np.name, openCount, len(ready), 0, 0, 0, 0)
+		projectMetrics[np.name] = struct {
+			open       int
+			ready      int
+			dispatched int
+		}{
+			open:  openCount,
+			ready: len(ready),
+		}
 
 		for _, b := range ready {
 			allReady = append(allReady, struct {
@@ -423,6 +447,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 				"tier", currentTier,
 				"dry_run", true,
 			)
+			metrics := projectMetrics[item.name]
+			metrics.dispatched++
+			projectMetrics[item.name] = metrics
 			dispatched++
 			continue
 		}
@@ -546,7 +573,32 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			"handle", handle,
 			"session", sessionName,
 		)
+		metrics := projectMetrics[item.name]
+		metrics.dispatched++
+		projectMetrics[item.name] = metrics
 		dispatched++
+	}
+
+	for projectName, metrics := range projectMetrics {
+		if err := s.store.RecordTickMetrics(
+			projectName,
+			metrics.open,
+			metrics.ready,
+			metrics.dispatched,
+			completionCounts.completedByProject[projectName],
+			completionCounts.failedByProject[projectName],
+			stuckCounts[projectName],
+		); err != nil {
+			s.logger.Error("failed to record tick metrics",
+				"project", projectName,
+				"open", metrics.open,
+				"ready", metrics.ready,
+				"dispatched", metrics.dispatched,
+				"completed", completionCounts.completedByProject[projectName],
+				"failed", completionCounts.failedByProject[projectName],
+				"stuck", stuckCounts[projectName],
+				"error", err)
+		}
 	}
 
 	// Check and trigger ceremonies (runs after regular dispatches but within same tick)
@@ -809,11 +861,12 @@ func (s *Scheduler) isDispatchCoolingDown(beadID, agent string) bool {
 }
 
 // checkRunningDispatches polls running dispatches and marks completed/failed.
-func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
+func (s *Scheduler) checkRunningDispatches(ctx context.Context) tickCompletionCounts {
+	counts := newTickCompletionCounts()
 	running, err := s.store.GetRunningDispatches()
 	if err != nil {
 		s.logger.Error("failed to get running dispatches", "error", err)
-		return
+		return counts
 	}
 
 	for _, d := range running {
@@ -1006,6 +1059,7 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 			}
 
 			if status == "completed" {
+				counts.completedByProject[d.Project]++
 				// Calculate and record cost for completed dispatches
 				output, _ := s.store.GetOutput(d.ID)
 				usage := cost.ExtractTokenUsage(output, d.Prompt)
@@ -1032,6 +1086,9 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 				// Check if this was ops/qa completion - transition to DoD if configured
 				s.handleOpsQaCompletion(ctx, d)
 			} else {
+				if status == "failed" {
+					counts.failedByProject[d.Project]++
+				}
 				if err := s.store.UpdateDispatchStage(d.ID, finalStage); err != nil {
 					s.logger.Warn("failed to update dispatch stage", "dispatch_id", d.ID, "stage", finalStage, "error", err)
 				}
@@ -1065,6 +1122,7 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 			}
 		}
 	}
+	return counts
 }
 
 func detectTerminalOutputFailure(output string) (category string, summary string, flagged bool) {
@@ -1675,10 +1733,11 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 }
 
 // runHealthChecks executes stuck dispatch detection and zombie cleanup as part of the scheduler loop.
-func (s *Scheduler) runHealthChecks() {
+func (s *Scheduler) runHealthChecks() map[string]int {
+	stuckByProject := make(map[string]int)
 	// Skip health checks if stuck timeout is not configured
 	if s.cfg.General.StuckTimeout.Duration <= 0 {
-		return
+		return stuckByProject
 	}
 
 	// Check for stuck dispatches
@@ -1692,6 +1751,11 @@ func (s *Scheduler) runHealthChecks() {
 	)
 	if len(actions) > 0 {
 		s.logger.Info("stuck dispatch check complete", "actions", len(actions))
+		for _, action := range actions {
+			if action.Project != "" {
+				stuckByProject[action.Project]++
+			}
+		}
 	}
 
 	// Clean up zombie processes/sessions
@@ -1699,6 +1763,7 @@ func (s *Scheduler) runHealthChecks() {
 	if killed > 0 {
 		s.logger.Info("zombie cleanup complete", "killed", killed)
 	}
+	return stuckByProject
 }
 
 // runCompletionVerification checks for beads that should be auto-closed based on git commits
