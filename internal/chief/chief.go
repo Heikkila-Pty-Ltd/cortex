@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/antigravity-dev/cortex/internal/beads"
@@ -423,16 +424,20 @@ func (c *Chief) GetMultiTeamPlanningSchedule() CeremonySchedule {
 	loc := time.UTC
 
 	if c.cfg != nil {
-		if parsedDay, err := c.cfg.Cadence.StartWeekday(); err == nil {
-			weekday = parsedDay
-		} else {
-			c.logger.Warn("invalid cadence sprint_start_day; using default Monday", "error", err)
+		if rawDay := strings.TrimSpace(c.cfg.Cadence.SprintStartDay); rawDay != "" {
+			if parsedDay, err := c.cfg.Cadence.StartWeekday(); err == nil {
+				weekday = parsedDay
+			} else {
+				c.logger.Warn("invalid cadence sprint_start_day; using default Monday", "error", err)
+			}
 		}
-		if parsedHour, parsedMinute, err := c.cfg.Cadence.StartClock(); err == nil {
-			hour = parsedHour
-			minute = parsedMinute
-		} else {
-			c.logger.Warn("invalid cadence sprint_start_time; using default 09:00", "error", err)
+		if rawTime := strings.TrimSpace(c.cfg.Cadence.SprintStartTime); rawTime != "" {
+			if parsedHour, parsedMinute, err := c.cfg.Cadence.StartClock(); err == nil {
+				hour = parsedHour
+				minute = parsedMinute
+			} else {
+				c.logger.Warn("invalid cadence sprint_start_time; using default 09:00", "error", err)
+			}
 		}
 		if parsedLoc, err := c.cfg.Cadence.LoadLocation(); err == nil {
 			loc = parsedLoc

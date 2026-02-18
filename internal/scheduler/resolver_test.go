@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/antigravity-dev/cortex/internal/config"
@@ -9,10 +10,11 @@ import (
 
 func TestDispatcherResolver_CreateDispatcher(t *testing.T) {
 	tests := []struct {
-		name        string
-		routing     config.DispatchRouting
-		wantType    string
-		wantError   bool
+		name          string
+		routing       config.DispatchRouting
+		tmuxAvailable bool
+		wantType      string
+		wantError     bool
 		errorContains string
 	}{
 		{
@@ -20,14 +22,25 @@ func TestDispatcherResolver_CreateDispatcher(t *testing.T) {
 			routing: config.DispatchRouting{
 				FastBackend: "tmux",
 			},
-			wantType: "session",
+			tmuxAvailable: true,
+			wantType:      "session",
+		},
+		{
+			name: "tmux unavailable - should fail over to next backend",
+			routing: config.DispatchRouting{
+				FastBackend:     "tmux",
+				BalancedBackend: "headless_cli",
+			},
+			tmuxAvailable: false,
+			wantType:      "pid",
 		},
 		{
 			name: "headless_cli - should use PID dispatcher",
 			routing: config.DispatchRouting{
 				FastBackend: "headless_cli",
 			},
-			wantType: "pid",
+			tmuxAvailable: true,
+			wantType:      "pid",
 		},
 		{
 			name: "multiple backends - should use first available",
@@ -35,12 +48,14 @@ func TestDispatcherResolver_CreateDispatcher(t *testing.T) {
 				FastBackend:     "headless_cli",
 				BalancedBackend: "tmux",
 			},
-			wantType: "pid", // should pick headless_cli first
+			tmuxAvailable: false,
+			wantType:      "pid", // should pick headless_cli first
 		},
 		{
-			name: "no backends configured",
-			routing: config.DispatchRouting{},
-			wantError: true,
+			name:          "no backends configured",
+			routing:       config.DispatchRouting{},
+			tmuxAvailable: true,
+			wantError:     true,
 			errorContains: "no dispatch backends configured",
 		},
 		{
@@ -48,7 +63,8 @@ func TestDispatcherResolver_CreateDispatcher(t *testing.T) {
 			routing: config.DispatchRouting{
 				FastBackend: "unknown",
 			},
-			wantError: true,
+			tmuxAvailable: true,
+			wantError:     true,
 			errorContains: "no available dispatch backends",
 		},
 	}
@@ -60,31 +76,31 @@ func TestDispatcherResolver_CreateDispatcher(t *testing.T) {
 					Routing: tt.routing,
 				},
 			}
-			
-			resolver := NewDispatcherResolver(cfg)
+
+			resolver := newResolverForTest(cfg, tt.tmuxAvailable)
 			dispatcher, err := resolver.CreateDispatcher()
-			
+
 			if tt.wantError {
 				if err == nil {
 					t.Errorf("CreateDispatcher() expected error, got nil")
 					return
 				}
-				if tt.errorContains != "" && !containsString(err.Error(), tt.errorContains) {
+				if tt.errorContains != "" && !strings.Contains(err.Error(), tt.errorContains) {
 					t.Errorf("CreateDispatcher() error = %v, want to contain %v", err, tt.errorContains)
 				}
 				return
 			}
-			
+
 			if err != nil {
 				t.Errorf("CreateDispatcher() unexpected error = %v", err)
 				return
 			}
-			
+
 			if dispatcher == nil {
 				t.Errorf("CreateDispatcher() returned nil dispatcher")
 				return
 			}
-			
+
 			if gotType := dispatcher.GetHandleType(); gotType != tt.wantType {
 				t.Errorf("CreateDispatcher() handle type = %v, want %v", gotType, tt.wantType)
 			}
@@ -94,11 +110,12 @@ func TestDispatcherResolver_CreateDispatcher(t *testing.T) {
 
 func TestDispatcherResolver_CreateDispatcherForTier(t *testing.T) {
 	tests := []struct {
-		name        string
-		tier        string
-		routing     config.DispatchRouting
-		wantType    string
-		wantError   bool
+		name          string
+		tier          string
+		routing       config.DispatchRouting
+		tmuxAvailable bool
+		wantType      string
+		wantError     bool
 		errorContains string
 	}{
 		{
@@ -107,7 +124,18 @@ func TestDispatcherResolver_CreateDispatcherForTier(t *testing.T) {
 			routing: config.DispatchRouting{
 				FastBackend: "tmux",
 			},
-			wantType: "session",
+			tmuxAvailable: true,
+			wantType:      "session",
+		},
+		{
+			name: "fast tier with tmux unavailable",
+			tier: "fast",
+			routing: config.DispatchRouting{
+				FastBackend: "tmux",
+			},
+			tmuxAvailable: false,
+			wantError:     true,
+			errorContains: "tmux not installed or accessible",
 		},
 		{
 			name: "balanced tier with headless_cli",
@@ -115,7 +143,8 @@ func TestDispatcherResolver_CreateDispatcherForTier(t *testing.T) {
 			routing: config.DispatchRouting{
 				BalancedBackend: "headless_cli",
 			},
-			wantType: "pid",
+			tmuxAvailable: true,
+			wantType:      "pid",
 		},
 		{
 			name: "premium tier with tmux",
@@ -123,7 +152,8 @@ func TestDispatcherResolver_CreateDispatcherForTier(t *testing.T) {
 			routing: config.DispatchRouting{
 				PremiumBackend: "tmux",
 			},
-			wantType: "session",
+			tmuxAvailable: true,
+			wantType:      "session",
 		},
 		{
 			name: "unknown tier",
@@ -131,7 +161,8 @@ func TestDispatcherResolver_CreateDispatcherForTier(t *testing.T) {
 			routing: config.DispatchRouting{
 				FastBackend: "tmux",
 			},
-			wantError: true,
+			tmuxAvailable: true,
+			wantError:     true,
 			errorContains: "unknown tier: unknown",
 		},
 		{
@@ -140,7 +171,8 @@ func TestDispatcherResolver_CreateDispatcherForTier(t *testing.T) {
 			routing: config.DispatchRouting{
 				BalancedBackend: "tmux", // fast not configured
 			},
-			wantError: true,
+			tmuxAvailable: true,
+			wantError:     true,
 			errorContains: "no backend configured for tier fast",
 		},
 		{
@@ -149,7 +181,8 @@ func TestDispatcherResolver_CreateDispatcherForTier(t *testing.T) {
 			routing: config.DispatchRouting{
 				FastBackend: "unknown",
 			},
-			wantError: true,
+			tmuxAvailable: true,
+			wantError:     true,
 			errorContains: "unknown backend type: unknown",
 		},
 	}
@@ -161,31 +194,31 @@ func TestDispatcherResolver_CreateDispatcherForTier(t *testing.T) {
 					Routing: tt.routing,
 				},
 			}
-			
-			resolver := NewDispatcherResolver(cfg)
+
+			resolver := newResolverForTest(cfg, tt.tmuxAvailable)
 			dispatcher, err := resolver.CreateDispatcherForTier(tt.tier)
-			
+
 			if tt.wantError {
 				if err == nil {
 					t.Errorf("CreateDispatcherForTier() expected error, got nil")
 					return
 				}
-				if tt.errorContains != "" && !containsString(err.Error(), tt.errorContains) {
+				if tt.errorContains != "" && !strings.Contains(err.Error(), tt.errorContains) {
 					t.Errorf("CreateDispatcherForTier() error = %v, want to contain %v", err, tt.errorContains)
 				}
 				return
 			}
-			
+
 			if err != nil {
 				t.Errorf("CreateDispatcherForTier() unexpected error = %v", err)
 				return
 			}
-			
+
 			if dispatcher == nil {
 				t.Errorf("CreateDispatcherForTier() returned nil dispatcher")
 				return
 			}
-			
+
 			if gotType := dispatcher.GetHandleType(); gotType != tt.wantType {
 				t.Errorf("CreateDispatcherForTier() handle type = %v, want %v", gotType, tt.wantType)
 			}
@@ -195,9 +228,10 @@ func TestDispatcherResolver_CreateDispatcherForTier(t *testing.T) {
 
 func TestDispatcherResolver_ValidateConfiguration(t *testing.T) {
 	tests := []struct {
-		name        string
-		routing     config.DispatchRouting
-		wantError   bool
+		name          string
+		routing       config.DispatchRouting
+		tmuxAvailable bool
+		wantError     bool
 		errorContains string
 	}{
 		{
@@ -207,7 +241,8 @@ func TestDispatcherResolver_ValidateConfiguration(t *testing.T) {
 				BalancedBackend: "headless_cli",
 				PremiumBackend:  "headless_cli",
 			},
-			wantError: false,
+			tmuxAvailable: false,
+			wantError:     false,
 		},
 		{
 			name: "valid mixed configuration",
@@ -215,12 +250,24 @@ func TestDispatcherResolver_ValidateConfiguration(t *testing.T) {
 				FastBackend:     "headless_cli",
 				BalancedBackend: "tmux",
 			},
-			wantError: false,
+			tmuxAvailable: true,
+			wantError:     false,
 		},
 		{
-			name: "no backends configured",
-			routing: config.DispatchRouting{},
-			wantError: true,
+			name: "mixed configuration with tmux unavailable",
+			routing: config.DispatchRouting{
+				FastBackend:     "headless_cli",
+				BalancedBackend: "tmux",
+			},
+			tmuxAvailable: false,
+			wantError:     true,
+			errorContains: "tmux not installed or accessible",
+		},
+		{
+			name:          "no backends configured",
+			routing:       config.DispatchRouting{},
+			tmuxAvailable: true,
+			wantError:     true,
 			errorContains: "no dispatch backends configured",
 		},
 		{
@@ -228,7 +275,8 @@ func TestDispatcherResolver_ValidateConfiguration(t *testing.T) {
 			routing: config.DispatchRouting{
 				FastBackend: "unknown",
 			},
-			wantError: true,
+			tmuxAvailable: true,
+			wantError:     true,
 			errorContains: "dispatch backend validation failed",
 		},
 		{
@@ -238,7 +286,19 @@ func TestDispatcherResolver_ValidateConfiguration(t *testing.T) {
 				CommsBackend: "tmux",
 				RetryBackend: "headless_cli",
 			},
-			wantError: false,
+			tmuxAvailable: true,
+			wantError:     false,
+		},
+		{
+			name: "comms tmux backend unavailable",
+			routing: config.DispatchRouting{
+				FastBackend:  "headless_cli",
+				CommsBackend: "tmux",
+				RetryBackend: "headless_cli",
+			},
+			tmuxAvailable: false,
+			wantError:     true,
+			errorContains: "tmux not installed or accessible",
 		},
 	}
 
@@ -249,21 +309,21 @@ func TestDispatcherResolver_ValidateConfiguration(t *testing.T) {
 					Routing: tt.routing,
 				},
 			}
-			
-			resolver := NewDispatcherResolver(cfg)
+
+			resolver := newResolverForTest(cfg, tt.tmuxAvailable)
 			err := resolver.ValidateConfiguration()
-			
+
 			if tt.wantError {
 				if err == nil {
 					t.Errorf("ValidateConfiguration() expected error, got nil")
 					return
 				}
-				if tt.errorContains != "" && !containsString(err.Error(), tt.errorContains) {
+				if tt.errorContains != "" && !strings.Contains(err.Error(), tt.errorContains) {
 					t.Errorf("ValidateConfiguration() error = %v, want to contain %v", err, tt.errorContains)
 				}
 				return
 			}
-			
+
 			if err != nil {
 				t.Errorf("ValidateConfiguration() unexpected error = %v", err)
 			}
@@ -272,59 +332,69 @@ func TestDispatcherResolver_ValidateConfiguration(t *testing.T) {
 }
 
 func TestDispatcherResolver_createDispatcherForBackend(t *testing.T) {
-	cfg := &config.Config{}
-	resolver := NewDispatcherResolver(cfg)
-
 	tests := []struct {
-		name        string
-		backend     string
-		wantType    string
-		wantError   bool
+		name          string
+		backend       string
+		tmuxAvailable bool
+		wantType      string
+		wantError     bool
 		errorContains string
 	}{
 		{
-			name:     "headless_cli backend",
-			backend:  "headless_cli",
-			wantType: "pid",
+			name:          "headless_cli backend",
+			backend:       "headless_cli",
+			tmuxAvailable: false,
+			wantType:      "pid",
 		},
 		{
-			name:     "tmux backend",
-			backend:  "tmux",
-			wantType: "session",
+			name:          "tmux backend available",
+			backend:       "tmux",
+			tmuxAvailable: true,
+			wantType:      "session",
 		},
 		{
-			name:        "unknown backend",
-			backend:     "unknown",
-			wantError:   true,
+			name:          "tmux backend unavailable",
+			backend:       "tmux",
+			tmuxAvailable: false,
+			wantError:     true,
+			errorContains: "tmux not installed or accessible",
+		},
+		{
+			name:          "unknown backend",
+			backend:       "unknown",
+			tmuxAvailable: true,
+			wantError:     true,
 			errorContains: "unknown backend type: unknown",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			resolver := newResolverForTest(cfg, tt.tmuxAvailable)
 			dispatcher, err := resolver.createDispatcherForBackend(tt.backend)
-			
+
 			if tt.wantError {
 				if err == nil {
 					t.Errorf("createDispatcherForBackend() expected error, got nil")
 					return
 				}
-				if tt.errorContains != "" && !containsString(err.Error(), tt.errorContains) {
+				if tt.errorContains != "" && !strings.Contains(err.Error(), tt.errorContains) {
 					t.Errorf("createDispatcherForBackend() error = %v, want to contain %v", err, tt.errorContains)
 				}
 				return
 			}
-			
+
 			if err != nil {
 				t.Errorf("createDispatcherForBackend() unexpected error = %v", err)
 				return
 			}
-			
+
 			if dispatcher == nil {
 				t.Errorf("createDispatcherForBackend() returned nil dispatcher")
 				return
 			}
-			
+
 			if gotType := dispatcher.GetHandleType(); gotType != tt.wantType {
 				t.Errorf("createDispatcherForBackend() handle type = %v, want %v", gotType, tt.wantType)
 			}
@@ -343,18 +413,18 @@ func TestDispatcherResolver_Integration(t *testing.T) {
 				},
 			},
 		}
-		
+
 		resolver1 := NewDispatcherResolver(cfg1)
 		dispatcher1, err := resolver1.CreateDispatcher()
-		
+
 		if err != nil {
 			t.Fatalf("Integration test failed to create headless_cli dispatcher: %v", err)
 		}
-		
+
 		if dispatcher1.GetHandleType() != "pid" {
 			t.Errorf("Integration test: expected PID dispatcher, got %s", dispatcher1.GetHandleType())
 		}
-		
+
 		// Test with tmux preference (if available)
 		if dispatch.IsTmuxAvailable() {
 			cfg2 := &config.Config{
@@ -364,14 +434,14 @@ func TestDispatcherResolver_Integration(t *testing.T) {
 					},
 				},
 			}
-			
+
 			resolver2 := NewDispatcherResolver(cfg2)
 			dispatcher2, err := resolver2.CreateDispatcher()
-			
+
 			if err != nil {
 				t.Fatalf("Integration test failed to create tmux dispatcher: %v", err)
 			}
-			
+
 			if dispatcher2.GetHandleType() != "session" {
 				t.Errorf("Integration test: expected session dispatcher, got %s", dispatcher2.GetHandleType())
 			}
@@ -379,8 +449,10 @@ func TestDispatcherResolver_Integration(t *testing.T) {
 	})
 }
 
-// Helper function to check if a string contains a substring
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && (len(substr) == 0 || s[:len(substr)] == substr || 
-		containsString(s[1:], substr))
+func newResolverForTest(cfg *config.Config, tmuxAvailable bool) *DispatcherResolver {
+	resolver := NewDispatcherResolver(cfg)
+	resolver.tmuxAvailable = func() bool {
+		return tmuxAvailable
+	}
+	return resolver
 }

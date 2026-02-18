@@ -9,19 +9,23 @@ import (
 
 // DispatcherResolver creates dispatchers based on configuration
 type DispatcherResolver struct {
-	cfg *config.Config
+	cfg           *config.Config
+	tmuxAvailable func() bool
 }
 
 // NewDispatcherResolver creates a new dispatcher resolver
 func NewDispatcherResolver(cfg *config.Config) *DispatcherResolver {
-	return &DispatcherResolver{cfg: cfg}
+	return &DispatcherResolver{
+		cfg:           cfg,
+		tmuxAvailable: dispatch.IsTmuxAvailable,
+	}
 }
 
 // CreateDispatcher creates a dispatcher based on the configuration
 // Uses the first available backend from the routing config
 func (r *DispatcherResolver) CreateDispatcher() (dispatch.DispatcherInterface, error) {
 	routing := &r.cfg.Dispatch.Routing
-	
+
 	// Try backends in priority order: fast -> balanced -> premium
 	backends := []string{}
 	if routing.FastBackend != "" {
@@ -33,18 +37,18 @@ func (r *DispatcherResolver) CreateDispatcher() (dispatch.DispatcherInterface, e
 	if routing.PremiumBackend != "" {
 		backends = append(backends, routing.PremiumBackend)
 	}
-	
+
 	if len(backends) == 0 {
 		return nil, fmt.Errorf("no dispatch backends configured in dispatch.routing")
 	}
-	
+
 	for _, backend := range backends {
 		dispatcher, err := r.createDispatcherForBackend(backend)
 		if err == nil {
 			return dispatcher, nil
 		}
 	}
-	
+
 	return nil, fmt.Errorf("no available dispatch backends: tried %v", backends)
 }
 
@@ -52,7 +56,7 @@ func (r *DispatcherResolver) CreateDispatcher() (dispatch.DispatcherInterface, e
 func (r *DispatcherResolver) CreateDispatcherForTier(tier string) (dispatch.DispatcherInterface, error) {
 	routing := &r.cfg.Dispatch.Routing
 	var backend string
-	
+
 	switch tier {
 	case "fast":
 		backend = routing.FastBackend
@@ -63,11 +67,11 @@ func (r *DispatcherResolver) CreateDispatcherForTier(tier string) (dispatch.Disp
 	default:
 		return nil, fmt.Errorf("unknown tier: %s", tier)
 	}
-	
+
 	if backend == "" {
 		return nil, fmt.Errorf("no backend configured for tier %s", tier)
 	}
-	
+
 	return r.createDispatcherForBackend(backend)
 }
 
@@ -75,7 +79,7 @@ func (r *DispatcherResolver) CreateDispatcherForTier(tier string) (dispatch.Disp
 func (r *DispatcherResolver) createDispatcherForBackend(backend string) (dispatch.DispatcherInterface, error) {
 	switch backend {
 	case "tmux":
-		if !dispatch.IsTmuxAvailable() {
+		if !r.isTmuxAvailable() {
 			return nil, fmt.Errorf("backend %s not available: tmux not installed or accessible", backend)
 		}
 		return dispatch.NewTmuxDispatcher(), nil
@@ -89,7 +93,7 @@ func (r *DispatcherResolver) createDispatcherForBackend(backend string) (dispatc
 // ValidateConfiguration validates that all configured backends are available
 func (r *DispatcherResolver) ValidateConfiguration() error {
 	routing := &r.cfg.Dispatch.Routing
-	
+
 	// Collect all configured backends
 	backends := map[string]string{}
 	if routing.FastBackend != "" {
@@ -107,11 +111,11 @@ func (r *DispatcherResolver) ValidateConfiguration() error {
 	if routing.RetryBackend != "" {
 		backends["retry"] = routing.RetryBackend
 	}
-	
+
 	if len(backends) == 0 {
 		return fmt.Errorf("no dispatch backends configured in dispatch.routing")
 	}
-	
+
 	// Validate each backend
 	var errors []string
 	for tier, backend := range backends {
@@ -119,7 +123,7 @@ func (r *DispatcherResolver) ValidateConfiguration() error {
 			errors = append(errors, fmt.Sprintf("%s (%s): %v", tier, backend, err))
 		}
 	}
-	
+
 	if len(errors) > 0 {
 		errorMsg := "dispatch backend validation failed:\n  - " + errors[0]
 		for _, err := range errors[1:] {
@@ -127,7 +131,7 @@ func (r *DispatcherResolver) ValidateConfiguration() error {
 		}
 		return fmt.Errorf("%s", errorMsg)
 	}
-	
+
 	return nil
 }
 
@@ -135,7 +139,7 @@ func (r *DispatcherResolver) ValidateConfiguration() error {
 func (r *DispatcherResolver) validateBackend(backend string) error {
 	switch backend {
 	case "tmux":
-		if !dispatch.IsTmuxAvailable() {
+		if !r.isTmuxAvailable() {
 			return fmt.Errorf("tmux not installed or accessible")
 		}
 		return nil
@@ -145,4 +149,11 @@ func (r *DispatcherResolver) validateBackend(backend string) error {
 	default:
 		return fmt.Errorf("unknown backend type")
 	}
+}
+
+func (r *DispatcherResolver) isTmuxAvailable() bool {
+	if r.tmuxAvailable == nil {
+		return dispatch.IsTmuxAvailable()
+	}
+	return r.tmuxAvailable()
 }
