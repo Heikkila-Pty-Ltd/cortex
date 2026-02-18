@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -45,10 +46,10 @@ type Scheduler struct {
 	ceremonyScheduler   *CeremonyScheduler
 	completionVerifier  *CompletionVerifier
 	lastCompletionCheck time.Time
-	
+
 	// Provider performance profiling
-	profiles             map[string]learner.ProviderProfile
-	lastProfileRebuild   time.Time
+	profiles           map[string]learner.ProviderProfile
+	lastProfileRebuild time.Time
 }
 
 const (
@@ -63,9 +64,9 @@ const (
 	epicBreakdownInterval   = 6 * time.Hour
 	epicBreakdownTitleStart = "Auto: break down epic "
 	epicBreakdownTitleEnd   = " into executable bug/task beads"
-	
-	profileRebuildInterval = 24 * time.Hour  // Rebuild profiles daily
-	profileStatsWindow     = 7 * 24 * time.Hour  // Look back 7 days for stats
+
+	profileRebuildInterval = 24 * time.Hour     // Rebuild profiles daily
+	profileStatsWindow     = 7 * 24 * time.Hour // Look back 7 days for stats
 
 	// Completion verification settings
 	completionCheckInterval = 2 * time.Hour // Check for completed beads every 2 hours
@@ -92,10 +93,10 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 	}
 
 	scheduler := &Scheduler{
-		cfg:          cfg,
-		store:        s,
-		rateLimiter:  rl,
-		dispatcher:   d,
+		cfg:         cfg,
+		store:       s,
+		rateLimiter: rl,
+		dispatcher:  d,
 		backends: map[string]dispatch.Backend{
 			"headless_cli": dispatch.NewHeadlessBackend(cfg.Dispatch.CLI, config.ExpandHome(cfg.Dispatch.LogDir), cfg.Dispatch.LogRetentionDays),
 			"tmux":         dispatch.NewTmuxBackend(cfg.Dispatch.CLI, cfg.Dispatch.Tmux.HistoryLimit),
@@ -908,6 +909,8 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 							retryPending = true
 							finalStage = "pending_retry"
 							retryReason = "gateway_closed"
+						} else {
+							retryReason = "terminal_output_failure"
 						}
 						if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
 							s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
@@ -919,6 +922,7 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 			handle := s.dispatchHandleFromRecord(d)
 			backend := s.backendByName(d.Backend)
 			state := dispatch.DispatchStatus{State: "unknown", ExitCode: -1}
+			output := ""
 			if backend != nil {
 				backendState, statusErr := backend.Status(handle)
 				if statusErr != nil {
@@ -926,48 +930,89 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 				} else {
 					state = backendState
 				}
-			}
-
-			switch state.State {
-			case "running":
-				continue
-			case "completed":
-				status = "completed"
-				exitCode = 0
-				finalStage = "completed"
-			case "failed":
-				status = "failed"
-				exitCode = state.ExitCode
-				finalStage = "failed"
-			default:
-				status = "failed"
-				exitCode = -1
-				finalStage = "failed_needs_check"
-
-				s.logger.Error("dispatch process state unknown - exit status unavailable",
-					"bead", d.BeadID,
-					"pid", d.PID,
-					"agent", d.AgentID,
-					"provider", d.Provider,
-					"duration_s", duration)
-
-				healthDetails := fmt.Sprintf("bead %s pid %d (agent=%s, provider=%s) died after %.1fs but exit status could not be determined - may indicate system instability",
-					d.BeadID, d.PID, d.AgentID, d.Provider, duration)
-				_ = s.store.RecordHealthEventWithDispatch("dispatch_pid_unknown_exit", healthDetails, d.ID, d.BeadID)
-
-				category := "unknown_exit_state"
-				summary := fmt.Sprintf("Process %d died but exit code could not be captured. This may indicate the process was killed by the system (OOM killer, etc.) or tracking was lost.", d.PID)
-				if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
-					s.logger.Error("failed to store failure diagnosis for unknown exit", "dispatch_id", d.ID, "error", err)
-				}
-			}
-
-			output := ""
-			if backend != nil {
 				if captured, captureErr := backend.CaptureOutput(handle); captureErr != nil {
 					s.logger.Warn("failed to capture backend output", "dispatch_id", d.ID, "backend", d.Backend, "error", captureErr)
 				} else {
 					output = captured
+				}
+				switch state.State {
+				case "running":
+					continue
+				case "completed":
+					status = "completed"
+					exitCode = 0
+					finalStage = "completed"
+				case "failed":
+					status = "failed"
+					exitCode = state.ExitCode
+					finalStage = "failed"
+				default:
+					status = "failed"
+					exitCode = -1
+					finalStage = "failed_needs_check"
+
+					s.logger.Error("dispatch process state unknown - exit status unavailable",
+						"bead", d.BeadID,
+						"pid", d.PID,
+						"agent", d.AgentID,
+						"provider", d.Provider,
+						"duration_s", duration)
+
+					healthDetails := fmt.Sprintf("bead %s pid %d (agent=%s, provider=%s) died after %.1fs but exit status could not be determined - may indicate system instability",
+						d.BeadID, d.PID, d.AgentID, d.Provider, duration)
+					_ = s.store.RecordHealthEventWithDispatch("dispatch_pid_unknown_exit", healthDetails, d.ID, d.BeadID)
+
+					category := "unknown_exit_state"
+					summary := fmt.Sprintf("Process %d died but exit code could not be captured. This may indicate the process was killed by the system (OOM killer, etc.) or tracking was lost.", d.PID)
+					if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
+						s.logger.Error("failed to store failure diagnosis for unknown exit", "dispatch_id", d.ID, "error", err)
+					}
+				}
+			} else {
+				// Backward compatibility for legacy rows without backend metadata.
+				processState := s.dispatcher.GetProcessState(d.PID)
+				switch processState.State {
+				case "running":
+					continue
+				case "exited":
+					if processState.ExitCode == 0 {
+						status = "completed"
+						exitCode = 0
+						finalStage = "completed"
+					} else {
+						status = "failed"
+						exitCode = processState.ExitCode
+						finalStage = "failed"
+					}
+					if strings.TrimSpace(processState.OutputPath) != "" {
+						if outputBytes, err := os.ReadFile(processState.OutputPath); err == nil {
+							output = string(outputBytes)
+						}
+					}
+				default:
+					status = "failed"
+					exitCode = -1
+					finalStage = "failed_needs_check"
+
+					s.logger.Error("dispatch process state unknown - exit status unavailable",
+						"bead", d.BeadID,
+						"pid", d.PID,
+						"agent", d.AgentID,
+						"provider", d.Provider,
+						"duration_s", duration)
+
+					healthDetails := fmt.Sprintf("bead %s pid %d (agent=%s, provider=%s) died after %.1fs but exit status could not be determined - may indicate system instability",
+						d.BeadID, d.PID, d.AgentID, d.Provider, duration)
+					_ = s.store.RecordHealthEventWithDispatch("dispatch_pid_unknown_exit", healthDetails, d.ID, d.BeadID)
+
+					category := "unknown_exit_state"
+					summary := fmt.Sprintf("Process %d died but exit code could not be captured. This may indicate the process was killed by the system (OOM killer, etc.) or tracking was lost.", d.PID)
+					if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
+						s.logger.Error("failed to store failure diagnosis for unknown exit", "dispatch_id", d.ID, "error", err)
+					}
+				}
+				if pidDispatcher, ok := s.dispatcher.(*dispatch.Dispatcher); ok {
+					pidDispatcher.CleanupProcess(d.PID)
 				}
 			}
 			if strings.TrimSpace(output) == "" && strings.TrimSpace(d.LogPath) != "" {
@@ -991,6 +1036,8 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 						retryPending = true
 						finalStage = "pending_retry"
 						retryReason = "gateway_closed"
+					} else {
+						retryReason = "terminal_output_failure"
 					}
 					if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
 						s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
@@ -1002,12 +1049,47 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 			}
 		}
 
-		if status == "failed" && !retryPending && finalStage == "failed" && duration <= 10 && exitCode != 0 {
+		if status == "failed" && !retryPending && retryReason == "" && finalStage == "failed" && duration <= 10 && exitCode != 0 {
 			retryPending = true
 			retryReason = "cli_broken"
 			if err := s.store.UpdateFailureDiagnosis(d.ID, "cli_broken",
 				fmt.Sprintf("dispatch failed quickly (%.1fs, exit=%d); scheduling within-tier CLI fallback", duration, exitCode)); err != nil {
 				s.logger.Warn("failed to store cli fallback diagnosis", "dispatch_id", d.ID, "error", err)
+			}
+		}
+
+		if status == "completed" && strings.TrimSpace(d.Branch) != "" {
+			baseBranch, mergeErr := s.finalizeDispatchBranch(d)
+			if mergeErr != nil {
+				status = "failed"
+				exitCode = -1
+				finalStage = "failed_needs_check"
+				retryPending = false
+				if errors.Is(mergeErr, git.ErrMergeConflict) {
+					retryReason = "git_merge_conflict"
+					summary := fmt.Sprintf("Auto-merge conflict: %s into %s. Manual resolution required; branch retained for investigation.", d.Branch, baseBranch)
+					if err := s.store.UpdateFailureDiagnosis(d.ID, "git_merge_conflict", summary); err != nil {
+						s.logger.Warn("failed to store merge conflict diagnosis", "dispatch_id", d.ID, "error", err)
+					}
+					_ = s.store.RecordHealthEventWithDispatch(
+						"dispatch_merge_conflict",
+						fmt.Sprintf("bead %s dispatch %d merge conflict on %s -> %s", d.BeadID, d.ID, d.Branch, baseBranch),
+						d.ID,
+						d.BeadID,
+					)
+				} else {
+					retryReason = "git_merge_failed"
+					summary := fmt.Sprintf("Auto-merge failed for %s into %s: %v. Manual check required; branch retained.", d.Branch, baseBranch, mergeErr)
+					if err := s.store.UpdateFailureDiagnosis(d.ID, "git_merge_failed", summary); err != nil {
+						s.logger.Warn("failed to store merge failure diagnosis", "dispatch_id", d.ID, "error", err)
+					}
+					_ = s.store.RecordHealthEventWithDispatch(
+						"dispatch_merge_failed",
+						fmt.Sprintf("bead %s dispatch %d merge failure on %s -> %s: %v", d.BeadID, d.ID, d.Branch, baseBranch, mergeErr),
+						d.ID,
+						d.BeadID,
+					)
+				}
 			}
 		}
 
@@ -1116,6 +1198,40 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (s *Scheduler) finalizeDispatchBranch(d store.Dispatch) (string, error) {
+	project, ok := s.cfg.Projects[d.Project]
+	if !ok {
+		return "", fmt.Errorf("project %q not found for dispatch branch finalization", d.Project)
+	}
+	if !project.UseBranches || strings.TrimSpace(d.Branch) == "" {
+		return "", nil
+	}
+
+	workspace := config.ExpandHome(project.Workspace)
+	baseBranch := strings.TrimSpace(project.BaseBranch)
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+	mergeStrategy := strings.TrimSpace(s.cfg.Dispatch.Git.MergeStrategy)
+	if mergeStrategy == "" {
+		mergeStrategy = "merge"
+	}
+
+	if err := git.MergeBranchIntoBase(workspace, d.Branch, baseBranch, mergeStrategy); err != nil {
+		return baseBranch, err
+	}
+	if err := git.DeleteBranch(workspace, d.Branch); err != nil {
+		s.logger.Warn("merged branch but failed to delete feature branch", "dispatch_id", d.ID, "branch", d.Branch, "error", err)
+		_ = s.store.RecordHealthEventWithDispatch(
+			"dispatch_branch_delete_failed",
+			fmt.Sprintf("bead %s dispatch %d merged branch %s but delete failed: %v", d.BeadID, d.ID, d.Branch, err),
+			d.ID,
+			d.BeadID,
+		)
+	}
+	return baseBranch, nil
 }
 
 func detectTerminalOutputFailure(output string) (category string, summary string, flagged bool) {
@@ -2192,35 +2308,35 @@ func isTerminalDispatchStatus(status string) bool {
 // rebuildProfilesIfNeeded rebuilds provider performance profiles periodically.
 func (s *Scheduler) rebuildProfilesIfNeeded() {
 	now := time.Now()
-	
+
 	// Initialize if this is the first run
 	if s.profiles == nil {
 		s.profiles = make(map[string]learner.ProviderProfile)
 	}
-	
+
 	// Only rebuild if enough time has passed
 	if !s.lastProfileRebuild.IsZero() && now.Sub(s.lastProfileRebuild) < profileRebuildInterval {
 		return
 	}
-	
+
 	s.lastProfileRebuild = now
 	s.logger.Debug("rebuilding provider profiles")
-	
+
 	// Build new profiles from dispatch history
 	newProfiles, err := learner.BuildProviderProfiles(s.store, profileStatsWindow)
 	if err != nil {
 		s.logger.Error("failed to rebuild provider profiles", "error", err)
 		return
 	}
-	
+
 	s.profiles = newProfiles
-	
+
 	// Log detected weaknesses for visibility
 	weaknesses := learner.DetectWeaknesses(s.profiles)
 	if len(weaknesses) > 0 {
 		s.logger.Info("detected provider weaknesses", "count", len(weaknesses))
 		for _, w := range weaknesses {
-			s.logger.Debug("weak provider", 
+			s.logger.Debug("weak provider",
 				"provider", w.Provider,
 				"label", w.Label,
 				"failure_rate", w.FailureRate,
@@ -2246,21 +2362,21 @@ func (s *Scheduler) pickProviderWithProfileFiltering(tier string, bead beads.Bea
 	default:
 		tierProviders = s.cfg.Tiers.Balanced
 	}
-	
+
 	// Apply profile-aware filtering
 	filteredProviders := learner.ApplyProfileToTierSelection(s.profiles, bead, tierProviders)
-	
+
 	// Log if filtering occurred
 	if len(filteredProviders) < len(tierProviders) {
 		filtered := len(tierProviders) - len(filteredProviders)
-		s.logger.Debug("filtered weak providers", 
+		s.logger.Debug("filtered weak providers",
 			"bead", bead.ID,
 			"tier", tier,
 			"original_count", len(tierProviders),
 			"filtered_count", filtered,
 			"remaining", len(filteredProviders))
 	}
-	
+
 	// Use filtered providers with rate limiter
 	return s.pickProviderFromCandidates(tier, filteredProviders, excludeModels)
 }
@@ -2287,7 +2403,7 @@ func (s *Scheduler) pickProviderFromCandidates(tier string, candidates []string,
 			return &p, name
 		}
 	}
-	
+
 	return nil, ""
 }
 

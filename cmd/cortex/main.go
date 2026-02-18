@@ -116,7 +116,7 @@ func main() {
 	go sched.Start(ctx)
 
 	// Start health monitor
-	hm := health.NewMonitor(cfg.Health, cfg.General, st, d, logger.With("component", "health"))
+	hm := health.NewMonitor(cfg, st, d, logger.With("component", "health"))
 	go hm.Start(ctx)
 
 	// Start learner cycle worker

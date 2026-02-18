@@ -36,9 +36,10 @@ func TestGenerateRecommendationsWithHighFailureRateProvider(t *testing.T) {
 		TotalDispatches: 6,
 		ProviderStats: map[string]ProviderStats{
 			"provider-bad": {
-				Provider:    "provider-bad",
-				Total:       6,
-				FailureRate: 50,
+				Provider:          "provider-bad",
+				Total:             6,
+				FailureRate:       50,
+				FailureCategories: map[string]int{"test_failure": 3},
 			},
 		},
 		TierAccuracy: map[string]TierAccuracy{},
@@ -55,6 +56,17 @@ func TestGenerateRecommendationsWithHighFailureRateProvider(t *testing.T) {
 
 	if !found {
 		t.Fatalf("expected provider failure recommendation, got %v", recs)
+	}
+
+	foundCategoryInsight := false
+	for _, rec := range recs {
+		if strings.Contains(rec, "most common output failure is test_failure") {
+			foundCategoryInsight = true
+			break
+		}
+	}
+	if !foundCategoryInsight {
+		t.Fatalf("expected output-based failure category recommendation, got %v", recs)
 	}
 }
 
@@ -101,6 +113,9 @@ func TestFormatRetroMarkdownProducesValidMarkdownTable(t *testing.T) {
 				AvgDuration: 42,
 			},
 		},
+		FastTierAB: []FastTierCLIStats{
+			{CLI: "aider", Total: 6, SuccessRate: 83},
+		},
 		TierAccuracy: map[string]TierAccuracy{
 			"fast": {
 				Tier:                 "fast",
@@ -120,6 +135,9 @@ func TestFormatRetroMarkdownProducesValidMarkdownTable(t *testing.T) {
 	}
 	if !strings.Contains(md, "| alpha | 10 | 70% | 30% | 42.0s |") {
 		t.Fatalf("missing provider row: %q", md)
+	}
+	if !strings.Contains(md, "## Fast-tier CLI A/B") {
+		t.Fatalf("missing fast-tier A/B section: %q", md)
 	}
 	if !strings.Contains(md, "## Recommendations") {
 		t.Fatalf("missing recommendations section: %q", md)
@@ -147,5 +165,15 @@ func TestGenerateWeeklyRetroWithEmptyData(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected no-dispatch recommendation, got %v", report.Recommendations)
+	}
+}
+
+func TestFastTierABRecommendation(t *testing.T) {
+	rec := fastTierABRecommendation([]FastTierCLIStats{
+		{CLI: "kilo", Total: 6, SuccessRate: 50},
+		{CLI: "aider", Total: 6, SuccessRate: 83},
+	})
+	if !strings.Contains(rec, "Consider preferring aider") {
+		t.Fatalf("expected aider preference recommendation, got %q", rec)
 	}
 }
