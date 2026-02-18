@@ -25,6 +25,7 @@ Refine backlog quality, estimate candidate work, select sprint scope by capacity
 - Do not ignore any bead in context; every bead must end this session as selected, deferred, or blocked.
 - Resolve missing details with bd show <id> and write refinements back using bd update.
 - Keep decisions traceable: every sprint decision must cite estimate, priority, and dependency state.
+- Normalize raw backlog context into the required digest views before making any selection decisions.
 
 ### 1. Build a Backlog Digest from Context (required first step)
 Normalize the backlog context in this prompt into compact planning views that are easy to scan in terminal output:
@@ -64,6 +65,7 @@ Digest rules:
 - Include dependency IDs inline (comma-separated) instead of long prose in the dependency column.
 - Capacity worksheet numbers must reconcile exactly (usable = total - buffer, remaining = usable - committed).
 - Sprint buckets must include every bead exactly once (selected, deferred, or blocked).
+- If a bead lacks data, keep it in the table with explicit gaps instead of omitting it.
 
 ### 2. Refine, Estimate, and Clarify Candidates
 Use these commands while reviewing and refining beads:
@@ -89,6 +91,12 @@ bd dep add <id> <depends-on-id>
 # If work is too large, split into follow-up beads
 bd create --title="<slice title>" --type=task --priority=2
 ~~~
+
+Per-bead refinement checklist (complete before selection):
+- Acceptance: clear preconditions, observable behavior, and testable pass/fail outcomes.
+- Design: implementation approach, touched files/components, dependency impacts, and rollout/mitigation notes.
+- Estimate: minutes only; include confidence note in appended notes when uncertainty is high.
+- Dependencies: all blockers represented with bd dep add and reflected in sprint decision.
 
 Quality bar:
 - Acceptance criteria must be explicit and testable with clear pass/fail outcomes.
@@ -124,6 +132,7 @@ For each selected bead (committed this sprint):
 bd update <id> --status=open
 bd update <id> --set-labels stage:planning,sprint:selected
 bd update <id> --assignee=planner
+bd update <id> --append-notes="Selected for sprint: estimate=<min>, dependency_state=<ready|included>, rationale=<short>"
 ~~~
 
 For refined but deferred beads:
@@ -134,6 +143,11 @@ bd update <id> --set-labels stage:backlog,sprint:deferred
 For blocked beads that cannot enter this sprint:
 ~~~bash
 bd update <id> --set-labels stage:backlog,sprint:blocked
+~~~
+
+For any bead deferred or blocked due to refinement/dependency gaps, append a short decision record:
+~~~bash
+bd update <id> --append-notes="Sprint decision: <selected|deferred|blocked>; reason=<capacity_limit|dependency_missing|refinement_incomplete|risk_too_high>; next_action=<owner/action>"
 ~~~
 
 ### 5. Transition the Sprint Planning Bead
