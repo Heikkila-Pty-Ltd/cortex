@@ -58,6 +58,18 @@ func TestBuildPromptWithRole(t *testing.T) {
 		contains []string
 	}{
 		{
+			role: "sprint_planning",
+			contains: []string{
+				"Sprint Planning",
+				"Build a Backlog Digest",
+				"Refine, Estimate, and Clarify Candidates",
+				"Capacity-Based Sprint Selection",
+				"bd update <id> --set-labels stage:planning,sprint:selected",
+				"bd update test-001 --set-labels stage:planning",
+				"Sprint Plan Summary Template",
+			},
+		},
+		{
 			role:     "scrum",
 			contains: []string{"Scrum Master", "acceptance criteria", "stage:planning", "Unassign"},
 		},

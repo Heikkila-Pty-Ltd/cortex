@@ -17,21 +17,25 @@ var stageInstructions = map[string]func(bead beads.Bead, useBranches bool, prDif
 		return fmt.Sprintf(`## Instructions (Sprint Planning)
 You are the scrum master running one end-to-end sprint planning session with the full backlog context provided in this task.
 
+### Mission (single session)
+Refine backlog quality, estimate candidate work, select sprint scope by capacity, and transition selected beads to planning.
+
 ### 1. Build a Backlog Digest from Context (required)
-First, read the full backlog context from this prompt and normalize it into one planning table:
+Read the full backlog context in this prompt and normalize it into one planning digest table:
 
-| ID | Title | Pri | Stage | Est (min) | Depends On | Refinement Status | Blockers/Risks | Selection |
-|----|-------|-----|-------|-----------|------------|-------------------|----------------|-----------|
+| ID | Title | Priority | Stage | Estimate (min) | Dependencies | Refinement Status | Risks/Blockers | Sprint Decision |
+|----|-------|----------|-------|----------------|--------------|-------------------|----------------|-----------------|
 
-Backlog digest rules:
-- Group rows by priority order (P0, then P1, then P2), and keep dependency chains adjacent.
-- Refinement Status values: ready, needs_acceptance, needs_design, needs_estimate, blocked.
-- Use TBD for missing estimates, then refine those items before committing sprint scope.
-- Mark blocked items explicitly and exclude them from sprint commitment math.
-- Add a final Selection value per row: selected, deferred, or blocked.
+Digest rules:
+- Sort by priority (P0, then P1, then P2), while keeping dependency chains adjacent.
+- Refinement Status must be one of: ready, needs_acceptance, needs_design, needs_estimate, blocked.
+- Use 'TBD' for missing estimates, then refine those beads before they can be selected.
+- Mark blockers explicitly and exclude blocked beads from commitment math.
+- Sprint Decision must be one of: selected, deferred, blocked.
+- Add a short header before the table with total candidate count, ready count, blocked count, and key dependency chains.
 
 ### 2. Refine, Estimate, and Clarify Candidates
-Use these commands while reviewing backlog candidates:
+Use these commands while reviewing and refining backlog candidates:
 ~~~bash
 # See unblocked work first, then all open items for full context
 bd ready
@@ -48,13 +52,16 @@ bd update <id> --priority=<0-2>
 
 # Capture or correct dependencies as needed
 bd dep add <id> <depends-on-id>
+
+# If work is too large, split into follow-up beads
+bd create --title="<slice title>" --type=task --priority=2
 ~~~
 
 Quality bar:
-- Acceptance criteria must be explicit and testable (clear done/not-done outcomes).
-- Design notes should include implementation approach, affected files, dependency notes, and risks.
-- bd update --estimate is in **minutes** (never store story points as estimate).
-- If a bead is too large for one sprint slice (for example, >120 minutes), split it into follow-up beads.
+- Acceptance criteria must be explicit and testable with clear pass/fail outcomes.
+- Design notes should include approach, affected files, dependencies, and risks.
+- 'bd update --estimate' is in minutes only (do not store story points as estimate).
+- If a bead is too large for one sprint slice (for example, >120 minutes), split it and defer the remainder.
 
 ### 3. Capacity-Based Sprint Selection
 Calculate capacity in minutes:
@@ -66,8 +73,10 @@ Selection policy:
 1. Start with only unblocked beads marked ready.
 2. Order by P0 -> P1 -> P2, then dependency criticality, then risk.
 3. Add beads while committed_estimate_min <= usable_capacity_min.
-4. If a dependency is required, include it before dependent work or defer both with a note.
-5. Produce a short deferred list for overflow or not-ready items.
+4. Skip beads with missing estimate ('TBD') until refined.
+5. If a dependency is required, include it before dependent work or defer both with a note.
+6. Stop before overflow; do not exceed usable capacity.
+7. Produce short deferred and blocked lists with one reason each.
 
 ### 4. Update Beads and Transition Stage
 For each selected bead (committed this sprint):
@@ -86,7 +95,7 @@ For blocked beads that cannot enter this sprint:
 bd update <id> --set-labels stage:backlog,sprint:blocked
 ~~~
 
-### 5. Close Planning Session
+### 5. Transition the Sprint-Planning Bead
 ~~~bash
 # Optional sync after bulk updates
 bd sync
@@ -99,7 +108,7 @@ bd update %s --assignee=""
 bd close %s --reason="Sprint planning completed"
 ~~~
 
-### Sprint Plan Summary Template
+### Sprint Plan Summary Template (required)
 Use this exact structure in your final output:
 
 **Sprint Goal:** [single outcome statement]
@@ -120,11 +129,18 @@ Use this exact structure in your final output:
 **Deferred Beads:**
 - [ID] [Title] - [reason deferred]
 
+**Blocked Beads:**
+- [ID] [Title] - [blocker + owner/follow-up]
+
 **Risks and Mitigations:**
 - [Risk] -> [Mitigation]
 
 **Command Log:**
 - [bd commands executed for refinement and selection]
+
+**Handoff to Planning Stage:**
+- [Confirm selected beads labeled 'stage:planning,sprint:selected']
+- [Confirm this planning bead transitioned to 'stage:planning' and was unassigned]
 `, b.ID, b.ID, b.ID)
 	},
 	"scrum": func(b beads.Bead, useBranches bool, prDiff string) string {
