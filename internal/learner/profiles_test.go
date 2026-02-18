@@ -255,14 +255,20 @@ func TestBuildProviderProfiles(t *testing.T) {
 	defer cleanup()
 
 	// Record some dispatches
-	_, err := store.RecordDispatch("bead-1", "test-project", "agent-1", "openai", "fast", 123, "session-1", "prompt", "", "", "")
+	id1, err := store.RecordDispatch("bead-1", "test-project", "agent-1", "openai", "fast", 123, "session-1", "prompt", "", "", "")
 	if err != nil {
 		t.Fatalf("failed to record dispatch: %v", err)
 	}
+	if err := store.UpdateDispatchLabels(id1, []string{"go", "backend"}); err != nil {
+		t.Fatalf("failed to set dispatch labels: %v", err)
+	}
 
-	_, err = store.RecordDispatch("bead-2", "test-project", "agent-1", "anthropic", "fast", 124, "session-2", "prompt", "", "", "")
+	id2, err := store.RecordDispatch("bead-2", "test-project", "agent-1", "anthropic", "fast", 124, "session-2", "prompt", "", "", "")
 	if err != nil {
 		t.Fatalf("failed to record dispatch: %v", err)
+	}
+	if err := store.UpdateDispatchLabels(id2, []string{"go"}); err != nil {
+		t.Fatalf("failed to set dispatch labels: %v", err)
 	}
 
 	// Complete the first dispatch
@@ -300,6 +306,13 @@ func TestBuildProviderProfiles(t *testing.T) {
 		if openaiProfile.AvgDuration != 5.5 {
 			t.Errorf("expected avg duration 5.5 for openai, got %f", openaiProfile.AvgDuration)
 		}
+		goStats, ok := openaiProfile.LabelStats["go"]
+		if !ok {
+			t.Fatalf("expected openai label stats for go")
+		}
+		if goStats.Total != 1 || goStats.SuccessRate != 1.0 {
+			t.Fatalf("expected openai/go total=1 success=1.0, got total=%d success=%.2f", goStats.Total, goStats.SuccessRate)
+		}
 	}
 
 	// Check Anthropic profile
@@ -315,6 +328,13 @@ func TestBuildProviderProfiles(t *testing.T) {
 		}
 		if anthropicProfile.AvgDuration != 2.5 {
 			t.Errorf("expected avg duration 2.5 for anthropic, got %f", anthropicProfile.AvgDuration)
+		}
+		goStats, ok := anthropicProfile.LabelStats["go"]
+		if !ok {
+			t.Fatalf("expected anthropic label stats for go")
+		}
+		if goStats.Total != 1 || goStats.SuccessRate != 0.0 {
+			t.Fatalf("expected anthropic/go total=1 success=0.0, got total=%d success=%.2f", goStats.Total, goStats.SuccessRate)
 		}
 	}
 }

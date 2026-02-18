@@ -890,7 +890,7 @@ func TestInterruptRunningDispatches(t *testing.T) {
 	var d Dispatch
 	err = s.db.QueryRow(`SELECT `+dispatchCols+` FROM dispatches WHERE id = ?`, id2).Scan(
 		&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName,
-		&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.Stage, &d.PRURL, &d.PRNumber, &d.ExitCode, &d.DurationS, &d.Retries, &d.EscalatedFromTier,
+		&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.Stage, &d.Labels, &d.PRURL, &d.PRNumber, &d.ExitCode, &d.DurationS, &d.Retries, &d.EscalatedFromTier,
 		&d.FailureCategory, &d.FailureSummary, &d.LogPath, &d.Branch, &d.Backend,
 		&d.InputTokens, &d.OutputTokens, &d.CostUSD,
 	)
@@ -984,6 +984,190 @@ func TestNewColumnsStorage(t *testing.T) {
 	}
 	if d.Backend != "tmux" {
 		t.Errorf("Backend mismatch: expected 'tmux', got '%s'", d.Backend)
+	}
+}
+
+func TestUpdateDispatchLabelsPersistsNormalizedCSV(t *testing.T) {
+	s := tempStore(t)
+
+	id, err := s.RecordDispatch("bead-labels", "proj", "agent-1", "cerebras", "fast", 100, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.UpdateDispatchLabels(id, []string{"code", "stage:review", "code", "  backend "}); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := s.GetDispatchByID(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Labels != "code,stage:review,backend" {
+		t.Fatalf("expected normalized labels CSV, got %q", d.Labels)
+	}
+
+	// CSV setter should normalize too.
+	if err := s.UpdateDispatchLabelsCSV(id, "code,,code, stage:qa "); err != nil {
+		t.Fatal(err)
+	}
+	d, err = s.GetDispatchByID(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Labels != "code,stage:qa" {
+		t.Fatalf("expected normalized CSV setter result, got %q", d.Labels)
+	}
+}
+
+func TestGetProviderLabelStats(t *testing.T) {
+	s := tempStore(t)
+
+	id1, err := s.RecordDispatch("bead-1", "proj", "agent-1", "openai", "fast", 100, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchLabels(id1, []string{"go", "backend"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(id1, "completed", 0, 10.0); err != nil {
+		t.Fatal(err)
+	}
+
+	id2, err := s.RecordDispatch("bead-2", "proj", "agent-1", "openai", "fast", 101, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchLabelsCSV(id2, "go"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(id2, "failed", 1, 5.0); err != nil {
+		t.Fatal(err)
+	}
+
+	id3, err := s.RecordDispatch("bead-3", "proj", "agent-1", "anthropic", "balanced", 102, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchLabels(id3, []string{"go"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(id3, "completed", 0, 8.0); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := s.GetProviderLabelStats(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	openAIGo, ok := stats["openai"]["go"]
+	if !ok {
+		t.Fatalf("expected openai/go stats")
+	}
+	if openAIGo.Total != 2 || openAIGo.Successes != 1 {
+		t.Fatalf("expected openai/go total=2 successes=1, got total=%d successes=%d", openAIGo.Total, openAIGo.Successes)
+	}
+	if fmt.Sprintf("%.1f", openAIGo.TotalDuration) != "15.0" {
+		t.Fatalf("expected openai/go duration=15.0, got %.1f", openAIGo.TotalDuration)
+	}
+
+	openAIBackend, ok := stats["openai"]["backend"]
+	if !ok {
+		t.Fatalf("expected openai/backend stats")
+	}
+	if openAIBackend.Total != 1 || openAIBackend.Successes != 1 {
+		t.Fatalf("expected openai/backend total=1 successes=1, got total=%d successes=%d", openAIBackend.Total, openAIBackend.Successes)
+	}
+
+	anthropicGo, ok := stats["anthropic"]["go"]
+	if !ok {
+		t.Fatalf("expected anthropic/go stats")
+	}
+	if anthropicGo.Total != 1 || anthropicGo.Successes != 1 {
+		t.Fatalf("expected anthropic/go total=1 successes=1, got total=%d successes=%d", anthropicGo.Total, anthropicGo.Successes)
+	}
+}
+
+func TestProviderStatsExcludeNonTerminalDispatches(t *testing.T) {
+	s := tempStore(t)
+
+	// Terminal completed dispatch.
+	id1, err := s.RecordDispatch("bead-term-ok", "proj", "agent-1", "openai", "fast", 100, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchLabels(id1, []string{"go"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(id1, "completed", 0, 10.0); err != nil {
+		t.Fatal(err)
+	}
+
+	// Terminal failed dispatch.
+	id2, err := s.RecordDispatch("bead-term-fail", "proj", "agent-1", "openai", "fast", 101, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchLabels(id2, []string{"go"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(id2, "failed", 1, 5.0); err != nil {
+		t.Fatal(err)
+	}
+
+	// Running dispatch should be excluded.
+	id3, err := s.RecordDispatch("bead-running", "proj", "agent-1", "openai", "fast", 102, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchLabels(id3, []string{"go"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pending retry (in-flight) should be excluded.
+	id4, err := s.RecordDispatch("bead-pending-retry", "proj", "agent-1", "openai", "fast", 103, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchLabels(id4, []string{"go"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(id4, "failed", 1, 2.0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkDispatchPendingRetry(id4, "balanced"); err != nil {
+		t.Fatal(err)
+	}
+
+	providerStats, err := s.GetProviderStats(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	openAI, ok := providerStats["openai"]
+	if !ok {
+		t.Fatalf("expected openai provider stats")
+	}
+	if openAI.Total != 2 {
+		t.Fatalf("expected only 2 terminal dispatches in provider stats, got %d", openAI.Total)
+	}
+	if openAI.Successes != 1 {
+		t.Fatalf("expected 1 success in provider stats, got %d", openAI.Successes)
+	}
+
+	labelStats, err := s.GetProviderLabelStats(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	openAIGo, ok := labelStats["openai"]["go"]
+	if !ok {
+		t.Fatalf("expected openai/go label stats")
+	}
+	if openAIGo.Total != 2 {
+		t.Fatalf("expected only 2 terminal dispatches in label stats, got %d", openAIGo.Total)
+	}
+	if openAIGo.Successes != 1 {
+		t.Fatalf("expected 1 success in label stats, got %d", openAIGo.Successes)
 	}
 }
 

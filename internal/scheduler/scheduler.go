@@ -541,6 +541,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			releaseLock("dispatch_record_failed")
 			continue
 		}
+		if err := s.store.UpdateDispatchLabels(dispatchID, item.bead.Labels); err != nil {
+			s.logger.Warn("failed to record dispatch labels", "dispatch_id", dispatchID, "bead", item.bead.ID, "error", err)
+		}
 		if err := s.store.UpdateDispatchStage(dispatchID, "running"); err != nil {
 			s.logger.Warn("failed to set dispatch stage", "dispatch_id", dispatchID, "stage", "running", "error", err)
 		}
@@ -1872,6 +1875,9 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 		if err != nil {
 			s.logger.Error("failed to record retry dispatch", "bead", retry.BeadID, "error", err)
 			continue
+		}
+		if err := s.store.UpdateDispatchLabelsCSV(newDispatchID, retry.Labels); err != nil {
+			s.logger.Warn("failed to copy dispatch labels to retry", "dispatch_id", newDispatchID, "bead", retry.BeadID, "error", err)
 		}
 		if err := s.store.UpdateDispatchStage(newDispatchID, "running"); err != nil {
 			s.logger.Warn("failed to set retry dispatch stage", "dispatch_id", newDispatchID, "error", err)
