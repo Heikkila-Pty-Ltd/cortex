@@ -2,6 +2,7 @@ package learner
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -54,6 +55,25 @@ func (d *recordingDispatcher) GetSessionName(_ int) string {
 
 func (d *recordingDispatcher) GetProcessState(_ int) dispatch.ProcessState {
 	return dispatch.ProcessState{}
+}
+
+type selectiveFailDispatcher struct {
+	recordingDispatcher
+	failAgents map[string]bool
+}
+
+func (d *selectiveFailDispatcher) Dispatch(_ context.Context, agent, prompt, provider, thinkingLevel, workDir string) (int, error) {
+	d.calls = append(d.calls, dispatchCall{
+		agent:    agent,
+		prompt:   prompt,
+		provider: provider,
+		thinking: thinkingLevel,
+		workDir:  workDir,
+	})
+	if d.failAgents != nil && d.failAgents[agent] {
+		return 0, fmt.Errorf("simulated dispatch failure for %s", agent)
+	}
+	return len(d.calls), nil
 }
 
 func tempInMemoryStore(t *testing.T) *store.Store {
@@ -116,6 +136,9 @@ func TestSendDigestProducesMarkdown(t *testing.T) {
 	if len(mock.calls) != 1 {
 		t.Fatalf("expected 1 dispatch call, got %d", len(mock.calls))
 	}
+	if mock.calls[0].agent != "project-a-scrum" {
+		t.Fatalf("expected project-specific scrum agent, got %q", mock.calls[0].agent)
+	}
 
 	msg := mock.calls[0].prompt
 	if !strings.Contains(msg, "## Daily Cortex Digest") {
@@ -129,6 +152,30 @@ func TestSendDigestProducesMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(msg, "- **Health:** 1 events in last 24h") {
 		t.Fatalf("digest missing health events line: %q", msg)
+	}
+}
+
+func TestSendDigestDispatchesOnePerEnabledProject(t *testing.T) {
+	s := tempInMemoryStore(t)
+	mock := &recordingDispatcher{}
+	reporter := newReporterForTest(t, s, mock)
+
+	reporter.SendDigest(context.Background(), map[string]config.Project{
+		"project-a": {Enabled: true},
+		"project-b": {Enabled: true},
+		"project-c": {Enabled: false},
+	}, false)
+
+	if len(mock.calls) != 2 {
+		t.Fatalf("expected 2 dispatch calls for enabled projects, got %d", len(mock.calls))
+	}
+
+	agents := map[string]bool{}
+	for _, call := range mock.calls {
+		agents[call.agent] = true
+	}
+	if !agents["project-a-scrum"] || !agents["project-b-scrum"] {
+		t.Fatalf("expected dispatches to project scrum agents, got %+v", agents)
 	}
 }
 
@@ -184,5 +231,26 @@ func TestDispatchMessageCallsDispatcher(t *testing.T) {
 	}
 	if call.workDir != "/tmp" {
 		t.Fatalf("expected work dir /tmp, got %q", call.workDir)
+	}
+}
+
+func TestSendProjectDigestFallsBackToMainAgent(t *testing.T) {
+	s := tempInMemoryStore(t)
+	mock := &selectiveFailDispatcher{
+		failAgents: map[string]bool{"project-a-scrum": true},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	reporter := NewReporter(config.Reporter{AgentID: "main"}, s, mock, logger)
+
+	reporter.SendProjectDigest(context.Background(), "project-a", config.Project{Enabled: true}, false)
+
+	if len(mock.calls) != 2 {
+		t.Fatalf("expected primary + fallback dispatch calls, got %d", len(mock.calls))
+	}
+	if mock.calls[0].agent != "project-a-scrum" {
+		t.Fatalf("expected first dispatch to project scrum agent, got %q", mock.calls[0].agent)
+	}
+	if mock.calls[1].agent != "main" {
+		t.Fatalf("expected fallback dispatch to main, got %q", mock.calls[1].agent)
 	}
 }

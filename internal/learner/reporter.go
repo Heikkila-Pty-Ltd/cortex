@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,8 @@ type Reporter struct {
 	alertSent map[string]time.Time // dedup: key -> last sent time
 }
 
+const defaultReporterAgentID = "main"
+
 // NewReporter creates a new Reporter.
 func NewReporter(cfg config.Reporter, s *store.Store, d dispatch.DispatcherInterface, logger *slog.Logger) *Reporter {
 	return &Reporter{
@@ -37,18 +40,37 @@ func NewReporter(cfg config.Reporter, s *store.Store, d dispatch.DispatcherInter
 
 // SendDigest dispatches the daily digest message via openclaw agent.
 func (r *Reporter) SendDigest(ctx context.Context, projects map[string]config.Project, includeRecommendations bool) {
-	var b strings.Builder
-	fmt.Fprintf(&b, "## Daily Cortex Digest — %s\n\n", time.Now().Format("2006-01-02"))
+	projectNames := make([]string, 0, len(projects))
+	for name, project := range projects {
+		if project.Enabled {
+			projectNames = append(projectNames, name)
+		}
+	}
+	sort.Strings(projectNames)
 
-	for name, proj := range projects {
-		if !proj.Enabled {
-			continue
-		}
-		v, err := GetProjectVelocity(r.store, name, 24*time.Hour)
-		if err != nil {
-			continue
-		}
-		fmt.Fprintf(&b, "- **%s:** %d beads completed today\n", name, v.Completed)
+	for _, projectName := range projectNames {
+		r.SendProjectDigest(ctx, projectName, projects[projectName], includeRecommendations)
+	}
+}
+
+// SendProjectDigest dispatches a project-specific daily digest via the project's scrum agent.
+func (r *Reporter) SendProjectDigest(ctx context.Context, projectName string, project config.Project, includeRecommendations bool) {
+	if !project.Enabled {
+		return
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "## Daily Cortex Digest — %s (%s)\n\n", projectName, time.Now().Format("2006-01-02"))
+	if room := strings.TrimSpace(project.MatrixRoom); room != "" {
+		fmt.Fprintf(&b, "- **Matrix Room:** `%s`\n", room)
+	}
+
+	v, err := GetProjectVelocity(r.store, projectName, 24*time.Hour)
+	if err != nil {
+		r.logger.Warn("failed to compute project velocity for digest", "project", projectName, "error", err)
+		fmt.Fprintf(&b, "- **%s:** velocity unavailable\n", projectName)
+	} else {
+		fmt.Fprintf(&b, "- **%s:** %d beads completed today\n", projectName, v.Completed)
 	}
 
 	events, err := r.store.GetRecentHealthEvents(24)
@@ -56,12 +78,11 @@ func (r *Reporter) SendDigest(ctx context.Context, projects map[string]config.Pr
 		fmt.Fprintf(&b, "- **Health:** %d events in last 24h\n", len(events))
 	}
 
-	// Include recommendations if enabled
 	if includeRecommendations {
 		r.appendRecommendations(&b)
 	}
 
-	r.dispatchMessage(ctx, b.String())
+	r.dispatchProjectMessage(ctx, projectName, b.String())
 }
 
 // appendRecommendations adds recent recommendations to the digest.
@@ -117,8 +138,45 @@ func (r *Reporter) SendAlert(ctx context.Context, alertType string, message stri
 }
 
 func (r *Reporter) dispatchMessage(ctx context.Context, message string) {
-	_, err := r.dispatcher.Dispatch(ctx, r.cfg.AgentID, message, "", "none", "/tmp")
+	agent := strings.TrimSpace(r.cfg.AgentID)
+	if agent == "" {
+		agent = defaultReporterAgentID
+	}
+	_, err := r.dispatcher.Dispatch(ctx, agent, message, "", "none", "/tmp")
 	if err != nil {
 		r.logger.Error("failed to dispatch report", "error", err)
+	}
+}
+
+func (r *Reporter) dispatchProjectMessage(ctx context.Context, projectName, message string) {
+	primary := fmt.Sprintf("%s-scrum", strings.TrimSpace(projectName))
+	fallback := strings.TrimSpace(r.cfg.AgentID)
+	if fallback == "" {
+		fallback = defaultReporterAgentID
+	}
+	if primary == "-scrum" {
+		primary = fallback
+	}
+
+	_, err := r.dispatcher.Dispatch(ctx, primary, message, "", "none", "/tmp")
+	if err == nil {
+		return
+	}
+	if primary == fallback {
+		r.logger.Error("failed to dispatch project digest", "project", projectName, "agent", primary, "error", err)
+		return
+	}
+
+	r.logger.Warn("project digest dispatch failed, falling back to default agent",
+		"project", projectName,
+		"agent", primary,
+		"fallback", fallback,
+		"error", err)
+	_, fallbackErr := r.dispatcher.Dispatch(ctx, fallback, message, "", "none", "/tmp")
+	if fallbackErr != nil {
+		r.logger.Error("failed to dispatch project digest via fallback",
+			"project", projectName,
+			"fallback", fallback,
+			"error", fallbackErr)
 	}
 }
