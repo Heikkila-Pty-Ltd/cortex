@@ -77,6 +77,9 @@ make service-start
 ```bash
 # Run focused race tests for concurrency-critical packages
 make test-race
+
+# CI entrypoint (bounded timeout + JSON/log output under .tmp/)
+make test-race-ci
 ```
 
 `make test-race` runs through `scripts/test-safe.sh` with explicit package selection:

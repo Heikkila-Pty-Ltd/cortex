@@ -24,13 +24,7 @@ jobs:
         run: mkdir -p .tmp
 
       - name: Run race test target
-        env:
-          TEST_SAFE_GO_TEST_TIMEOUT: 25m
-          TEST_SAFE_LOCK_WAIT_SEC: 60
-          TEST_SAFE_JSON_OUT: .tmp/test-race.jsonl
-        run: |
-          set -o pipefail
-          make test-race 2>&1 | tee .tmp/test-race.log
+        run: make test-race-ci
 
       - name: Summarize failing package and test names
         if: failure()
