@@ -213,6 +213,70 @@ func TestMissingProjectRoomRouting(t *testing.T) {
 	}
 }
 
+func TestLoadMatrixConfigDefaults(t *testing.T) {
+	path := writeTestConfig(t, validConfig)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if cfg.Matrix.Enabled {
+		t.Fatal("matrix.enabled should default to false")
+	}
+	if cfg.Matrix.PollInterval.Duration != 30*time.Second {
+		t.Fatalf("matrix.poll_interval default = %v, want 30s", cfg.Matrix.PollInterval.Duration)
+	}
+	if cfg.Matrix.ReadLimit != 25 {
+		t.Fatalf("matrix.read_limit default = %d, want 25", cfg.Matrix.ReadLimit)
+	}
+}
+
+func TestLoadMatrixConfigEnabled(t *testing.T) {
+	cfg := validConfig + `
+
+[matrix]
+enabled = true
+poll_interval = "45s"
+bot_user = "@cortex-bot:matrix.org"
+read_limit = 40
+`
+	path := writeTestConfig(t, cfg)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if !loaded.Matrix.Enabled {
+		t.Fatal("matrix.enabled should be true")
+	}
+	if loaded.Matrix.PollInterval.Duration != 45*time.Second {
+		t.Fatalf("matrix.poll_interval = %v, want 45s", loaded.Matrix.PollInterval.Duration)
+	}
+	if loaded.Matrix.BotUser != "@cortex-bot:matrix.org" {
+		t.Fatalf("matrix.bot_user = %q, want @cortex-bot:matrix.org", loaded.Matrix.BotUser)
+	}
+	if loaded.Matrix.ReadLimit != 40 {
+		t.Fatalf("matrix.read_limit = %d, want 40", loaded.Matrix.ReadLimit)
+	}
+}
+
+func TestLoadMatrixConfigInvalidReadLimit(t *testing.T) {
+	cfg := validConfig + `
+
+[matrix]
+enabled = true
+read_limit = -1
+`
+	path := writeTestConfig(t, cfg)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for invalid matrix.read_limit")
+	}
+	if !strings.Contains(err.Error(), "matrix.read_limit") {
+		t.Fatalf("expected matrix.read_limit validation error, got: %v", err)
+	}
+}
+
 func TestLoadUnknownProviderInTier(t *testing.T) {
 	cfg := `
 [general]
@@ -815,6 +879,128 @@ func TestValidateDispatchConfigNilCLI(t *testing.T) {
 	err := ValidateDispatchConfig(cfg)
 	if err != nil {
 		t.Errorf("expected nil CLI config to be valid, got: %v", err)
+	}
+}
+
+// Cadence Configuration Tests
+
+func TestLoadCadenceConfigDefaults(t *testing.T) {
+	path := writeTestConfig(t, validConfig)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected default cadence config to load: %v", err)
+	}
+
+	if cfg.Cadence.SprintLength != "1w" {
+		t.Fatalf("default sprint_length = %q, want 1w", cfg.Cadence.SprintLength)
+	}
+	if cfg.Cadence.SprintStartDay != "Monday" {
+		t.Fatalf("default sprint_start_day = %q, want Monday", cfg.Cadence.SprintStartDay)
+	}
+	if cfg.Cadence.SprintStartTime != "09:00" {
+		t.Fatalf("default sprint_start_time = %q, want 09:00", cfg.Cadence.SprintStartTime)
+	}
+	if cfg.Cadence.Timezone != "UTC" {
+		t.Fatalf("default timezone = %q, want UTC", cfg.Cadence.Timezone)
+	}
+}
+
+func TestLoadCadenceConfigValid(t *testing.T) {
+	cfg := validConfig + `
+
+[cadence]
+sprint_length = "2w"
+sprint_start_day = "Wednesday"
+sprint_start_time = "10:30"
+timezone = "America/New_York"
+`
+	path := writeTestConfig(t, cfg)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected valid cadence config to load: %v", err)
+	}
+
+	length, err := loaded.Cadence.SprintLengthDuration()
+	if err != nil {
+		t.Fatalf("expected sprint length parse to succeed: %v", err)
+	}
+	if length != 14*24*time.Hour {
+		t.Fatalf("parsed sprint length = %v, want 336h", length)
+	}
+	weekday, err := loaded.Cadence.StartWeekday()
+	if err != nil {
+		t.Fatalf("expected weekday parse to succeed: %v", err)
+	}
+	if weekday != time.Wednesday {
+		t.Fatalf("parsed weekday = %v, want Wednesday", weekday)
+	}
+	hour, minute, err := loaded.Cadence.StartClock()
+	if err != nil {
+		t.Fatalf("expected clock parse to succeed: %v", err)
+	}
+	if hour != 10 || minute != 30 {
+		t.Fatalf("parsed clock = %02d:%02d, want 10:30", hour, minute)
+	}
+	loc, err := loaded.Cadence.LoadLocation()
+	if err != nil {
+		t.Fatalf("expected timezone parse to succeed: %v", err)
+	}
+	if loc.String() != "America/New_York" {
+		t.Fatalf("parsed location = %q, want America/New_York", loc.String())
+	}
+}
+
+func TestLoadCadenceConfigInvalidValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		section string
+		wantErr string
+	}{
+		{
+			name: "invalid length",
+			section: `
+[cadence]
+sprint_length = "0w"
+`,
+			wantErr: "invalid sprint_length",
+		},
+		{
+			name: "invalid day",
+			section: `
+[cadence]
+sprint_start_day = "Funday"
+`,
+			wantErr: "invalid sprint_start_day",
+		},
+		{
+			name: "invalid time",
+			section: `
+[cadence]
+sprint_start_time = "9:00"
+`,
+			wantErr: "invalid sprint_start_time",
+		},
+		{
+			name: "invalid timezone",
+			section: `
+[cadence]
+timezone = "Mars/Olympus"
+`,
+			wantErr: "invalid timezone",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTestConfig(t, validConfig+tt.section)
+			_, err := Load(path)
+			if err == nil {
+				t.Fatalf("expected error containing %q", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error to contain %q, got: %v", tt.wantErr, err)
+			}
+		})
 	}
 }
 

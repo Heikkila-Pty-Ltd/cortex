@@ -14,6 +14,7 @@ import (
 	"github.com/antigravity-dev/cortex/internal/dispatch"
 	"github.com/antigravity-dev/cortex/internal/health"
 	"github.com/antigravity-dev/cortex/internal/learner"
+	"github.com/antigravity-dev/cortex/internal/matrix"
 	"github.com/antigravity-dev/cortex/internal/scheduler"
 	"github.com/antigravity-dev/cortex/internal/store"
 )
@@ -121,6 +122,22 @@ func main() {
 	// Start learner cycle worker
 	lw := learner.NewCycleWorker(cfg.Learner, st, logger.With("component", "learner"))
 	go lw.Start(ctx)
+
+	// Start Matrix inbound poller (optional)
+	if cfg.Matrix.Enabled {
+		roomMap := matrix.BuildRoomProjectMap(cfg)
+		if len(roomMap) == 0 {
+			logger.Warn("matrix polling enabled but no room mapping is configured")
+		}
+		matrixClient := matrix.NewOpenClawClient(nil, cfg.Matrix.ReadLimit)
+		matrixPoller := matrix.NewPoller(matrix.PollerConfig{
+			Enabled:       cfg.Matrix.Enabled,
+			PollInterval:  cfg.Matrix.PollInterval.Duration,
+			BotUser:       cfg.Matrix.BotUser,
+			RoomToProject: roomMap,
+		}, matrixClient, d, logger.With("component", "matrix"))
+		go matrixPoller.Run(ctx)
+	}
 
 	// Start API server with scheduler reference
 	apiSrv, err := api.NewServer(cfg, st, rl, sched, d, logger.With("component", "api"))

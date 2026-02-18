@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,9 +38,11 @@ type Config struct {
 	Providers  map[string]Provider       `toml:"providers"`
 	Tiers      Tiers                     `toml:"tiers"`
 	Workflows  map[string]WorkflowConfig `toml:"workflows"`
+	Cadence    Cadence                   `toml:"cadence"`
 	Health     Health                    `toml:"health"`
 	Reporter   Reporter                  `toml:"reporter"`
 	Learner    Learner                   `toml:"learner"`
+	Matrix     Matrix                    `toml:"matrix"`
 	API        API                       `toml:"api"`
 	Dispatch   Dispatch                  `toml:"dispatch"`
 	Chief      Chief                     `toml:"chief"`
@@ -55,6 +58,14 @@ type General struct {
 	DispatchCooldown Duration `toml:"dispatch_cooldown"`
 	LogLevel         string   `toml:"log_level"`
 	StateDB          string   `toml:"state_db"`
+}
+
+// Cadence defines shared sprint cadence across all projects.
+type Cadence struct {
+	SprintLength    string `toml:"sprint_length"`     // e.g. 1w, 2w
+	SprintStartDay  string `toml:"sprint_start_day"`  // e.g. Monday
+	SprintStartTime string `toml:"sprint_start_time"` // HH:MM 24h
+	Timezone        string `toml:"timezone"`          // IANA timezone (e.g. UTC)
 }
 
 type Project struct {
@@ -136,6 +147,14 @@ type Learner struct {
 	AnalysisWindow  Duration `toml:"analysis_window"`
 	CycleInterval   Duration `toml:"cycle_interval"`
 	IncludeInDigest bool     `toml:"include_in_digest"`
+}
+
+// Matrix configures inbound Matrix polling for scrum master routing.
+type Matrix struct {
+	Enabled      bool     `toml:"enabled"`
+	PollInterval Duration `toml:"poll_interval"`
+	BotUser      string   `toml:"bot_user"`
+	ReadLimit    int      `toml:"read_limit"`
 }
 
 type API struct {
@@ -257,6 +276,20 @@ func applyDefaults(cfg *Config) {
 		cfg.RateLimits.WeeklyHeadroomPct = 80
 	}
 
+	// Cadence defaults
+	if cfg.Cadence.SprintLength == "" {
+		cfg.Cadence.SprintLength = "1w"
+	}
+	if cfg.Cadence.SprintStartDay == "" {
+		cfg.Cadence.SprintStartDay = "Monday"
+	}
+	if cfg.Cadence.SprintStartTime == "" {
+		cfg.Cadence.SprintStartTime = "09:00"
+	}
+	if cfg.Cadence.Timezone == "" {
+		cfg.Cadence.Timezone = "UTC"
+	}
+
 	// Dispatch timeouts
 	if cfg.Dispatch.Timeouts.Fast.Duration == 0 {
 		cfg.Dispatch.Timeouts.Fast.Duration = 15 * time.Minute
@@ -312,6 +345,14 @@ func applyDefaults(cfg *Config) {
 	}
 	// Enabled defaults to false - must be explicitly enabled
 	// IncludeInDigest defaults to false
+
+	// Matrix polling defaults
+	if cfg.Matrix.PollInterval.Duration == 0 {
+		cfg.Matrix.PollInterval.Duration = 30 * time.Second
+	}
+	if cfg.Matrix.ReadLimit == 0 {
+		cfg.Matrix.ReadLimit = 25
+	}
 
 	// Project branch defaults
 	for name, project := range cfg.Projects {
@@ -398,6 +439,10 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("at least one project must be enabled")
 	}
 
+	if err := validateCadenceConfig(cfg.Cadence); err != nil {
+		return fmt.Errorf("cadence config: %w", err)
+	}
+
 	if cfg.Workflows != nil {
 		if len(cfg.Workflows) == 0 {
 			return fmt.Errorf("workflows section exists but defines no workflows")
@@ -478,6 +523,16 @@ func validate(cfg *Config) error {
 		}
 	}
 
+	// Validate Matrix polling configuration
+	if cfg.Matrix.Enabled {
+		if cfg.Matrix.PollInterval.Duration <= 0 {
+			return fmt.Errorf("matrix.poll_interval must be > 0")
+		}
+		if cfg.Matrix.ReadLimit <= 0 {
+			return fmt.Errorf("matrix.read_limit must be > 0")
+		}
+	}
+
 	// Validate dispatch CLI configuration
 	if err := ValidateDispatchConfig(cfg); err != nil {
 		return fmt.Errorf("dispatch configuration: %w", err)
@@ -549,6 +604,119 @@ func (cfg *Config) MissingProjectRoomRouting() []string {
 	}
 	sort.Strings(missing)
 	return missing
+}
+
+// SprintLengthDuration parses cadence sprint_length (supports "1w", "2w", and time.ParseDuration formats).
+func (c Cadence) SprintLengthDuration() (time.Duration, error) {
+	return parseSprintLength(c.SprintLength)
+}
+
+// StartWeekday parses cadence sprint_start_day.
+func (c Cadence) StartWeekday() (time.Weekday, error) {
+	return parseWeekday(c.SprintStartDay)
+}
+
+// StartClock parses cadence sprint_start_time as HH:MM.
+func (c Cadence) StartClock() (int, int, error) {
+	return parseClock(c.SprintStartTime)
+}
+
+// LoadLocation parses cadence timezone.
+func (c Cadence) LoadLocation() (*time.Location, error) {
+	tz := strings.TrimSpace(c.Timezone)
+	if tz == "" {
+		tz = "UTC"
+	}
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		return nil, fmt.Errorf("invalid timezone %q: %w", tz, err)
+	}
+	return loc, nil
+}
+
+func validateCadenceConfig(c Cadence) error {
+	length, err := c.SprintLengthDuration()
+	if err != nil {
+		return fmt.Errorf("invalid sprint_length: %w", err)
+	}
+	if length < 24*time.Hour {
+		return fmt.Errorf("sprint_length must be at least 24h")
+	}
+	if length%(24*time.Hour) != 0 {
+		return fmt.Errorf("sprint_length must be an exact multiple of 24h")
+	}
+	if _, err := c.StartWeekday(); err != nil {
+		return fmt.Errorf("invalid sprint_start_day: %w", err)
+	}
+	if _, _, err := c.StartClock(); err != nil {
+		return fmt.Errorf("invalid sprint_start_time: %w", err)
+	}
+	if _, err := c.LoadLocation(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func parseSprintLength(raw string) (time.Duration, error) {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	if value == "" {
+		return 0, fmt.Errorf("empty sprint length")
+	}
+	if strings.HasSuffix(value, "w") {
+		weeksRaw := strings.TrimSpace(strings.TrimSuffix(value, "w"))
+		weeks, err := strconv.Atoi(weeksRaw)
+		if err != nil || weeks <= 0 {
+			return 0, fmt.Errorf("invalid week length %q", raw)
+		}
+		return time.Duration(weeks) * 7 * 24 * time.Hour, nil
+	}
+	length, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, err
+	}
+	return length, nil
+}
+
+func parseWeekday(raw string) (time.Weekday, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "monday":
+		return time.Monday, nil
+	case "tuesday":
+		return time.Tuesday, nil
+	case "wednesday":
+		return time.Wednesday, nil
+	case "thursday":
+		return time.Thursday, nil
+	case "friday":
+		return time.Friday, nil
+	case "saturday":
+		return time.Saturday, nil
+	case "sunday":
+		return time.Sunday, nil
+	default:
+		return time.Sunday, fmt.Errorf("must be one of Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday")
+	}
+}
+
+func parseClock(raw string) (int, int, error) {
+	value := strings.TrimSpace(raw)
+	if len(value) != 5 || value[2] != ':' {
+		return 0, 0, fmt.Errorf("must be in HH:MM format")
+	}
+	hourRaw := value[:2]
+	minuteRaw := value[3:]
+	hour, err := strconv.Atoi(hourRaw)
+	if err != nil {
+		return 0, 0, fmt.Errorf("hour must be numeric")
+	}
+	minute, err := strconv.Atoi(minuteRaw)
+	if err != nil {
+		return 0, 0, fmt.Errorf("minute must be numeric")
+	}
+	if hour < 0 || hour > 23 || minute < 0 || minute > 59 {
+		return 0, 0, fmt.Errorf("hour must be 00-23 and minute must be 00-59")
+	}
+	return hour, minute, nil
 }
 
 // validateSprintPlanningConfig validates sprint planning configuration for a project.

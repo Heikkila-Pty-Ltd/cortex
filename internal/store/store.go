@@ -68,6 +68,15 @@ type TickMetric struct {
 	Stuck      int
 }
 
+// SprintBoundary tracks normalized sprint windows for shared cadence.
+type SprintBoundary struct {
+	ID           int64
+	SprintNumber int
+	SprintStart  time.Time
+	SprintEnd    time.Time
+	CreatedAt    time.Time
+}
+
 // DispatchOutput represents captured output from an agent dispatch.
 type DispatchOutput struct {
 	ID          int64
@@ -212,12 +221,22 @@ CREATE TABLE IF NOT EXISTS claim_leases (
 	heartbeat_at DATETIME NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS sprint_boundaries (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	sprint_number INTEGER NOT NULL UNIQUE,
+	sprint_start DATETIME NOT NULL,
+	sprint_end DATETIME NOT NULL,
+	created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bead_stages_project_bead ON bead_stages(project, bead_id);
 CREATE INDEX IF NOT EXISTS idx_bead_stages_project_stage ON bead_stages(project, current_stage);
 CREATE INDEX IF NOT EXISTS idx_dispatches_status ON dispatches(status);
 CREATE INDEX IF NOT EXISTS idx_dispatches_bead ON dispatches(bead_id);
 CREATE INDEX IF NOT EXISTS idx_claim_leases_project ON claim_leases(project);
 CREATE INDEX IF NOT EXISTS idx_claim_leases_heartbeat ON claim_leases(heartbeat_at);
+CREATE INDEX IF NOT EXISTS idx_sprint_boundaries_start ON sprint_boundaries(sprint_start);
+CREATE INDEX IF NOT EXISTS idx_sprint_boundaries_end ON sprint_boundaries(sprint_end);
 CREATE INDEX IF NOT EXISTS idx_usage_provider ON provider_usage(provider, dispatched_at);
 CREATE INDEX IF NOT EXISTS idx_dispatch_output_dispatch ON dispatch_output(dispatch_id);
 `
@@ -443,6 +462,23 @@ func migrate(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_claim_leases_heartbeat ON claim_leases(heartbeat_at)`); err != nil {
 		return fmt.Errorf("create claim_leases heartbeat index: %w", err)
+	}
+
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS sprint_boundaries (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			sprint_number INTEGER NOT NULL UNIQUE,
+			sprint_start DATETIME NOT NULL,
+			sprint_end DATETIME NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT (datetime('now'))
+		)`); err != nil {
+		return fmt.Errorf("create sprint_boundaries table: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_sprint_boundaries_start ON sprint_boundaries(sprint_start)`); err != nil {
+		return fmt.Errorf("create sprint_boundaries start index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_sprint_boundaries_end ON sprint_boundaries(sprint_end)`); err != nil {
+		return fmt.Errorf("create sprint_boundaries end index: %w", err)
 	}
 
 	if err := migrateBeadStagesTable(db); err != nil {
@@ -1023,6 +1059,47 @@ func (s *Store) RecordTickMetrics(project string, open, ready, dispatched, compl
 	return nil
 }
 
+// RecordSprintBoundary upserts a sprint boundary window keyed by sprint number.
+func (s *Store) RecordSprintBoundary(sprintNumber int, sprintStart, sprintEnd time.Time) error {
+	if sprintNumber <= 0 {
+		return fmt.Errorf("store: record sprint boundary: sprint number must be > 0")
+	}
+	if !sprintEnd.After(sprintStart) {
+		return fmt.Errorf("store: record sprint boundary: sprint_end must be after sprint_start")
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO sprint_boundaries (sprint_number, sprint_start, sprint_end)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(sprint_number) DO UPDATE SET sprint_start=excluded.sprint_start, sprint_end=excluded.sprint_end`,
+		sprintNumber,
+		sprintStart.UTC().Format(time.DateTime),
+		sprintEnd.UTC().Format(time.DateTime),
+	)
+	if err != nil {
+		return fmt.Errorf("store: record sprint boundary: %w", err)
+	}
+	return nil
+}
+
+// GetCurrentSprintNumber returns the current sprint number based on now and recorded boundaries.
+func (s *Store) GetCurrentSprintNumber() (int, error) {
+	var sprintNumber int
+	err := s.db.QueryRow(
+		`SELECT sprint_number
+		 FROM sprint_boundaries
+		 WHERE sprint_start <= datetime('now') AND sprint_end > datetime('now')
+		 ORDER BY sprint_number DESC
+		 LIMIT 1`,
+	).Scan(&sprintNumber)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("store: get current sprint number: %w", err)
+	}
+	return sprintNumber, nil
+}
+
 // GetRecentHealthEvents returns health events from the last N hours.
 func (s *Store) GetRecentHealthEvents(hours int) ([]HealthEvent, error) {
 	rows, err := s.db.Query(
@@ -1420,4 +1497,57 @@ func (s *Store) GetBeadStagesByBeadIDOnly(beadID string) ([]*BeadStage, error) {
 	}
 
 	return stages, nil
+}
+
+// ProviderStat holds basic performance statistics for a provider within a time window.
+type ProviderStat struct {
+	Provider      string
+	Total         int
+	Successes     int
+	TotalDuration float64
+}
+
+// GetProviderStats returns provider performance statistics within the time window.
+func (s *Store) GetProviderStats(window time.Duration) (map[string]ProviderStat, error) {
+	cutoff := time.Now().Add(-window).UTC().Format(time.DateTime)
+
+	rows, err := s.db.Query(`
+		SELECT provider, status, duration_s 
+		FROM dispatches 
+		WHERE dispatched_at > ? 
+		ORDER BY dispatched_at DESC`,
+		cutoff,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query provider stats: %w", err)
+	}
+	defer rows.Close()
+
+	stats := make(map[string]ProviderStat)
+
+	for rows.Next() {
+		var provider, status string
+		var duration float64
+		if err := rows.Scan(&provider, &status, &duration); err != nil {
+			return nil, fmt.Errorf("store: scan provider stats: %w", err)
+		}
+
+		stat := stats[provider]
+		stat.Provider = provider
+		stat.Total++
+		stat.TotalDuration += duration
+
+		// Count completed dispatches as successes
+		if status == "completed" {
+			stat.Successes++
+		}
+
+		stats[provider] = stat
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: provider stats rows: %w", err)
+	}
+
+	return stats, nil
 }

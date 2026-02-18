@@ -61,7 +61,7 @@ func (c *Chief) ShouldRunCeremony(ctx context.Context, schedule CeremonySchedule
 	}
 
 	now := time.Now()
-	
+
 	// Check if we've already checked recently (within last hour to avoid spam)
 	if now.Sub(schedule.LastChecked) < time.Hour {
 		return false
@@ -73,23 +73,23 @@ func (c *Chief) ShouldRunCeremony(ctx context.Context, schedule CeremonySchedule
 	}
 
 	// Check if we're past the target time today
-	targetTime := time.Date(now.Year(), now.Month(), now.Day(), 
+	targetTime := time.Date(now.Year(), now.Month(), now.Day(),
 		schedule.TimeOfDay.Hour(), schedule.TimeOfDay.Minute(), 0, 0, now.Location())
 	if now.Before(targetTime) {
 		return false
 	}
 
 	// Check if we already ran today
-	if schedule.LastRan.Year() == now.Year() && 
+	if schedule.LastRan.Year() == now.Year() &&
 		schedule.LastRan.YearDay() == now.YearDay() {
 		return false
 	}
 
-	c.logger.Info("ceremony should run", 
+	c.logger.Info("ceremony should run",
 		"type", schedule.Type,
 		"target_time", targetTime.Format("15:04"),
 		"current_time", now.Format("15:04"))
-	
+
 	return true
 }
 
@@ -103,14 +103,14 @@ func (c *Chief) RunMultiTeamPlanning(ctx context.Context) error {
 
 	// Create a ceremony dispatch bead to track this work
 	ceremonyBead := c.createCeremonyBead("Multi-team sprint planning ceremony")
-	
+
 	// Dispatch the Chief SM with portfolio context
 	dispatchID, err := c.dispatchChiefSM(ctx, ceremonyBead, "sprint_planning_multi")
 	if err != nil {
 		return fmt.Errorf("failed to dispatch chief sm: %w", err)
 	}
 
-	c.logger.Info("multi-team planning ceremony dispatched", 
+	c.logger.Info("multi-team planning ceremony dispatched",
 		"dispatch_id", dispatchID,
 		"bead_id", ceremonyBead.ID)
 
@@ -122,14 +122,14 @@ func (c *Chief) RunMultiTeamPlanning(ctx context.Context) error {
 
 // monitorCeremonyCompletion monitors a ceremony dispatch and processes results when complete
 func (c *Chief) monitorCeremonyCompletion(ctx context.Context, ceremonyID string, dispatchID int64) {
-	c.logger.Info("monitoring ceremony completion", 
+	c.logger.Info("monitoring ceremony completion",
 		"ceremony_id", ceremonyID,
 		"dispatch_id", dispatchID)
 
 	// Poll for completion (in production, this would use event-driven completion)
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
-	
+
 	timeout := time.NewTimer(2 * time.Hour) // Max ceremony duration
 	defer timeout.Stop()
 
@@ -144,18 +144,18 @@ func (c *Chief) monitorCeremonyCompletion(ctx context.Context, ceremonyID string
 		case <-ticker.C:
 			dispatch, err := c.store.GetDispatchByID(dispatchID)
 			if err != nil {
-				c.logger.Error("failed to check ceremony dispatch status", 
-					"ceremony_id", ceremonyID, 
+				c.logger.Error("failed to check ceremony dispatch status",
+					"ceremony_id", ceremonyID,
 					"dispatch_id", dispatchID,
 					"error", err)
 				continue
 			}
 
 			if dispatch.Status == "completed" {
-				c.logger.Info("ceremony completed, processing results", 
+				c.logger.Info("ceremony completed, processing results",
 					"ceremony_id", ceremonyID,
 					"dispatch_id", dispatchID)
-				
+
 				if err := c.processCeremonyResults(ctx, ceremonyID, dispatchID); err != nil {
 					c.logger.Error("failed to process ceremony results",
 						"ceremony_id", ceremonyID,
@@ -182,7 +182,7 @@ func (c *Chief) processCeremonyResults(ctx context.Context, ceremonyID string, d
 		return fmt.Errorf("get ceremony output: %w", err)
 	}
 
-	c.logger.Debug("processing ceremony output", 
+	c.logger.Debug("processing ceremony output",
 		"ceremony_id", ceremonyID,
 		"output_length", len(output))
 
@@ -257,9 +257,9 @@ func (c *Chief) dispatchChiefSM(ctx context.Context, bead beads.Bead, promptTemp
 		-1,        // handle (will be set by dispatcher)
 		"",        // session name (will be set by dispatcher)
 		prompt,
-		"",        // log path (will be set by dispatcher)
-		"",        // branch (not used for ceremonies)
-		"tmux",    // backend
+		"",     // log path (will be set by dispatcher)
+		"",     // branch (not used for ceremonies)
+		"tmux", // backend
 	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to record ceremony dispatch: %w", err)
@@ -272,7 +272,7 @@ func (c *Chief) dispatchChiefSM(ctx context.Context, bead beads.Bead, promptTemp
 		return 0, fmt.Errorf("failed to dispatch ceremony: %w", err)
 	}
 
-	c.logger.Info("ceremony dispatch successful", 
+	c.logger.Info("ceremony dispatch successful",
 		"dispatch_id", dispatchID,
 		"handle", handle,
 		"provider", provider)
@@ -294,7 +294,7 @@ func (c *Chief) buildCeremonyPrompt(ctx context.Context, template string) string
 func (c *Chief) buildMultiTeamPlanningPrompt(ctx context.Context) string {
 	// **GATHER PORTFOLIO CONTEXT** - This is the missing integration!
 	c.logger.Info("gathering portfolio context for multi-team planning")
-	
+
 	portfolioData, err := portfolio.GatherPortfolioBacklogs(ctx, c.cfg, c.logger)
 	if err != nil {
 		c.logger.Error("failed to gather portfolio backlogs", "error", err)
@@ -331,7 +331,7 @@ You are the **Chief Scrum Master** conducting a unified sprint planning across a
 		if backlog, exists := portfolioData.ProjectBacklogs[projectName]; exists {
 			budget := portfolioData.CapacityBudgets[projectName]
 			promptBuilder += fmt.Sprintf("- **%s** (Priority %d, Budget: %d%%): %d beads (%d ready), ~%d min\n",
-				projectName, backlog.Priority, budget, len(backlog.AllBeads), 
+				projectName, backlog.Priority, budget, len(backlog.AllBeads),
 				len(backlog.ReadyToWork), backlog.TotalEstimate)
 		}
 	}
@@ -416,13 +416,37 @@ Execute the full ceremony workflow now.`
 
 // GetMultiTeamPlanningSchedule returns the default schedule for multi-team planning
 func (c *Chief) GetMultiTeamPlanningSchedule() CeremonySchedule {
-	// Default: Monday at 9:00 AM (before per-project planning)
-	targetTime := time.Date(0, 1, 1, 9, 0, 0, 0, time.UTC)
-	
+	// Default: Monday at 9:00 AM (before per-project planning), overridden by shared cadence.
+	weekday := time.Monday
+	hour := 9
+	minute := 0
+	loc := time.UTC
+
+	if c.cfg != nil {
+		if parsedDay, err := c.cfg.Cadence.StartWeekday(); err == nil {
+			weekday = parsedDay
+		} else {
+			c.logger.Warn("invalid cadence sprint_start_day; using default Monday", "error", err)
+		}
+		if parsedHour, parsedMinute, err := c.cfg.Cadence.StartClock(); err == nil {
+			hour = parsedHour
+			minute = parsedMinute
+		} else {
+			c.logger.Warn("invalid cadence sprint_start_time; using default 09:00", "error", err)
+		}
+		if parsedLoc, err := c.cfg.Cadence.LoadLocation(); err == nil {
+			loc = parsedLoc
+		} else {
+			c.logger.Warn("invalid cadence timezone; using UTC", "error", err)
+		}
+	}
+
+	targetTime := time.Date(0, 1, 1, hour, minute, 0, 0, loc)
+
 	return CeremonySchedule{
 		Type:      CeremonyMultiTeamPlanning,
 		Cadence:   24 * time.Hour, // Check daily
-		DayOfWeek: time.Monday,
+		DayOfWeek: weekday,
 		TimeOfDay: targetTime,
 	}
 }

@@ -1,7 +1,7 @@
-timestamp: 2026-02-18T10:05:46+10:00
+timestamp: 2026-02-18T10:26:28+10:00
 open_auto_bugs: 0
 running_count: 2
-failed_15m: 8
+failed_15m: 7
 claim_leases_total: 0
 claim_leases_unbound: 0
 claim_leases_expired_4m: 0

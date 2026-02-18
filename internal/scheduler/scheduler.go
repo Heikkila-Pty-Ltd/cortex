@@ -43,6 +43,10 @@ type Scheduler struct {
 	ceremonyScheduler   *CeremonyScheduler
 	completionVerifier  *CompletionVerifier
 	lastCompletionCheck time.Time
+	
+	// Provider performance profiling
+	profiles             map[string]learner.ProviderProfile
+	lastProfileRebuild   time.Time
 }
 
 const (
@@ -57,6 +61,9 @@ const (
 	epicBreakdownInterval   = 6 * time.Hour
 	epicBreakdownTitleStart = "Auto: break down epic "
 	epicBreakdownTitleEnd   = " into executable bug/task beads"
+	
+	profileRebuildInterval = 24 * time.Hour  // Rebuild profiles daily
+	profileStatsWindow     = 7 * 24 * time.Hour  // Look back 7 days for stats
 
 	// Completion verification settings
 	completionCheckInterval = 2 * time.Hour // Check for completed beads every 2 hours
@@ -193,6 +200,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 	}
 
 	s.logger.Info("tick started")
+
+	// Rebuild provider profiles periodically
+	s.rebuildProfilesIfNeeded()
 
 	// Check running dispatches first
 	s.checkRunningDispatches(ctx)
@@ -351,7 +361,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		currentTier := tier
 		tried := map[string]bool{tier: true}
 		for {
-			provider = s.rateLimiter.PickProvider(currentTier, s.cfg.Providers, s.cfg.Tiers)
+			provider = s.pickProviderWithProfileFiltering(currentTier, item.bead)
 			if provider != nil {
 				break
 			}
@@ -2080,4 +2090,103 @@ func isTerminalDispatchStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+// rebuildProfilesIfNeeded rebuilds provider performance profiles periodically.
+func (s *Scheduler) rebuildProfilesIfNeeded() {
+	now := time.Now()
+	
+	// Initialize if this is the first run
+	if s.profiles == nil {
+		s.profiles = make(map[string]learner.ProviderProfile)
+	}
+	
+	// Only rebuild if enough time has passed
+	if !s.lastProfileRebuild.IsZero() && now.Sub(s.lastProfileRebuild) < profileRebuildInterval {
+		return
+	}
+	
+	s.lastProfileRebuild = now
+	s.logger.Debug("rebuilding provider profiles")
+	
+	// Build new profiles from dispatch history
+	newProfiles, err := learner.BuildProviderProfiles(s.store, profileStatsWindow)
+	if err != nil {
+		s.logger.Error("failed to rebuild provider profiles", "error", err)
+		return
+	}
+	
+	s.profiles = newProfiles
+	
+	// Log detected weaknesses for visibility
+	weaknesses := learner.DetectWeaknesses(s.profiles)
+	if len(weaknesses) > 0 {
+		s.logger.Info("detected provider weaknesses", "count", len(weaknesses))
+		for _, w := range weaknesses {
+			s.logger.Debug("weak provider", 
+				"provider", w.Provider,
+				"label", w.Label,
+				"failure_rate", w.FailureRate,
+				"samples", w.SampleSize,
+				"suggestion", w.Suggestion)
+		}
+	} else {
+		s.logger.Debug("no provider weaknesses detected")
+	}
+}
+
+// pickProviderWithProfileFiltering applies profile-aware filtering before provider selection.
+func (s *Scheduler) pickProviderWithProfileFiltering(tier string, bead beads.Bead) *config.Provider {
+	// Get all provider names for this tier
+	var tierProviders []string
+	switch tier {
+	case "fast":
+		tierProviders = s.cfg.Tiers.Fast
+	case "balanced":
+		tierProviders = s.cfg.Tiers.Balanced
+	case "premium":
+		tierProviders = s.cfg.Tiers.Premium
+	default:
+		tierProviders = s.cfg.Tiers.Balanced
+	}
+	
+	// Apply profile-aware filtering
+	filteredProviders := learner.ApplyProfileToTierSelection(s.profiles, bead, tierProviders)
+	
+	// Log if filtering occurred
+	if len(filteredProviders) < len(tierProviders) {
+		filtered := len(tierProviders) - len(filteredProviders)
+		s.logger.Debug("filtered weak providers", 
+			"bead", bead.ID,
+			"tier", tier,
+			"original_count", len(tierProviders),
+			"filtered_count", filtered,
+			"remaining", len(filteredProviders))
+	}
+	
+	// Use filtered providers with rate limiter
+	return s.pickProviderFromCandidates(tier, filteredProviders)
+}
+
+// pickProviderFromCandidates selects a provider from the filtered candidate list, respecting rate limits.
+func (s *Scheduler) pickProviderFromCandidates(tier string, candidates []string) *config.Provider {
+	for _, name := range candidates {
+		p, ok := s.cfg.Providers[name]
+		if !ok {
+			continue
+		}
+
+		// Free-tier providers bypass rate limits
+		if !p.Authed {
+			return &p
+		}
+
+		// Check authed gates
+		canDispatch, _ := s.rateLimiter.CanDispatchAuthed()
+		if canDispatch {
+			return &p
+		}
+	}
+	
+	return nil
 }

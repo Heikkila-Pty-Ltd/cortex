@@ -1,10 +1,10 @@
-timestamp: 2026-02-18T10:03:09+10:00
-running_count: 1
-completed_15m: 5
-failed_15m: 7
+timestamp: 2026-02-18T10:18:10+10:00
+running_count: 3
+completed_15m: 6
+failed_15m: 5
 cancelled_15m: 0
-usage_5h: 120/150
-usage_weekly: 340/2000
+usage_5h: 133/150
+usage_weekly: 353/2000
 claim_leases_total: 0
 claim_leases_unbound: 0
 claim_leases_expired_4m: 0
@@ -13,5 +13,4 @@ claim_leases_terminal_dispatch: 0
 gateway_closed_2m: 0
 top_failures_15m:
 gateway connect failed: Error: gateway closed (1000): x4
-<none> x2
---- FAIL: TestBuildPromptWithRole (0.00s) x1
+<none> x1

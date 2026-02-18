@@ -77,3 +77,5 @@
 [2026-02-18T10:03:08+10:00] Repeated failure signature 4x/15m: gateway connect failed: Error: gateway closed (1000):
 [2026-02-18T10:03:08+10:00] Repeated failure signature 2x/15m: <none>
 [2026-02-18T10:05:45+10:00] codex-worker escalation completed for cortex-ijz
+[2026-02-18T10:18:10+10:00] Repeated failure signature 4x/15m: gateway connect failed: Error: gateway closed (1000):
+[2026-02-18T10:21:27+10:00] codex-worker escalation completed for cortex-nc6

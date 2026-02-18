@@ -728,29 +728,49 @@ func SessionStatus(sessionName string) (status string, exitCode int) {
 		return "gone", -1
 	}
 
-	out, err := exec.Command(
-		"tmux", "display-message",
-		"-t", sessionName,
-		"-p", "#{pane_dead} #{pane_dead_status}",
-	).Output()
-	if err != nil {
-		// Session exists but we cannot query it — treat as running.
-		return "running", 0
-	}
+	// Retry logic to handle tmux race where pane becomes dead but exit status isn't immediately available
+	maxRetries := 3
+	retryDelay := 10 * time.Millisecond
 
-	fields := strings.Fields(strings.TrimSpace(string(out)))
-	if len(fields) == 0 {
-		return "running", 0
-	}
-
-	paneDead := fields[0]
-	if paneDead == "1" {
-		code := -1
-		if len(fields) >= 2 {
-			code, _ = strconv.Atoi(fields[1])
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		out, err := exec.Command(
+			"tmux", "display-message",
+			"-t", sessionName,
+			"-p", "#{pane_dead} #{pane_dead_status}",
+		).Output()
+		if err != nil {
+			// Session exists but we cannot query it — treat as running.
+			return "running", 0
 		}
-		return "exited", code
+
+		fields := strings.Fields(strings.TrimSpace(string(out)))
+		if len(fields) == 0 {
+			return "running", 0
+		}
+
+		paneDead := fields[0]
+		if paneDead == "1" {
+			// Pane is dead - check if we have the exit status
+			if len(fields) >= 2 {
+				if code, err := strconv.Atoi(fields[1]); err == nil {
+					return "exited", code
+				}
+			}
+			
+			// Pane is dead but no valid exit status - retry unless this is the last attempt
+			if attempt < maxRetries-1 {
+				time.Sleep(retryDelay)
+				continue
+			} else {
+				// Last attempt failed - return what we have (this shouldn't happen in normal cases)
+				return "exited", -1
+			}
+		}
+		
+		// Pane is not dead yet
+		return "running", 0
 	}
+	
 	return "running", 0
 }
 

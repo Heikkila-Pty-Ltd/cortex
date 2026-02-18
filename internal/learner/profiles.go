@@ -1,6 +1,7 @@
 package learner
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/antigravity-dev/cortex/internal/beads"
@@ -38,12 +39,39 @@ type Weakness struct {
 }
 
 // BuildProviderProfiles aggregates stats across all projects within the time window.
-// Returns empty profiles if dispatch history lacks label data (prerequisite task not complete).
+// Returns basic provider profiles with available data. Label/type stats will be populated
+// once cortex-xhk.5.1 adds label tracking to dispatches table.
 func BuildProviderProfiles(store *store.Store, window time.Duration) (map[string]ProviderProfile, error) {
 	profiles := make(map[string]ProviderProfile)
 	
-	// TODO: This will be implemented once cortex-xhk.5.1 adds label tracking to dispatches
-	// For now, return empty profiles to avoid errors during integration
+	// Get provider statistics from recent dispatches
+	stats, err := store.GetProviderStats(window)
+	if err != nil {
+		return nil, fmt.Errorf("get provider stats: %w", err)
+	}
+	
+	// Build provider profiles from stats
+	for provider, stat := range stats {
+		var successRate float64
+		if stat.Total > 0 {
+			successRate = float64(stat.Successes) / float64(stat.Total)
+		}
+		
+		var avgDuration float64
+		if stat.Total > 0 {
+			avgDuration = stat.TotalDuration / float64(stat.Total)
+		}
+		
+		profiles[provider] = ProviderProfile{
+			Provider:        provider,
+			TotalDispatches: stat.Total,
+			SuccessRate:     successRate,
+			AvgDuration:     avgDuration,
+			// Label and type stats will be populated once cortex-xhk.5.1 is complete
+			LabelStats: make(map[string]LabelPerformance),
+			TypeStats:  make(map[string]LabelPerformance),
+		}
+	}
 	
 	return profiles, nil
 }

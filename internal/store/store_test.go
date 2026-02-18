@@ -1166,3 +1166,49 @@ func TestBeadStagesAmbiguousLookup(t *testing.T) {
 		t.Errorf("wrong project returned: expected 'proj-1', got '%s'", single.Project)
 	}
 }
+
+func TestSprintBoundariesRecordAndGetCurrentSprintNumber(t *testing.T) {
+	s := tempStore(t)
+	now := time.Now().UTC()
+
+	// Historical sprint
+	if err := s.RecordSprintBoundary(1, now.AddDate(0, 0, -21), now.AddDate(0, 0, -14)); err != nil {
+		t.Fatalf("RecordSprintBoundary sprint 1 failed: %v", err)
+	}
+	// Active sprint
+	if err := s.RecordSprintBoundary(2, now.AddDate(0, 0, -1), now.AddDate(0, 0, 6)); err != nil {
+		t.Fatalf("RecordSprintBoundary sprint 2 failed: %v", err)
+	}
+
+	current, err := s.GetCurrentSprintNumber()
+	if err != nil {
+		t.Fatalf("GetCurrentSprintNumber failed: %v", err)
+	}
+	if current != 2 {
+		t.Fatalf("expected current sprint 2, got %d", current)
+	}
+
+	// Move sprint 2 fully to the past and verify no active sprint.
+	if err := s.RecordSprintBoundary(2, now.AddDate(0, 0, -14), now.AddDate(0, 0, -7)); err != nil {
+		t.Fatalf("RecordSprintBoundary update failed: %v", err)
+	}
+	current, err = s.GetCurrentSprintNumber()
+	if err != nil {
+		t.Fatalf("GetCurrentSprintNumber after update failed: %v", err)
+	}
+	if current != 0 {
+		t.Fatalf("expected no current sprint (0), got %d", current)
+	}
+}
+
+func TestSprintBoundariesRejectInvalidInput(t *testing.T) {
+	s := tempStore(t)
+	now := time.Now().UTC()
+
+	if err := s.RecordSprintBoundary(0, now, now.Add(24*time.Hour)); err == nil {
+		t.Fatal("expected error for sprint number <= 0")
+	}
+	if err := s.RecordSprintBoundary(1, now, now); err == nil {
+		t.Fatal("expected error for sprint end <= sprint start")
+	}
+}

@@ -1,9 +1,12 @@
 package learner
 
 import (
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/antigravity-dev/cortex/internal/beads"
+	"github.com/antigravity-dev/cortex/internal/store"
 )
 
 func TestApplyProfileToTierSelection_NoProfiles(t *testing.T) {
@@ -243,4 +246,87 @@ func TestDetectWeaknesses_InsufficientSamples(t *testing.T) {
 	if len(weaknesses) != 0 {
 		t.Errorf("expected 0 weaknesses, got %d", len(weaknesses))
 	}
+}
+
+func TestBuildProviderProfiles(t *testing.T) {
+	// This test uses a minimal in-memory store
+	// The actual integration will be tested through the store package
+	store, cleanup := createTestStore(t)
+	defer cleanup()
+
+	// Record some dispatches
+	_, err := store.RecordDispatch("bead-1", "test-project", "agent-1", "openai", "fast", 123, "session-1", "prompt", "", "", "")
+	if err != nil {
+		t.Fatalf("failed to record dispatch: %v", err)
+	}
+
+	_, err = store.RecordDispatch("bead-2", "test-project", "agent-1", "anthropic", "fast", 124, "session-2", "prompt", "", "", "")
+	if err != nil {
+		t.Fatalf("failed to record dispatch: %v", err)
+	}
+
+	// Complete the first dispatch
+	if err := store.UpdateDispatchStatus(1, "completed", 0, 5.5); err != nil {
+		t.Fatalf("failed to complete dispatch: %v", err)
+	}
+
+	// Mark the second as failed
+	if err := store.UpdateDispatchStatus(2, "failed", 1, 2.5); err != nil {
+		t.Fatalf("failed to mark dispatch failed: %v", err)
+	}
+
+	// Build profiles
+	profiles, err := BuildProviderProfiles(store, time.Hour)
+	if err != nil {
+		t.Fatalf("BuildProviderProfiles failed: %v", err)
+	}
+
+	// Should have 2 providers
+	if len(profiles) != 2 {
+		t.Errorf("expected 2 providers, got %d", len(profiles))
+	}
+
+	// Check OpenAI profile
+	openaiProfile, exists := profiles["openai"]
+	if !exists {
+		t.Error("expected openai profile to exist")
+	} else {
+		if openaiProfile.TotalDispatches != 1 {
+			t.Errorf("expected 1 dispatch for openai, got %d", openaiProfile.TotalDispatches)
+		}
+		if openaiProfile.SuccessRate != 1.0 {
+			t.Errorf("expected 100%% success rate for openai, got %f", openaiProfile.SuccessRate)
+		}
+		if openaiProfile.AvgDuration != 5.5 {
+			t.Errorf("expected avg duration 5.5 for openai, got %f", openaiProfile.AvgDuration)
+		}
+	}
+
+	// Check Anthropic profile
+	anthropicProfile, exists := profiles["anthropic"]
+	if !exists {
+		t.Error("expected anthropic profile to exist")
+	} else {
+		if anthropicProfile.TotalDispatches != 1 {
+			t.Errorf("expected 1 dispatch for anthropic, got %d", anthropicProfile.TotalDispatches)
+		}
+		if anthropicProfile.SuccessRate != 0.0 {
+			t.Errorf("expected 0%% success rate for anthropic, got %f", anthropicProfile.SuccessRate)
+		}
+		if anthropicProfile.AvgDuration != 2.5 {
+			t.Errorf("expected avg duration 2.5 for anthropic, got %f", anthropicProfile.AvgDuration)
+		}
+	}
+}
+
+// createTestStore creates a temporary store for testing
+func createTestStore(t *testing.T) (*store.Store, func()) {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	cleanup := func() { s.Close() }
+	return s, cleanup
 }

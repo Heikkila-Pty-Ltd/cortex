@@ -2,3 +2,5 @@
 [2026-02-18T09:58:09+10:00] processing auto-issue cortex-ijz title=Auto: churn guard blocked bead cortex-xhk.8.1 (6 dispatches/1h0m0s)
 [2026-02-18T09:58:09+10:00] escalating issue cortex-ijz to codex model=gpt-5.3-codex timeout=1200s
 [2026-02-18T10:05:45+10:00] codex escalation completed for cortex-ijz
+[2026-02-18T10:15:48+10:00] processing auto-issue cortex-nc6 title=Auto: churn guard blocked bead cortex-xhk.8.1 (6 dispatches/1h0m0s)
+[2026-02-18T10:15:48+10:00] escalating issue cortex-nc6 to codex model=gpt-5.3-codex timeout=1200s
