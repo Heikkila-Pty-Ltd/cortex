@@ -47,6 +47,11 @@ View C: capacity worksheet (required)
 - Committed estimate (min)
 - Remaining capacity (min)
 
+View D: sprint buckets (required)
+- Selected IDs (ordered by execution/dependency)
+- Deferred IDs (with short reason)
+- Blocked IDs (with blocker owner)
+
 Digest rules:
 - Sort by priority (P0, then P1, then P2), while keeping dependency chains adjacent.
 - Refinement Status must be one of: ready, needs_acceptance, needs_design, needs_estimate, blocked.
@@ -56,6 +61,7 @@ Digest rules:
 - Add a short header before the table with total candidate count, ready count, blocked count, and key dependency chains.
 - Keep each row single-line and concise so the table is easy to scan in terminal output.
 - Capacity worksheet numbers must reconcile exactly (usable = total - buffer, remaining = usable - committed).
+- Sprint buckets must include every bead exactly once (selected, deferred, or blocked).
 
 ### 2. Refine, Estimate, and Clarify Candidates
 Use these commands while reviewing and refining beads:
@@ -73,6 +79,7 @@ bd update <id> --design="Implementation notes, affected files, risks"
 bd update <id> --estimate=<minutes>
 bd update <id> --priority=<0-2>
 bd update <id> --status=open
+bd update <id> --append-notes="Refinement summary + decisions"
 
 # Capture or correct dependencies as needed
 bd dep add <id> <depends-on-id>
@@ -150,6 +157,7 @@ Use this exact structure in your final output:
 - [Short summary of total candidates, ready count, blocked count, and key dependency chain]
 - [Stage summary: ready / needs refinement / blocked / missing estimates]
 - [Table pasted in compact form, grouped by priority]
+- [Sprint buckets: selected / deferred / blocked with IDs]
 - [Confirm every candidate bead is accounted for as selected/deferred/blocked]
 
 **Selected Beads:**
