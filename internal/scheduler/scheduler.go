@@ -43,10 +43,10 @@ type Scheduler struct {
 	ceremonyScheduler   *CeremonyScheduler
 	completionVerifier  *CompletionVerifier
 	lastCompletionCheck time.Time
-	
+
 	// Provider performance profiling
-	profiles             map[string]learner.ProviderProfile
-	lastProfileRebuild   time.Time
+	profiles           map[string]learner.ProviderProfile
+	lastProfileRebuild time.Time
 }
 
 const (
@@ -61,9 +61,9 @@ const (
 	epicBreakdownInterval   = 6 * time.Hour
 	epicBreakdownTitleStart = "Auto: break down epic "
 	epicBreakdownTitleEnd   = " into executable bug/task beads"
-	
-	profileRebuildInterval = 24 * time.Hour  // Rebuild profiles daily
-	profileStatsWindow     = 7 * 24 * time.Hour  // Look back 7 days for stats
+
+	profileRebuildInterval = 24 * time.Hour     // Rebuild profiles daily
+	profileStatsWindow     = 7 * 24 * time.Hour // Look back 7 days for stats
 
 	// Completion verification settings
 	completionCheckInterval = 2 * time.Hour // Check for completed beads every 2 hours
@@ -530,6 +530,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			}
 			releaseLock("dispatch_record_failed")
 			continue
+		}
+		if err := s.store.UpdateDispatchLabels(dispatchID, item.bead.Labels); err != nil {
+			s.logger.Warn("failed to record dispatch labels", "dispatch_id", dispatchID, "bead", item.bead.ID, "error", err)
 		}
 		if err := s.store.UpdateDispatchStage(dispatchID, "running"); err != nil {
 			s.logger.Warn("failed to set dispatch stage", "dispatch_id", dispatchID, "stage", "running", "error", err)
@@ -1660,6 +1663,9 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			s.logger.Error("failed to record retry dispatch", "bead", retry.BeadID, "error", err)
 			continue
 		}
+		if err := s.store.UpdateDispatchLabelsCSV(newDispatchID, retry.Labels); err != nil {
+			s.logger.Warn("failed to copy dispatch labels to retry", "dispatch_id", newDispatchID, "bead", retry.BeadID, "error", err)
+		}
 		if err := s.store.UpdateDispatchStage(newDispatchID, "running"); err != nil {
 			s.logger.Warn("failed to set retry dispatch stage", "dispatch_id", newDispatchID, "error", err)
 		}
@@ -2095,35 +2101,35 @@ func isTerminalDispatchStatus(status string) bool {
 // rebuildProfilesIfNeeded rebuilds provider performance profiles periodically.
 func (s *Scheduler) rebuildProfilesIfNeeded() {
 	now := time.Now()
-	
+
 	// Initialize if this is the first run
 	if s.profiles == nil {
 		s.profiles = make(map[string]learner.ProviderProfile)
 	}
-	
+
 	// Only rebuild if enough time has passed
 	if !s.lastProfileRebuild.IsZero() && now.Sub(s.lastProfileRebuild) < profileRebuildInterval {
 		return
 	}
-	
+
 	s.lastProfileRebuild = now
 	s.logger.Debug("rebuilding provider profiles")
-	
+
 	// Build new profiles from dispatch history
 	newProfiles, err := learner.BuildProviderProfiles(s.store, profileStatsWindow)
 	if err != nil {
 		s.logger.Error("failed to rebuild provider profiles", "error", err)
 		return
 	}
-	
+
 	s.profiles = newProfiles
-	
+
 	// Log detected weaknesses for visibility
 	weaknesses := learner.DetectWeaknesses(s.profiles)
 	if len(weaknesses) > 0 {
 		s.logger.Info("detected provider weaknesses", "count", len(weaknesses))
 		for _, w := range weaknesses {
-			s.logger.Debug("weak provider", 
+			s.logger.Debug("weak provider",
 				"provider", w.Provider,
 				"label", w.Label,
 				"failure_rate", w.FailureRate,
@@ -2149,21 +2155,21 @@ func (s *Scheduler) pickProviderWithProfileFiltering(tier string, bead beads.Bea
 	default:
 		tierProviders = s.cfg.Tiers.Balanced
 	}
-	
+
 	// Apply profile-aware filtering
 	filteredProviders := learner.ApplyProfileToTierSelection(s.profiles, bead, tierProviders)
-	
+
 	// Log if filtering occurred
 	if len(filteredProviders) < len(tierProviders) {
 		filtered := len(tierProviders) - len(filteredProviders)
-		s.logger.Debug("filtered weak providers", 
+		s.logger.Debug("filtered weak providers",
 			"bead", bead.ID,
 			"tier", tier,
 			"original_count", len(tierProviders),
 			"filtered_count", filtered,
 			"remaining", len(filteredProviders))
 	}
-	
+
 	// Use filtered providers with rate limiter
 	return s.pickProviderFromCandidates(tier, filteredProviders)
 }
@@ -2187,6 +2193,6 @@ func (s *Scheduler) pickProviderFromCandidates(tier string, candidates []string)
 			return &p
 		}
 	}
-	
+
 	return nil
 }

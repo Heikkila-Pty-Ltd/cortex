@@ -29,6 +29,7 @@ type Dispatch struct {
 	CompletedAt       sql.NullTime
 	Status            string // running, completed, failed
 	Stage             string // dispatched, running, completed, failed, failed_needs_check, cancelled, pending_retry
+	Labels            string
 	PRURL             string
 	PRNumber          int
 	ExitCode          int
@@ -132,6 +133,7 @@ CREATE TABLE IF NOT EXISTS dispatches (
 	pid INTEGER NOT NULL DEFAULT 0,
 	session_name TEXT NOT NULL DEFAULT '',
 	stage TEXT NOT NULL DEFAULT 'dispatched',
+	labels TEXT NOT NULL DEFAULT '',
 	prompt TEXT NOT NULL,
 	dispatched_at DATETIME NOT NULL DEFAULT (datetime('now')),
 	completed_at DATETIME,
@@ -369,6 +371,17 @@ func migrate(db *sql.DB) error {
 	if count == 0 {
 		if _, err := db.Exec(`ALTER TABLE dispatches ADD COLUMN stage TEXT NOT NULL DEFAULT 'dispatched'`); err != nil {
 			return fmt.Errorf("add stage column: %w", err)
+		}
+	}
+
+	// Add labels column if it doesn't exist
+	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('dispatches') WHERE name = 'labels'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check labels column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE dispatches ADD COLUMN labels TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add labels column: %w", err)
 		}
 	}
 
@@ -651,7 +664,7 @@ func (s *Store) CountRecentDispatchesByFailureCategory(category string, window t
 	return count, nil
 }
 
-const dispatchCols = `id, bead_id, project, agent_id, provider, tier, pid, session_name, prompt, dispatched_at, completed_at, status, stage, pr_url, pr_number, exit_code, duration_s, retries, escalated_from_tier, failure_category, failure_summary, log_path, branch, backend, input_tokens, output_tokens, cost_usd`
+const dispatchCols = `id, bead_id, project, agent_id, provider, tier, pid, session_name, prompt, dispatched_at, completed_at, status, stage, labels, pr_url, pr_number, exit_code, duration_s, retries, escalated_from_tier, failure_category, failure_summary, log_path, branch, backend, input_tokens, output_tokens, cost_usd`
 
 // GetRunningDispatches returns all dispatches with status 'running'.
 func (s *Store) GetRunningDispatches() ([]Dispatch, error) {
@@ -952,7 +965,7 @@ func (s *Store) queryDispatches(query string, args ...any) ([]Dispatch, error) {
 		var d Dispatch
 		if err := rows.Scan(
 			&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName,
-			&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.Stage, &d.PRURL, &d.PRNumber, &d.ExitCode, &d.DurationS,
+			&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.Stage, &d.Labels, &d.PRURL, &d.PRNumber, &d.ExitCode, &d.DurationS,
 			&d.Retries, &d.EscalatedFromTier, &d.FailureCategory, &d.FailureSummary, &d.LogPath, &d.Branch, &d.Backend,
 			&d.InputTokens, &d.OutputTokens, &d.CostUSD,
 		); err != nil {
@@ -981,6 +994,21 @@ func scanClaimLeases(rows *sql.Rows) ([]ClaimLease, error) {
 		leases = append(leases, lease)
 	}
 	return leases, rows.Err()
+}
+
+// UpdateDispatchLabels stores bead labels on a dispatch for downstream profiling.
+func (s *Store) UpdateDispatchLabels(id int64, labels []string) error {
+	return s.UpdateDispatchLabelsCSV(id, encodeDispatchLabels(labels))
+}
+
+// UpdateDispatchLabelsCSV stores an already-serialized labels value, normalized.
+func (s *Store) UpdateDispatchLabelsCSV(id int64, labelsCSV string) error {
+	normalized := encodeDispatchLabels(decodeDispatchLabels(labelsCSV))
+	_, err := s.db.Exec(`UPDATE dispatches SET labels = ? WHERE id = ?`, normalized, id)
+	if err != nil {
+		return fmt.Errorf("store: update dispatch labels: %w", err)
+	}
+	return nil
 }
 
 // UpdateFailureDiagnosis stores failure category and summary for a dispatch.
@@ -1507,6 +1535,15 @@ type ProviderStat struct {
 	TotalDuration float64
 }
 
+// ProviderLabelStat holds performance stats for a provider-label pair.
+type ProviderLabelStat struct {
+	Provider      string
+	Label         string
+	Total         int
+	Successes     int
+	TotalDuration float64
+}
+
 // GetProviderStats returns provider performance statistics within the time window.
 func (s *Store) GetProviderStats(window time.Duration) (map[string]ProviderStat, error) {
 	cutoff := time.Now().Add(-window).UTC().Format(time.DateTime)
@@ -1550,4 +1587,81 @@ func (s *Store) GetProviderStats(window time.Duration) (map[string]ProviderStat,
 	}
 
 	return stats, nil
+}
+
+// GetProviderLabelStats aggregates provider performance by label within the time window.
+func (s *Store) GetProviderLabelStats(window time.Duration) (map[string]map[string]ProviderLabelStat, error) {
+	cutoff := time.Now().Add(-window).UTC().Format(time.DateTime)
+
+	rows, err := s.db.Query(`
+		SELECT provider, status, duration_s, labels
+		FROM dispatches
+		WHERE dispatched_at > ?
+		ORDER BY dispatched_at DESC`,
+		cutoff,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query provider label stats: %w", err)
+	}
+	defer rows.Close()
+
+	stats := make(map[string]map[string]ProviderLabelStat)
+	for rows.Next() {
+		var provider, status, labelsCSV string
+		var duration float64
+		if err := rows.Scan(&provider, &status, &duration, &labelsCSV); err != nil {
+			return nil, fmt.Errorf("store: scan provider label stats: %w", err)
+		}
+
+		labels := decodeDispatchLabels(labelsCSV)
+		if len(labels) == 0 {
+			continue
+		}
+		if _, ok := stats[provider]; !ok {
+			stats[provider] = make(map[string]ProviderLabelStat)
+		}
+
+		for _, label := range labels {
+			stat := stats[provider][label]
+			stat.Provider = provider
+			stat.Label = label
+			stat.Total++
+			stat.TotalDuration += duration
+			if status == "completed" {
+				stat.Successes++
+			}
+			stats[provider][label] = stat
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: provider label stats rows: %w", err)
+	}
+
+	return stats, nil
+}
+
+func decodeDispatchLabels(labelsCSV string) []string {
+	parts := strings.Split(labelsCSV, ",")
+	return normalizeDispatchLabels(parts)
+}
+
+func encodeDispatchLabels(labels []string) string {
+	return strings.Join(normalizeDispatchLabels(labels), ",")
+}
+
+func normalizeDispatchLabels(labels []string) []string {
+	seen := make(map[string]struct{}, len(labels))
+	out := make([]string, 0, len(labels))
+	for _, raw := range labels {
+		label := strings.TrimSpace(raw)
+		if label == "" {
+			continue
+		}
+		if _, ok := seen[label]; ok {
+			continue
+		}
+		seen[label] = struct{}{}
+		out = append(out, label)
+	}
+	return out
 }
