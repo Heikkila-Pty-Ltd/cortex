@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -103,6 +104,11 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	shutdownTimeout := cfg.General.ShutdownTimeout.Duration
+	if shutdownTimeout <= 0 {
+		shutdownTimeout = 60 * time.Second
+	}
+	var wg sync.WaitGroup
 
 	if *once {
 		logger.Info("running single tick (--once mode)")
@@ -112,15 +118,27 @@ func main() {
 	}
 
 	// Start scheduler
-	go sched.Start(ctx)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sched.Start(ctx)
+	}()
 
 	// Start health monitor
 	hm := health.NewMonitor(cfg.Health, cfg.General, st, d, logger.With("component", "health"))
-	go hm.Start(ctx)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		hm.Start(ctx)
+	}()
 
 	// Start learner cycle worker
 	lw := learner.NewCycleWorker(cfg.Learner, st, logger.With("component", "learner"))
-	go lw.Start(ctx)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		lw.Start(ctx)
+	}()
 
 	// Start API server with scheduler reference
 	apiSrv, err := api.NewServer(cfg, st, rl, sched, d, logger.With("component", "api"))
@@ -130,7 +148,9 @@ func main() {
 	}
 	defer apiSrv.Close()
 
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		if err := apiSrv.Start(ctx); err != nil {
 			logger.Error("api server error", "error", err)
 		}
@@ -148,13 +168,13 @@ func main() {
 
 	sig := <-sigCh
 	shutdownStart := time.Now()
-	logger.Info("received signal, shutting down", "signal", sig)
+	logger.Info("received signal, shutting down", "signal", sig, "timeout", shutdownTimeout.String())
 	cancel()
 
 	// Graceful shutdown: drain dispatches if using tmux
 	if d.GetHandleType() == "session" {
-		logger.Info("draining tmux sessions", "timeout", "30s")
-		dispatch.GracefulShutdown(30 * time.Second)
+		logger.Info("draining tmux sessions", "timeout", shutdownTimeout.String())
+		dispatch.GracefulShutdown(shutdownTimeout)
 	}
 
 	// Mark all remaining running dispatches as interrupted
@@ -163,6 +183,19 @@ func main() {
 		logger.Error("failed to interrupt running dispatches", "error", err)
 	} else if interrupted > 0 {
 		logger.Info("interrupted running dispatches", "count", interrupted)
+	}
+
+	waitDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(waitDone)
+	}()
+
+	select {
+	case <-waitDone:
+		logger.Info("all components stopped cleanly")
+	case <-time.After(shutdownTimeout):
+		logger.Warn("shutdown timeout reached before all components stopped", "timeout", shutdownTimeout.String())
 	}
 
 	logger.Info("cortex stopped", "shutdown_duration", time.Since(shutdownStart).String())

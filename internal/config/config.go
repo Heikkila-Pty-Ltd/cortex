@@ -50,6 +50,7 @@ type General struct {
 	TickInterval     Duration `toml:"tick_interval"`
 	MaxPerTick       int      `toml:"max_per_tick"`
 	StuckTimeout     Duration `toml:"stuck_timeout"`
+	ShutdownTimeout  Duration `toml:"shutdown_timeout"`
 	MaxRetries       int      `toml:"max_retries"`
 	RetryBackoffBase Duration `toml:"retry_backoff_base"`
 	RetryMaxDelay    Duration `toml:"retry_max_delay"`
@@ -229,6 +230,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.General.StuckTimeout.Duration == 0 {
 		cfg.General.StuckTimeout.Duration = 30 * time.Minute
+	}
+	if cfg.General.ShutdownTimeout.Duration == 0 {
+		cfg.General.ShutdownTimeout.Duration = 60 * time.Second
 	}
 	if cfg.General.MaxPerTick == 0 {
 		cfg.General.MaxPerTick = 3
