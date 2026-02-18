@@ -669,6 +669,11 @@ func (s *Store) GetDispatchesByBead(beadID string) ([]Dispatch, error) {
 	return s.queryDispatches(`SELECT `+dispatchCols+` FROM dispatches WHERE bead_id = ? ORDER BY dispatched_at DESC`, beadID)
 }
 
+// GetCompletedDispatchesSince returns all completed dispatches for a project since the given time
+func (s *Store) GetCompletedDispatchesSince(projectName, since string) ([]Dispatch, error) {
+	return s.queryDispatches(`SELECT `+dispatchCols+` FROM dispatches WHERE project = ? AND status = 'completed' AND dispatched_at >= ? ORDER BY dispatched_at DESC`, projectName, since)
+}
+
 // WasBeadDispatchedRecently checks if a bead has been dispatched within the cooldown period.
 // Returns true if the bead should be skipped due to recent dispatch activity.
 func (s *Store) WasBeadDispatchedRecently(beadID string, cooldownPeriod time.Duration) (bool, error) {

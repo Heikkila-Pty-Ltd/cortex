@@ -30,6 +30,8 @@ type CeremonyType string
 const (
 	CeremonyMultiTeamPlanning CeremonyType = "multi_team_planning"
 	CeremonyRetrospective     CeremonyType = "retrospective"
+	CeremonySprintReview      CeremonyType = "sprint_review"
+	CeremonySprintRetro       CeremonyType = "sprint_retrospective"
 )
 
 // CeremonySchedule defines when ceremonies should run
