@@ -79,6 +79,211 @@ Note: You can also use 'gh pr review --approve' or 'gh pr review --request-chang
 Note: The system will automatically run Definition of Done checks after you transition to stage:dod.
 `, b.ID, b.ID, b.ID, b.ID)
 	},
+	"sprint_review": func(b beads.Bead, useBranches bool, prDiff string) string {
+		template := `## Instructions (Scrum Master - Sprint Review)
+
+**OBJECTIVE:** Analyze planned vs delivered outcomes for the current sprint and produce a comprehensive narrative summary.
+
+### Sprint Review Analysis Framework
+
+1. **Gather Sprint Data**
+   - Review all completed issues: bd list --status=closed --sprint-current
+   - Review incomplete issues: bd list --status=open --sprint-current  
+   - Calculate velocity metrics and completion percentages
+   - Identify scope changes and emergency additions
+
+2. **Planned vs Delivered Analysis**
+   - Compare initial sprint commitment to actual deliveries
+   - Analyze story point variance and completion rates
+   - Document scope creep, descoping decisions, and priority shifts
+   - Identify patterns in over/under-estimation
+
+3. **Quality Assessment**
+   - Review defect rates and rework cycles
+   - Assess technical debt impact on delivery
+   - Evaluate testing coverage and quality gate compliance
+   - Document production incidents or rollbacks
+
+4. **Stakeholder Impact Analysis**
+   - Map delivered features to business value realized
+   - Assess customer feedback on delivered functionality
+   - Document feature adoption and usage metrics where available
+   - Identify stakeholder satisfaction trends
+
+5. **Generate Narrative Summary**
+   - Create executive summary of sprint outcomes
+   - Highlight significant achievements and roadblocks
+   - Provide data-driven insights on team performance trends
+   - Include recommendations for stakeholder presentation
+
+6. **Premium Analytical Reasoning** (Opus-tier analysis)
+   - Apply pattern recognition across multiple sprint cycles
+   - Identify leading indicators for delivery predictability
+   - Correlate external factors (holidays, team changes) with performance
+   - Generate probabilistic forecasting for upcoming sprints
+
+7. **Documentation and Transition**
+   - Update sprint metrics: bd update %s --metrics="[sprint analysis data]"
+   - Create follow-up issues for process improvements identified
+   - Transition to retrospective if configured: bd update %s --set-labels stage:sprint_retro
+   - Close review: bd close %s --reason="Sprint review analysis completed"
+
+**DATA PRESENTATION FORMAT:**
+` + "`" + `
+Sprint Review Summary - Sprint [N]
+========================================
+Commitment vs Delivery:
+- Planned: [X] story points, [Y] issues
+- Delivered: [A] story points, [B] issues  
+- Completion Rate: [Z]%%
+
+Key Deliveries:
+- [Feature/Epic]: Impact and outcomes
+- [Major Bug Fixes]: Customer impact resolved
+
+Missed Commitments:
+- [Issue ID]: Reason for miss, revised timeline
+- [Scope Changes]: Business justification
+
+Velocity Trends:
+- 3-sprint average: [X] points
+- Current sprint: [Y] points
+- Trend analysis: [increasing/stable/declining]
+
+Quality Metrics:
+- Defect rate: [X] bugs per story point
+- Rework percentage: [Y]%%
+- Customer satisfaction: [rating/feedback]
+` + "`" + `
+
+**ACTIONABLE OUTCOMES:**
+Generate specific, measurable action items for:
+- Process improvements identified
+- Estimation accuracy enhancements
+- Quality gate refinements
+- Stakeholder communication optimization
+
+Complete when: Comprehensive sprint review analysis is documented with data-driven insights and actionable recommendations.
+`
+		return fmt.Sprintf(template, b.ID, b.ID, b.ID)
+	},
+	"sprint_retro": func(b beads.Bead, useBranches bool, prDiff string) string {
+		template := `## Instructions (Scrum Master - Sprint Retrospective)
+
+**OBJECTIVE:** Analyze failures, extract learnings, and generate actionable improvements with systematic pattern analysis.
+
+### Retrospective Analysis Framework
+
+1. **Failure Analysis Deep Dive**
+   - Identify all failed commitments, missed deadlines, and quality issues
+   - Conduct root cause analysis using 5-Whys methodology  
+   - Categorize failures: estimation, technical, process, external dependencies
+   - Map failure patterns across team members and work types
+
+2. **Success Pattern Recognition**
+   - Document what worked well and exceeded expectations
+   - Identify conditions that enabled high-performance outcomes
+   - Analyze successful collaboration patterns and tool effectiveness
+   - Extract replicable practices and optimal workflows
+
+3. **Team Dynamics Assessment**
+   - Evaluate communication effectiveness and knowledge sharing
+   - Assess workload distribution and team member satisfaction
+   - Identify blockers, friction points, and flow interruptions
+   - Review pair programming, code review, and mentoring effectiveness
+
+4. **Process Improvement Identification**
+   - Analyze ceremony effectiveness (standups, planning, reviews)
+   - Evaluate tool usage and development environment efficiency
+   - Review definition of done compliance and quality practices
+   - Assess estimation accuracy and planning effectiveness
+
+5. **Learning Extraction & Codification**
+   - Document key insights and mental models developed
+   - Create decision frameworks for similar future situations  
+   - Identify skill gaps and training opportunities
+   - Extract principles and heuristics for team playbook
+
+6. **Premium Pattern Analysis** (Opus-tier reasoning)
+   - Correlate team performance with external variables
+   - Identify leading indicators for sprint success/failure
+   - Apply systems thinking to understand interconnected issues
+   - Generate predictive insights for risk mitigation
+
+7. **Action Item Generation & Execution**
+   - Create specific, measurable, time-bound improvement actions
+   - Assign ownership and accountability for each action item
+   - Design experiments to validate improvement hypotheses
+   - Set up metrics to track improvement effectiveness
+
+8. **Systematic Follow-through**
+   - Create follow-up issues for all action items: bd create --title="Retro Action: [description]" --type=improvement
+   - Schedule check-ins for action item progress tracking
+   - Document improvement results for future retrospective reference
+   - Update team working agreements and process documentation
+
+**RETROSPECTIVE DATA STRUCTURE:**
+` + "`" + `
+Sprint Retrospective Analysis - Sprint [N]
+==========================================
+
+FAILURES & ROOT CAUSES:
+1. [Issue/Pattern]: 
+   - Root Cause: [5-Whys analysis]
+   - Impact: [quantified impact]
+   - Prevention Strategy: [specific actions]
+
+2. [Technical Debt Impact]:
+   - Debt Areas: [specific technical issues]
+   - Time Cost: [hours/days lost to debt]
+   - Remediation Plan: [concrete steps]
+
+SUCCESSES & AMPLIFICATION:
+1. [What Worked Well]:
+   - Success Factors: [conditions that enabled success]
+   - Replication Strategy: [how to repeat success]
+
+2. [Team Collaboration Wins]:
+   - Effective Practices: [specific behaviors/tools]
+   - Scaling Approach: [how to expand successful practices]
+
+LEARNING INSIGHTS:
+- Key Realizations: [new understanding gained]
+- Mental Models: [frameworks developed]
+- Decision Principles: [heuristics for future use]
+
+SYSTEMIC PATTERNS:
+- Recurring Issues: [patterns across multiple sprints]
+- Environmental Factors: [external influences on performance]
+- Predictive Indicators: [early warning signs identified]
+` + "`" + `
+
+**ACTION ITEM EXECUTION:**
+For each improvement identified:
+1. Create trackable issue with acceptance criteria
+2. Assign clear ownership and timeline
+3. Define success metrics and measurement approach
+4. Set up automated reminders for progress check-ins
+5. Link to relevant process documentation for updates
+
+**AUTO-EXECUTABLE ACTIONS:**
+Automatically execute where appropriate:
+- Update team working agreements
+- Modify ceremony templates based on learnings
+- Create recurring reminders for new practices
+- Update estimation guidelines and historical data
+- Schedule training sessions or knowledge sharing
+
+9. **Documentation and Closure**
+   - Update team retrospective learnings database
+   - Close retrospective: bd close %s --reason="Retrospective analysis completed with [N] action items generated"
+   - Ensure all action items are properly tracked and assigned
+   - Schedule next retrospective and set up success metric tracking
+
+Complete when: Comprehensive failure analysis is documented, learnings are extracted and codified, and all actionable improvements are converted into trackable issues with clear ownership.
+`
+		return fmt.Sprintf(template, b.ID)
+	},
 }
 
 // BuildPrompt constructs the prompt sent to an openclaw agent.
