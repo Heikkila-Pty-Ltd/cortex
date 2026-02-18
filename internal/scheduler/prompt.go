@@ -14,83 +14,98 @@ var filePathRe = regexp.MustCompile(`(?:^|\s)((?:src|internal|cmd|pkg|lib|app|pu
 // stageInstructions maps roles to stage-specific prompt instructions.
 var stageInstructions = map[string]func(bead beads.Bead, useBranches bool, prDiff string) string{
 	"sprint_planning": func(b beads.Bead, useBranches bool, prDiff string) string {
-		return `## Instructions (Sprint Planning)
-You are facilitating sprint planning. Review the backlog and select items for the upcoming sprint.
+		return fmt.Sprintf(`## Instructions (Sprint Planning)
+You are the scrum master facilitating sprint planning with the full backlog context in this task.
 
-### 1. Backlog Review & Refinement
-For each candidate item:
-- **Review description** - Is it clear and actionable?
-- **Check acceptance criteria** - Are they specific and testable?
-- **Add estimates** - Use story points (1, 2, 3, 5, 8, 13) based on complexity
-- **Refine if needed**:
-  * bd update <id> --acceptance="Clear, testable criteria"
-  * bd update <id> --design="Implementation notes and approach"
-  * bd update <id> --estimate=<points>
+### 1. Build Backlog Digest First (required)
+Before selecting work, convert the raw backlog context in the task description into a compact table:
 
-### 2. Sprint Capacity Planning
-Consider:
-- **Team capacity** - Available developer hours/story points for sprint
-- **Dependencies** - Items blocked by others should wait
-- **Priority** - Focus on P0 (critical) and P1 (high) items first
-- **Risk** - Balance safe wins with challenging work
+| ID | Title | Pri | Stage | Est (min) | Depends On | Refined? | Notes |
+|----|-------|-----|-------|-----------|------------|----------|-------|
 
-### 3. Sprint Selection Commands
-When selecting items for sprint:
-` + "```" + `bash
-# Mark items as ready for sprint
-bd update <id> --set-labels stage:ready,sprint:selected
+Rules:
+- **Refined? = yes** only if acceptance criteria, design notes, and estimate minutes all exist.
+- If estimate is missing, mark TBD and refine it before sprint selection.
+- Flag blocked items clearly so they do not consume sprint capacity.
 
-# Set sprint milestone (optional)
-bd update <id> --milestone="Sprint 2024-01"
+### 2. Refine and Estimate Candidates
+Use these commands while reviewing each candidate bead:
+~~~bash
+# Pull open backlog in priority order (P0-P2)
+bd list --status=open --priority-max=P2
 
-# Assign initial ownership if known
-bd update <id> --assignee=<team-member>
-` + "```" + `
+# Inspect full details for one item
+bd show <id>
 
-### 4. Sprint Commitments
-Create sprint summary with:
-- **Sprint Goal** - What are we trying to achieve?
-- **Selected Items** - List with IDs, titles, and estimates
-- **Total Capacity** - Story points committed vs. available
-- **Risks** - Dependencies, unknowns, holidays
+# Add or improve refinement details
+bd update <id> --acceptance="Specific, testable acceptance criteria"
+bd update <id> --design="Implementation notes, affected files, risks"
+bd update <id> --estimate=<minutes>
+~~~
 
-### 5. Transition to Execution
-After sprint planning:
-` + "```" + `bash
-# Transition selected items to planning stage
-for id in <selected-ids>; do
-  bd update $id --set-labels stage:planning --assignee=planner
-done
+Quality bar:
+- Acceptance criteria must be specific and verifiable.
+- Design notes should include implementation approach plus dependency/risk notes.
+- bd --estimate is in **minutes** (do not store story points as estimate).
 
-# Close this planning session
-bd close <planning-session-id> --reason="Sprint planning completed"
-` + "```" + `
+### 3. Capacity-Based Sprint Selection
+Calculate capacity in minutes:
+1. total_capacity_min = team capacity for this sprint.
+2. buffer_min = 15%%-20%% of total.
+3. usable_capacity_min = total_capacity_min - buffer_min.
 
-### Sprint Planning Template
-Use this format for sprint documentation:
+Selection policy:
+1. Select only unblocked, refined beads.
+2. Prioritize by P0 -> P1 -> P2, then dependency criticality, then risk.
+3. Keep adding beads while total committed estimate <= usable capacity.
+4. Keep a short deferred list for the next sprint if there is overflow.
 
-**Sprint Goal:** [What we're trying to achieve this sprint]
+### 4. Update Beads and Transition Stage
+For each selected bead:
+~~~bash
+bd update <id> --set-labels stage:planning,sprint:selected --assignee=planner
+~~~
 
-**Team Capacity:** [Available story points/hours]
+For refined but deferred beads:
+~~~bash
+bd update <id> --set-labels stage:backlog,sprint:deferred
+~~~
 
-**Selected Items:**
-- [ID] [Title] ([Points]pts) - [Brief description]
-- [ID] [Title] ([Points]pts) - [Brief description]
+### 5. Close Planning Session
+~~~bash
+# Optional sync after bulk updates
+bd sync
 
-**Total Committed:** [X points out of Y capacity]
+# Transition this sprint-planning bead to planning stage
+bd update %s --set-labels stage:planning
 
-**Key Dependencies:** [Any blockers or prerequisites]
+# Close this sprint-planning bead once plan is finalized
+bd close %s --reason="Sprint planning completed"
+~~~
 
-**Success Metrics:** [How we'll know we succeeded]
+### Sprint Plan Summary Template
+Use this exact structure in your final output:
 
----
-**Sprint Planning Commands Summary:**
-- bd list --status=open --priority=P0,P1,P2  # View backlog
-- bd update <id> --acceptance="..."  # Add acceptance criteria
-- bd update <id> --estimate=<points>  # Add story point estimate
-- bd update <id> --set-labels stage:ready,sprint:selected  # Select for sprint
-- bd update <id> --assignee=planner  # Assign for detailed planning
-`
+**Sprint Goal:** [single outcome statement]
+
+**Capacity:**
+- Total: [X min]
+- Buffer: [Y min]
+- Usable: [Z min]
+- Committed: [N min]
+
+**Selected Beads:**
+- [ID] [Title] - P[0-2], [estimate min], [why selected], [dependency status]
+
+**Deferred Beads:**
+- [ID] [Title] - [reason deferred]
+
+**Risks and Mitigations:**
+- [Risk] -> [Mitigation]
+
+**Command Log:**
+- [bd commands executed for refinement and selection]
+`, b.ID, b.ID)
 	},
 	"scrum": func(b beads.Bead, useBranches bool, prDiff string) string {
 		return fmt.Sprintf(`## Instructions (Scrum Master)
