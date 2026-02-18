@@ -11,24 +11,27 @@ import (
 	"time"
 
 	"github.com/antigravity-dev/cortex/internal/beads"
+	chiefpkg "github.com/antigravity-dev/cortex/internal/chief"
 	"github.com/antigravity-dev/cortex/internal/config"
+	"github.com/antigravity-dev/cortex/internal/dispatch"
 	"github.com/antigravity-dev/cortex/internal/learner"
+	"github.com/antigravity-dev/cortex/internal/portfolio"
 	"github.com/antigravity-dev/cortex/internal/store"
 )
 
 // SprintCompletionData represents completion metrics for a single sprint across all projects
 type SprintCompletionData struct {
-	SprintStartDate    time.Time                          `json:"sprint_start_date"`
-	SprintEndDate      time.Time                          `json:"sprint_end_date"`
-	ProjectCompletions map[string]*ProjectSprintData      `json:"project_completions"`
-	CrossProjectDeps   []CrossProjectMilestone            `json:"cross_project_milestones"`
-	OverallMetrics     *OverallSprintMetrics              `json:"overall_metrics"`
-	ScopeChanges       []SprintScopeChange                `json:"scope_changes"`
+	SprintStartDate    time.Time                     `json:"sprint_start_date"`
+	SprintEndDate      time.Time                     `json:"sprint_end_date"`
+	ProjectCompletions map[string]*ProjectSprintData `json:"project_completions"`
+	CrossProjectDeps   []CrossProjectMilestone       `json:"cross_project_milestones"`
+	OverallMetrics     *OverallSprintMetrics         `json:"overall_metrics"`
+	ScopeChanges       []SprintScopeChange           `json:"scope_changes"`
 }
 
 // ProjectSprintData contains sprint completion data for a single project
 type ProjectSprintData struct {
-	ProjectName      string                 `json:"project_name"`
+	ProjectName      string                `json:"project_name"`
 	PlannedBeads     []beads.Bead          `json:"planned_beads"`
 	CompletedBeads   []beads.Bead          `json:"completed_beads"`
 	CarriedOverBeads []beads.Bead          `json:"carried_over_beads"`
@@ -40,68 +43,68 @@ type ProjectSprintData struct {
 
 // VelocityMetrics tracks velocity and completion metrics
 type VelocityMetrics struct {
-	BeadsCompleted       int     `json:"beads_completed"`
-	EstimatedMinutes     int     `json:"estimated_minutes"`
-	ActualDays           int     `json:"actual_days"`
-	VelocityBeadsPerDay  float64 `json:"velocity_beads_per_day"`
+	BeadsCompleted        int     `json:"beads_completed"`
+	EstimatedMinutes      int     `json:"estimated_minutes"`
+	ActualDays            int     `json:"actual_days"`
+	VelocityBeadsPerDay   float64 `json:"velocity_beads_per_day"`
 	VelocityMinutesPerDay float64 `json:"velocity_minutes_per_day"`
 	AverageCompletionTime float64 `json:"average_completion_time_days"`
 }
 
 // PlannedVsActualRatio tracks planned vs delivered metrics
 type PlannedVsActualRatio struct {
-	PlannedBeads      int     `json:"planned_beads"`
-	CompletedBeads    int     `json:"completed_beads"`
-	CompletionRate    float64 `json:"completion_rate"`
-	PlannedMinutes    int     `json:"planned_minutes"`
-	DeliveredMinutes  int     `json:"delivered_minutes"`
+	PlannedBeads        int     `json:"planned_beads"`
+	CompletedBeads      int     `json:"completed_beads"`
+	CompletionRate      float64 `json:"completion_rate"`
+	PlannedMinutes      int     `json:"planned_minutes"`
+	DeliveredMinutes    int     `json:"delivered_minutes"`
 	MinutesDeliveryRate float64 `json:"minutes_delivery_rate"`
 }
 
 // CrossProjectMilestone represents a milestone that affects multiple projects
 type CrossProjectMilestone struct {
-	SourceProject    string    `json:"source_project"`
-	TargetProjects   []string  `json:"target_projects"`
-	BeadID          string    `json:"bead_id"`
-	Title           string    `json:"title"`
-	CompletedAt     time.Time `json:"completed_at"`
-	UnblockedWork   int       `json:"unblocked_work_count"`
-	ImpactDescription string   `json:"impact_description"`
+	SourceProject     string    `json:"source_project"`
+	TargetProjects    []string  `json:"target_projects"`
+	BeadID            string    `json:"bead_id"`
+	Title             string    `json:"title"`
+	CompletedAt       time.Time `json:"completed_at"`
+	UnblockedWork     int       `json:"unblocked_work_count"`
+	ImpactDescription string    `json:"impact_description"`
 }
 
 // OverallSprintMetrics provides portfolio-level sprint metrics
 type OverallSprintMetrics struct {
-	TotalPlannedBeads    int     `json:"total_planned_beads"`
-	TotalCompletedBeads  int     `json:"total_completed_beads"`
-	OverallCompletionRate float64 `json:"overall_completion_rate"`
-	TotalPlannedMinutes  int     `json:"total_planned_minutes"`
-	TotalDeliveredMinutes int     `json:"total_delivered_minutes"`
-	OverallDeliveryRate   float64 `json:"overall_delivery_rate"`
-	ActiveProjects       int     `json:"active_projects"`
-	ProjectsOnTrack      int     `json:"projects_on_track"`
-	ProjectsBehindSchedule int   `json:"projects_behind_schedule"`
+	TotalPlannedBeads      int     `json:"total_planned_beads"`
+	TotalCompletedBeads    int     `json:"total_completed_beads"`
+	OverallCompletionRate  float64 `json:"overall_completion_rate"`
+	TotalPlannedMinutes    int     `json:"total_planned_minutes"`
+	TotalDeliveredMinutes  int     `json:"total_delivered_minutes"`
+	OverallDeliveryRate    float64 `json:"overall_delivery_rate"`
+	ActiveProjects         int     `json:"active_projects"`
+	ProjectsOnTrack        int     `json:"projects_on_track"`
+	ProjectsBehindSchedule int     `json:"projects_behind_schedule"`
 }
 
 // SprintScopeChange represents a scope change that occurred during the sprint
 type SprintScopeChange struct {
-	ProjectName   string              `json:"project_name"`
-	ChangeType    ScopeChangeType     `json:"change_type"`
-	BeadID        string              `json:"bead_id"`
-	Title         string              `json:"title"`
-	ChangedAt     time.Time           `json:"changed_at"`
-	EstimateChange int                `json:"estimate_change_minutes"`
-	Reason        string              `json:"reason"`
-	Impact        ScopeChangeImpact   `json:"impact"`
+	ProjectName    string            `json:"project_name"`
+	ChangeType     ScopeChangeType   `json:"change_type"`
+	BeadID         string            `json:"bead_id"`
+	Title          string            `json:"title"`
+	ChangedAt      time.Time         `json:"changed_at"`
+	EstimateChange int               `json:"estimate_change_minutes"`
+	Reason         string            `json:"reason"`
+	Impact         ScopeChangeImpact `json:"impact"`
 }
 
 // ScopeChangeType represents the type of scope change
 type ScopeChangeType string
 
 const (
-	ScopeAdded     ScopeChangeType = "added"
-	ScopeRemoved   ScopeChangeType = "removed"
-	ScopeExpanded  ScopeChangeType = "expanded"
-	ScopeReduced   ScopeChangeType = "reduced"
+	ScopeAdded          ScopeChangeType = "added"
+	ScopeRemoved        ScopeChangeType = "removed"
+	ScopeExpanded       ScopeChangeType = "expanded"
+	ScopeReduced        ScopeChangeType = "reduced"
 	ScopeReprioriotized ScopeChangeType = "reprioritized"
 )
 
@@ -117,44 +120,44 @@ const (
 
 // CrossProjectRetroData represents aggregated retrospective data across all projects
 type CrossProjectRetroData struct {
-	Period                string                                `json:"period"`
-	ProjectRetroReports   map[string]*learner.RetroReport      `json:"project_retro_reports"`
-	AggregatedStats       *AggregatedRetroStats                `json:"aggregated_stats"`
+	Period                string                                  `json:"period"`
+	ProjectRetroReports   map[string]*learner.RetroReport         `json:"project_retro_reports"`
+	AggregatedStats       *AggregatedRetroStats                   `json:"aggregated_stats"`
 	CrossProjectProviders map[string]*CrossProjectProviderProfile `json:"cross_project_providers"`
-	DependencyMetrics     *CrossProjectDependencyMetrics       `json:"dependency_metrics"`
-	RateLimitUsage        map[string]*ProjectRateLimitUsage    `json:"rate_limit_usage"`
-	SprintPlanComparison  *CrossProjectSprintComparison        `json:"sprint_plan_comparison"`
-	SystemicIssues        []SystemicIssue                      `json:"systemic_issues"`
+	DependencyMetrics     *CrossProjectDependencyMetrics          `json:"dependency_metrics"`
+	RateLimitUsage        map[string]*ProjectRateLimitUsage       `json:"rate_limit_usage"`
+	SprintPlanComparison  *CrossProjectSprintComparison           `json:"sprint_plan_comparison"`
+	SystemicIssues        []SystemicIssue                         `json:"systemic_issues"`
 }
 
 // AggregatedRetroStats contains aggregated stats across all projects
 type AggregatedRetroStats struct {
-	TotalDispatches     int                            `json:"total_dispatches"`
-	TotalCompleted      int                            `json:"total_completed"`
-	TotalFailed         int                            `json:"total_failed"`
-	OverallFailureRate  float64                        `json:"overall_failure_rate"`
-	AvgDurationSeconds  float64                        `json:"avg_duration_seconds"`
-	ProjectVelocities   map[string]*learner.ProjectVelocity `json:"project_velocities"`
+	TotalDispatches    int                                 `json:"total_dispatches"`
+	TotalCompleted     int                                 `json:"total_completed"`
+	TotalFailed        int                                 `json:"total_failed"`
+	OverallFailureRate float64                             `json:"overall_failure_rate"`
+	AvgDurationSeconds float64                             `json:"avg_duration_seconds"`
+	ProjectVelocities  map[string]*learner.ProjectVelocity `json:"project_velocities"`
 }
 
 // CrossProjectProviderProfile aggregates provider performance across all projects
 type CrossProjectProviderProfile struct {
-	Provider              string                      `json:"provider"`
-	ProjectUsage          map[string]learner.ProviderStats `json:"project_usage"`
-	TotalStats            learner.ProviderStats       `json:"total_stats"`
-	IsSystemwideIssue     bool                        `json:"is_systemwide_issue"`
-	ProjectsAffected      []string                    `json:"projects_affected"`
-	RecommendedAction     string                      `json:"recommended_action"`
+	Provider          string                           `json:"provider"`
+	ProjectUsage      map[string]learner.ProviderStats `json:"project_usage"`
+	TotalStats        learner.ProviderStats            `json:"total_stats"`
+	IsSystemwideIssue bool                             `json:"is_systemwide_issue"`
+	ProjectsAffected  []string                         `json:"projects_affected"`
+	RecommendedAction string                           `json:"recommended_action"`
 }
 
 // CrossProjectDependencyMetrics tracks dependency resolution across projects
 type CrossProjectDependencyMetrics struct {
-	TotalCrossProjectDeps     int     `json:"total_cross_project_deps"`
-	ResolvedThisSprint        int     `json:"resolved_this_sprint"`
-	StillBlocking             int     `json:"still_blocking"`
-	AvgResolutionDays         float64 `json:"avg_resolution_days"`
-	LongestBlockingDeps       []BlockingDependency `json:"longest_blocking_deps"`
-	DependencyBottlenecks     []DependencyBottleneck `json:"dependency_bottlenecks"`
+	TotalCrossProjectDeps int                    `json:"total_cross_project_deps"`
+	ResolvedThisSprint    int                    `json:"resolved_this_sprint"`
+	StillBlocking         int                    `json:"still_blocking"`
+	AvgResolutionDays     float64                `json:"avg_resolution_days"`
+	LongestBlockingDeps   []BlockingDependency   `json:"longest_blocking_deps"`
+	DependencyBottlenecks []DependencyBottleneck `json:"dependency_bottlenecks"`
 }
 
 // BlockingDependency represents a dependency that has been blocking for a long time
@@ -169,10 +172,10 @@ type BlockingDependency struct {
 
 // DependencyBottleneck identifies projects that are frequent sources of cross-project blocking
 type DependencyBottleneck struct {
-	Project              string  `json:"project"`
-	DependenciesCreated  int     `json:"dependencies_created"`
-	AvgResolutionTime    float64 `json:"avg_resolution_time"`
-	CurrentlyBlocking    int     `json:"currently_blocking"`
+	Project             string  `json:"project"`
+	DependenciesCreated int     `json:"dependencies_created"`
+	AvgResolutionTime   float64 `json:"avg_resolution_time"`
+	CurrentlyBlocking   int     `json:"currently_blocking"`
 }
 
 // ProjectRateLimitUsage tracks rate limit budget utilization per project
@@ -188,41 +191,225 @@ type ProjectRateLimitUsage struct {
 
 // CrossProjectSprintComparison compares sprint plans vs actuals across all projects
 type CrossProjectSprintComparison struct {
-	TotalProjectsTracked    int                              `json:"total_projects_tracked"`
-	ProjectPlanVsActuals    map[string]*SprintPlanVsActual  `json:"project_plan_vs_actuals"`
-	OverallPlanAccuracy     float64                          `json:"overall_plan_accuracy"`
-	CommonVariancePatterns  []VariancePattern                `json:"common_variance_patterns"`
+	TotalProjectsTracked   int                            `json:"total_projects_tracked"`
+	ProjectPlanVsActuals   map[string]*SprintPlanVsActual `json:"project_plan_vs_actuals"`
+	OverallPlanAccuracy    float64                        `json:"overall_plan_accuracy"`
+	CommonVariancePatterns []VariancePattern              `json:"common_variance_patterns"`
 }
 
 // SprintPlanVsActual tracks planning accuracy for a single project
 type SprintPlanVsActual struct {
-	ProjectName            string  `json:"project_name"`
-	PlannedBeads          int     `json:"planned_beads"`
-	ActualCompleted       int     `json:"actual_completed"`
-	PlanningAccuracyPct   float64 `json:"planning_accuracy_pct"`
-	PlannedMinutes        int     `json:"planned_minutes"`
-	ActualMinutes         int     `json:"actual_minutes"`
+	ProjectName             string  `json:"project_name"`
+	PlannedBeads            int     `json:"planned_beads"`
+	ActualCompleted         int     `json:"actual_completed"`
+	PlanningAccuracyPct     float64 `json:"planning_accuracy_pct"`
+	PlannedMinutes          int     `json:"planned_minutes"`
+	ActualMinutes           int     `json:"actual_minutes"`
 	TimeEstimateAccuracyPct float64 `json:"time_estimate_accuracy_pct"`
-	VarianceReason        string  `json:"variance_reason"`
+	VarianceReason          string  `json:"variance_reason"`
 }
 
 // VariancePattern identifies common patterns in planning variance
 type VariancePattern struct {
-	Pattern        string   `json:"pattern"`
+	Pattern          string   `json:"pattern"`
 	ProjectsAffected []string `json:"projects_affected"`
-	Frequency      int      `json:"frequency"`
-	Description    string   `json:"description"`
-	Recommendation string   `json:"recommendation"`
+	Frequency        int      `json:"frequency"`
+	Description      string   `json:"description"`
+	Recommendation   string   `json:"recommendation"`
 }
 
 // SystemicIssue represents an issue that affects multiple projects
 type SystemicIssue struct {
-	Type               string   `json:"type"`
-	Severity           string   `json:"severity"`
-	ProjectsAffected   []string `json:"projects_affected"`
-	Description        string   `json:"description"`
-	RecommendedActions []string `json:"recommended_actions"`
+	Type               string    `json:"type"`
+	Severity           string    `json:"severity"`
+	ProjectsAffected   []string  `json:"projects_affected"`
+	Description        string    `json:"description"`
+	RecommendedActions []string  `json:"recommended_actions"`
 	DetectedAt         time.Time `json:"detected_at"`
+}
+
+// ProjectPlanningResult summarizes whether per-project sprint planning has already run.
+type ProjectPlanningResult struct {
+	ProjectName       string     `json:"project_name"`
+	PlanningDetected  bool       `json:"planning_detected"`
+	SelectedBeads     int        `json:"selected_beads"`
+	DeferredBeads     int        `json:"deferred_beads"`
+	BlockedBeads      int        `json:"blocked_beads"`
+	PlanningUpdatedAt *time.Time `json:"planning_updated_at,omitempty"`
+}
+
+// PortfolioContext packages pre-dispatch multi-team planning inputs.
+type PortfolioContext struct {
+	GeneratedAt            time.Time                               `json:"generated_at"`
+	PortfolioBacklog       *portfolio.PortfolioBacklog             `json:"portfolio_backlog"`
+	CrossProjectDeps       []portfolio.CrossProjectDependency      `json:"cross_project_deps"`
+	CapacityBudgets        map[string]int                          `json:"capacity_budgets"`
+	ProviderProfiles       map[string]*CrossProjectProviderProfile `json:"provider_profiles"`
+	ProjectPlanningResults map[string]ProjectPlanningResult        `json:"project_planning_results"`
+}
+
+// ChiefSM coordinates pre-dispatch portfolio context gathering for multi-team sprint planning.
+type ChiefSM struct {
+	cfg        *config.Config
+	logger     *slog.Logger
+	store      *store.Store
+	dispatcher dispatch.DispatcherInterface
+	chief      *chiefpkg.Chief
+	reviewer   *ChiefSprintReviewer
+}
+
+// NewChiefSM creates a new scheduler-level ChiefSM coordinator.
+func NewChiefSM(cfg *config.Config, logger *slog.Logger, store *store.Store, dispatcher dispatch.DispatcherInterface) *ChiefSM {
+	return &ChiefSM{
+		cfg:        cfg,
+		logger:     logger.With("component", "scheduler_chief_sm"),
+		store:      store,
+		dispatcher: dispatcher,
+		chief:      chiefpkg.New(cfg, store, dispatcher, logger),
+		reviewer:   NewChiefSprintReviewer(cfg, logger, store),
+	}
+}
+
+// RunMultiTeamPlanning gathers portfolio context, dispatches Chief SM reasoning, then records execution metadata.
+func (c *ChiefSM) RunMultiTeamPlanning(ctx context.Context) error {
+	if c == nil || c.chief == nil {
+		return fmt.Errorf("chief sm is not initialized")
+	}
+	if !c.cfg.Chief.Enabled {
+		return fmt.Errorf("chief sm not enabled")
+	}
+
+	c.logger.Info("starting scheduler multi-team planning context gathering")
+
+	// 1-3: gather all project backlogs, cross-project deps, and capacity budgets.
+	portfolioBacklog, err := portfolio.GatherPortfolioBacklogs(ctx, c.cfg, c.logger)
+	if err != nil {
+		return fmt.Errorf("gather portfolio backlogs: %w", err)
+	}
+
+	capacityBudgets := make(map[string]int, len(c.cfg.Projects))
+	for project := range c.cfg.Projects {
+		capacityBudgets[project] = c.cfg.RateLimits.Budget[project]
+	}
+
+	// 4: gather provider profiles (best effort).
+	providerProfiles := make(map[string]*CrossProjectProviderProfile)
+	retroData, err := c.reviewer.GatherCrossProjectRetroData(ctx, 14*24*time.Hour)
+	if err != nil {
+		c.logger.Warn("failed to gather provider profiles for multi-team planning", "error", err)
+	} else {
+		providerProfiles = retroData.CrossProjectProviders
+	}
+
+	// 5: gather each project's sprint planning status if already run.
+	planningResults := c.getProjectPlanningResults(ctx)
+
+	// 6: package into PortfolioContext and record summary for observability.
+	portfolioCtx := &PortfolioContext{
+		GeneratedAt:            time.Now().UTC(),
+		PortfolioBacklog:       portfolioBacklog,
+		CrossProjectDeps:       portfolioBacklog.CrossProjectDeps,
+		CapacityBudgets:        capacityBudgets,
+		ProviderProfiles:       providerProfiles,
+		ProjectPlanningResults: planningResults,
+	}
+
+	c.logger.Info("portfolio context gathered for multi-team planning",
+		"projects", len(portfolioCtx.PortfolioBacklog.ProjectBacklogs),
+		"cross_project_deps", len(portfolioCtx.CrossProjectDeps),
+		"provider_profiles", len(portfolioCtx.ProviderProfiles),
+		"project_planning_results", len(portfolioCtx.ProjectPlanningResults))
+
+	// 7-11: dispatch Chief SM at premium/Opus tier to reason about trade-offs and publish plan.
+	if err := c.chief.RunMultiTeamPlanning(ctx); err != nil {
+		return fmt.Errorf("dispatch chief multi-team planning: %w", err)
+	}
+
+	// 12-13: allocation recording and budget rebalancing are handled by chief allocator post-dispatch.
+	if err := c.store.RecordHealthEvent(
+		"multi_team_planning_started",
+		fmt.Sprintf("projects=%d cross_deps=%d profiles=%d planning_statuses=%d",
+			len(portfolioCtx.PortfolioBacklog.ProjectBacklogs),
+			len(portfolioCtx.CrossProjectDeps),
+			len(portfolioCtx.ProviderProfiles),
+			len(portfolioCtx.ProjectPlanningResults)),
+	); err != nil {
+		c.logger.Warn("failed to record multi-team planning start event", "error", err)
+	}
+
+	return nil
+}
+
+func (c *ChiefSM) getProjectPlanningResults(ctx context.Context) map[string]ProjectPlanningResult {
+	results := make(map[string]ProjectPlanningResult, len(c.cfg.Projects))
+
+	for projectName, projectCfg := range c.cfg.Projects {
+		if !projectCfg.Enabled {
+			continue
+		}
+
+		beadsDir := config.ExpandHome(projectCfg.BeadsDir)
+		if strings.TrimSpace(beadsDir) == "" {
+			beadsDir = filepath.Join(config.ExpandHome(projectCfg.Workspace), ".beads")
+		}
+
+		projectResult := ProjectPlanningResult{ProjectName: projectName}
+		projectBeads, err := beads.ListBeadsCtx(ctx, beadsDir)
+		if err != nil {
+			c.logger.Warn("failed to inspect project planning status", "project", projectName, "error", err)
+			results[projectName] = projectResult
+			continue
+		}
+
+		var lastUpdated time.Time
+		var hasLast bool
+		for _, bead := range projectBeads {
+			if bead.Status == "closed" {
+				continue
+			}
+			selection := classifyPlanningSelection(bead.Labels)
+			switch selection {
+			case "selected":
+				projectResult.SelectedBeads++
+				projectResult.PlanningDetected = true
+			case "deferred":
+				projectResult.DeferredBeads++
+				projectResult.PlanningDetected = true
+			case "blocked":
+				projectResult.BlockedBeads++
+				projectResult.PlanningDetected = true
+			}
+
+			if selection != "" {
+				if !hasLast || bead.UpdatedAt.After(lastUpdated) {
+					lastUpdated = bead.UpdatedAt
+					hasLast = true
+				}
+			}
+		}
+
+		if hasLast {
+			last := lastUpdated
+			projectResult.PlanningUpdatedAt = &last
+		}
+		results[projectName] = projectResult
+	}
+
+	return results
+}
+
+func classifyPlanningSelection(labels []string) string {
+	for _, label := range labels {
+		switch label {
+		case "sprint:selected":
+			return "selected"
+		case "sprint:deferred":
+			return "deferred"
+		case "sprint:blocked":
+			return "blocked"
+		}
+	}
+	return ""
 }
 
 // ChiefSprintReviewer provides cross-project sprint completion data gathering
@@ -258,14 +445,14 @@ func (c *ChiefSprintReviewer) GatherSprintCompletionData(ctx context.Context, sp
 	// Gather data for each project
 	for projectName, projectConfig := range c.cfg.Projects {
 		c.logger.Debug("gathering project sprint data", "project", projectName)
-		
+
 		projectData, err := c.gatherProjectSprintData(ctx, projectName, projectConfig, sprintStart, sprintEnd)
 		if err != nil {
-			c.logger.Error("failed to gather project sprint data", 
+			c.logger.Error("failed to gather project sprint data",
 				"project", projectName, "error", err)
 			continue
 		}
-		
+
 		completionData.ProjectCompletions[projectName] = projectData
 	}
 
@@ -295,7 +482,7 @@ func (c *ChiefSprintReviewer) GatherSprintCompletionData(ctx context.Context, sp
 // gatherProjectSprintData collects sprint data for a single project
 func (c *ChiefSprintReviewer) gatherProjectSprintData(ctx context.Context, projectName string, projectConfig config.Project, sprintStart, sprintEnd time.Time) (*ProjectSprintData, error) {
 	beadsDir := filepath.Join(projectConfig.Workspace, ".beads")
-	
+
 	// Get all beads for the project
 	allBeads, err := beads.ListBeadsCtx(ctx, beadsDir)
 	if err != nil {
@@ -349,7 +536,7 @@ func (c *ChiefSprintReviewer) calculateVelocityMetrics(completedBeads []beads.Be
 
 	totalEstimatedMinutes := 0
 	var totalCompletionTime float64
-	
+
 	for _, bead := range completedBeads {
 		totalEstimatedMinutes += bead.EstimateMinutes
 		if !bead.CreatedAt.IsZero() && !bead.UpdatedAt.IsZero() {
@@ -380,12 +567,12 @@ func (c *ChiefSprintReviewer) calculateVelocityMetrics(completedBeads []beads.Be
 func (c *ChiefSprintReviewer) calculatePlannedVsActual(plannedBeads, completedBeads []beads.Bead) *PlannedVsActualRatio {
 	plannedCount := len(plannedBeads)
 	completedCount := len(completedBeads)
-	
+
 	plannedMinutes := 0
 	for _, bead := range plannedBeads {
 		plannedMinutes += bead.EstimateMinutes
 	}
-	
+
 	deliveredMinutes := 0
 	for _, bead := range completedBeads {
 		deliveredMinutes += bead.EstimateMinutes
@@ -435,7 +622,7 @@ func (c *ChiefSprintReviewer) isTechnicalDebt(bead beads.Bead) bool {
 	// Check title/description for tech debt keywords
 	text := strings.ToLower(bead.Title + " " + bead.Description)
 	techDebtKeywords := []string{
-		"refactor", "technical debt", "tech debt", "cleanup", "optimize", 
+		"refactor", "technical debt", "tech debt", "cleanup", "optimize",
 		"performance", "security", "maintenance", "upgrade", "migration",
 		"deprecat", "legacy", "fix", "improve", "update dependencies",
 	}
@@ -450,7 +637,7 @@ func (c *ChiefSprintReviewer) isTechnicalDebt(bead beads.Bead) bool {
 	for _, label := range bead.Labels {
 		label = strings.ToLower(label)
 		if strings.Contains(label, "tech") || strings.Contains(label, "debt") ||
-		   strings.Contains(label, "maintenance") || strings.Contains(label, "refactor") {
+			strings.Contains(label, "maintenance") || strings.Contains(label, "refactor") {
 			return true
 		}
 	}
@@ -467,15 +654,15 @@ func (c *ChiefSprintReviewer) identifyCrossProjectMilestones(ctx context.Context
 		for _, completedBead := range projectData.CompletedBeads {
 			if c.isCrossProjectMilestone(completedBead) {
 				targetProjects, unblockedCount := c.findUnblockedProjects(ctx, completedBead, projectCompletions, sourceProject)
-				
+
 				if len(targetProjects) > 0 {
 					milestone := CrossProjectMilestone{
 						SourceProject:     sourceProject,
 						TargetProjects:    targetProjects,
-						BeadID:           completedBead.ID,
-						Title:            completedBead.Title,
-						CompletedAt:      completedBead.UpdatedAt,
-						UnblockedWork:    unblockedCount,
+						BeadID:            completedBead.ID,
+						Title:             completedBead.Title,
+						CompletedAt:       completedBead.UpdatedAt,
+						UnblockedWork:     unblockedCount,
 						ImpactDescription: c.generateMilestoneImpactDescription(completedBead, targetProjects),
 					}
 					milestones = append(milestones, milestone)
@@ -512,7 +699,7 @@ func (c *ChiefSprintReviewer) isCrossProjectMilestone(bead beads.Bead) bool {
 	for _, label := range bead.Labels {
 		label = strings.ToLower(label)
 		if strings.Contains(label, "milestone") || strings.Contains(label, "integration") ||
-		   strings.Contains(label, "api") || strings.Contains(label, "shared") {
+			strings.Contains(label, "api") || strings.Contains(label, "shared") {
 			return true
 		}
 	}
@@ -568,7 +755,7 @@ func (c *ChiefSprintReviewer) beadDependsOnMilestone(bead beads.Bead, milestone 
 	// Check for textual dependencies (keywords that match)
 	beadText := strings.ToLower(bead.Title + " " + bead.Description)
 	milestoneText := strings.ToLower(milestone.Title)
-	
+
 	// Extract key terms from milestone
 	milestoneWords := strings.Fields(milestoneText)
 	for _, word := range milestoneWords {
@@ -590,7 +777,7 @@ func (c *ChiefSprintReviewer) generateMilestoneImpactDescription(milestone beads
 		return fmt.Sprintf("Unblocked work in %s project", targetProjects[0])
 	}
 
-	return fmt.Sprintf("Unblocked work across %d projects: %s", 
+	return fmt.Sprintf("Unblocked work across %d projects: %s",
 		len(targetProjects), strings.Join(targetProjects, ", "))
 }
 
@@ -726,24 +913,24 @@ func (c *ChiefSprintReviewer) calculateOverallMetrics(projectCompletions map[str
 // This is a simple implementation - in practice you'd get this from your sprint calendar
 func (c *ChiefSprintReviewer) GetCurrentSprintDateRange() (time.Time, time.Time) {
 	now := time.Now()
-	
+
 	// Simple 2-week sprint calculation - find the Monday that started this sprint
 	daysFromMonday := int(now.Weekday()) - int(time.Monday)
 	if daysFromMonday < 0 {
 		daysFromMonday += 7
 	}
-	
+
 	// Go back to find the start of the 2-week sprint period
 	sprintStartCandidate := now.AddDate(0, 0, -daysFromMonday)
-	
+
 	// Adjust to ensure we're at a 2-week boundary
 	daysSinceEpoch := int(sprintStartCandidate.Sub(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)).Hours() / 24)
 	sprintNumber := daysSinceEpoch / 14
-	
+
 	epochMonday := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	sprintStart := epochMonday.AddDate(0, 0, sprintNumber*14)
 	sprintEnd := sprintStart.AddDate(0, 0, 14)
-	
+
 	return sprintStart, sprintEnd
 }
 
@@ -752,7 +939,7 @@ func (c *ChiefSprintReviewer) GetPreviousSprintDateRange() (time.Time, time.Time
 	currentStart, _ := c.GetCurrentSprintDateRange()
 	prevStart := currentStart.AddDate(0, 0, -14)
 	prevEnd := currentStart
-	
+
 	return prevStart, prevEnd
 }
 
@@ -825,7 +1012,7 @@ func (c *ChiefSprintReviewer) collectProjectRetroReports(ctx context.Context, re
 
 	for projectName := range c.cfg.Projects {
 		c.logger.Debug("generating retro report for project", "project", projectName)
-		
+
 		// Generate weekly retro for the project
 		report, err := learner.GenerateWeeklyRetro(c.store)
 		if err != nil {
@@ -862,7 +1049,7 @@ func (c *ChiefSprintReviewer) calculateAggregatedStats(ctx context.Context, peri
 			AVG(CASE WHEN status='completed' THEN duration_s ELSE NULL END)
 		FROM dispatches WHERE dispatched_at >= ?
 	`, cutoff).Scan(&stats.TotalDispatches, &stats.TotalCompleted, &stats.TotalFailed, &avgDur)
-	
+
 	if err != nil {
 		c.logger.Error("failed to calculate aggregated stats", "error", err)
 		return stats
@@ -1033,7 +1220,7 @@ func (c *ChiefSprintReviewer) calculateRateLimitUsage(ctx context.Context, retro
 			FROM dispatches
 			WHERE project = ? AND dispatched_at >= ?
 		`, projectName, cutoff).Scan(&usage.WeeklyDispatchCount)
-		
+
 		if err != nil {
 			c.logger.Error("failed to get weekly dispatch count", "project", projectName, "error", err)
 			continue
@@ -1046,7 +1233,7 @@ func (c *ChiefSprintReviewer) calculateRateLimitUsage(ctx context.Context, retro
 			FROM dispatches
 			WHERE project = ? AND dispatched_at >= ?
 		`, projectName, cutoff5h).Scan(&usage.FiveHourDispatchCount)
-		
+
 		if err != nil {
 			c.logger.Error("failed to get 5-hour dispatch count", "project", projectName, "error", err)
 			continue
@@ -1120,7 +1307,7 @@ func (c *ChiefSprintReviewer) compareSprintPlanVsActual(ctx context.Context, per
 		planVsActual.VarianceReason = c.inferVarianceReason(planVsActual)
 
 		comparison.ProjectPlanVsActuals[projectName] = planVsActual
-		
+
 		totalAccuracy += planVsActual.PlanningAccuracyPct
 		projectCount++
 	}
@@ -1148,7 +1335,7 @@ func (c *ChiefSprintReviewer) identifySystemicIssues(retroData *CrossProjectRetr
 				Type:             "provider_performance",
 				Severity:         c.assessProviderIssueSeverity(provider),
 				ProjectsAffected: provider.ProjectsAffected,
-				Description:      fmt.Sprintf("Provider %s has %.1f%% failure rate affecting %d projects", 
+				Description: fmt.Sprintf("Provider %s has %.1f%% failure rate affecting %d projects",
 					provider.Provider, provider.TotalStats.FailureRate, len(provider.ProjectsAffected)),
 				RecommendedActions: []string{provider.RecommendedAction},
 				DetectedAt:         time.Now(),
@@ -1195,7 +1382,7 @@ func (c *ChiefSprintReviewer) identifySystemicIssues(retroData *CrossProjectRetr
 				Type:             "planning_accuracy",
 				Severity:         "medium",
 				ProjectsAffected: lowAccuracyProjects,
-				Description:      fmt.Sprintf("Overall planning accuracy is %.1f%% across %d projects", 
+				Description: fmt.Sprintf("Overall planning accuracy is %.1f%% across %d projects",
 					retroData.SprintPlanComparison.OverallPlanAccuracy, len(lowAccuracyProjects)),
 				RecommendedActions: []string{
 					"Review estimation techniques across teams",
@@ -1297,11 +1484,11 @@ func (c *ChiefSprintReviewer) identifyVariancePatterns(projectPlanVsActuals map[
 
 	if len(underdeliveryProjects) >= 2 {
 		pattern := VariancePattern{
-			Pattern:        "widespread_underdelivery",
+			Pattern:          "widespread_underdelivery",
 			ProjectsAffected: underdeliveryProjects,
-			Frequency:      len(underdeliveryProjects),
-			Description:    "Multiple projects consistently delivering less than planned",
-			Recommendation: "Review estimation practices and identify common blockers",
+			Frequency:        len(underdeliveryProjects),
+			Description:      "Multiple projects consistently delivering less than planned",
+			Recommendation:   "Review estimation practices and identify common blockers",
 		}
 		patterns = append(patterns, pattern)
 	}
@@ -1317,11 +1504,11 @@ func (c *ChiefSprintReviewer) identifyVariancePatterns(projectPlanVsActuals map[
 
 	if len(timeIssueProjects) >= 2 {
 		pattern := VariancePattern{
-			Pattern:        "time_estimation_issues",
+			Pattern:          "time_estimation_issues",
 			ProjectsAffected: timeIssueProjects,
-			Frequency:      len(timeIssueProjects),
-			Description:    "Multiple projects have significant time estimation variance",
-			Recommendation: "Implement time tracking and estimation calibration",
+			Frequency:        len(timeIssueProjects),
+			Description:      "Multiple projects have significant time estimation variance",
+			Recommendation:   "Implement time tracking and estimation calibration",
 		}
 		patterns = append(patterns, pattern)
 	}
@@ -1332,14 +1519,14 @@ func (c *ChiefSprintReviewer) identifyVariancePatterns(projectPlanVsActuals map[
 func uniqueStrings(input []string) []string {
 	keys := make(map[string]bool)
 	var result []string
-	
+
 	for _, str := range input {
 		if !keys[str] {
 			keys[str] = true
 			result = append(result, str)
 		}
 	}
-	
+
 	return result
 }
 

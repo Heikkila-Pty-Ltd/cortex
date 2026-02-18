@@ -16,36 +16,39 @@ import (
 
 // CeremonyScheduler manages cadence-based ceremony scheduling
 type CeremonyScheduler struct {
-	cfg        *config.Config
-	store      *store.Store
-	dispatcher dispatch.DispatcherInterface
-	logger     *slog.Logger
-	chief      *chief.Chief
+	cfg            *config.Config
+	store          *store.Store
+	dispatcher     dispatch.DispatcherInterface
+	logger         *slog.Logger
+	chief          *chief.Chief
+	chiefSM        *ChiefSM
 	sprintCeremony *learner.SprintCeremony
 
-	mu                  sync.RWMutex
-	ceremonySchedules   map[chief.CeremonyType]chief.CeremonySchedule
-	lastCeremonyCheck   time.Time
+	mu                sync.RWMutex
+	ceremonySchedules map[chief.CeremonyType]chief.CeremonySchedule
+	lastCeremonyCheck time.Time
 }
 
 // NewCeremonyScheduler creates a new ceremony scheduler
 func NewCeremonyScheduler(cfg *config.Config, store *store.Store, dispatcher dispatch.DispatcherInterface, logger *slog.Logger) *CeremonyScheduler {
 	chiefSM := chief.New(cfg, store, dispatcher, logger)
+	schedulerChiefSM := NewChiefSM(cfg, logger, store, dispatcher)
 	sprintCeremony := learner.NewSprintCeremony(cfg, store, dispatcher, logger)
-	
+
 	cs := &CeremonyScheduler{
-		cfg:            cfg,
-		store:          store,
-		dispatcher:     dispatcher,
-		logger:         logger,
-		chief:          chiefSM,
-		sprintCeremony: sprintCeremony,
+		cfg:               cfg,
+		store:             store,
+		dispatcher:        dispatcher,
+		logger:            logger,
+		chief:             chiefSM,
+		chiefSM:           schedulerChiefSM,
+		sprintCeremony:    sprintCeremony,
 		ceremonySchedules: make(map[chief.CeremonyType]chief.CeremonySchedule),
 	}
 
 	// Initialize default ceremony schedules
 	cs.initializeSchedules()
-	
+
 	return cs
 }
 
@@ -82,14 +85,14 @@ func (cs *CeremonyScheduler) CheckCeremonies(ctx context.Context) {
 	}
 
 	now := time.Now()
-	
+
 	// Don't check ceremonies too frequently (minimum 30 minutes between checks)
 	if now.Sub(cs.lastCeremonyCheck) < 30*time.Minute {
 		return
 	}
 
 	cs.lastCeremonyCheck = now
-	
+
 	cs.mu.RLock()
 	schedules := make(map[chief.CeremonyType]chief.CeremonySchedule)
 	for k, v := range cs.ceremonySchedules {
@@ -106,7 +109,7 @@ func (cs *CeremonyScheduler) CheckCeremonies(ctx context.Context) {
 func (cs *CeremonyScheduler) checkAndRunCeremony(ctx context.Context, ceremonyType chief.CeremonyType, schedule chief.CeremonySchedule) {
 	// Update the LastChecked timestamp
 	schedule.LastChecked = time.Now()
-	
+
 	shouldRun := cs.chief.ShouldRunCeremony(ctx, schedule)
 	if !shouldRun {
 		// Update schedule with new LastChecked time
@@ -136,7 +139,7 @@ func (cs *CeremonyScheduler) checkAndRunCeremony(ctx context.Context, ceremonyTy
 		schedule.LastRan = time.Now()
 		cs.logger.Info("ceremony completed successfully", "type", ceremonyType)
 	}
-	
+
 	cs.updateSchedule(ceremonyType, schedule)
 }
 
@@ -148,7 +151,7 @@ func (cs *CeremonyScheduler) runMultiTeamPlanningCeremony(ctx context.Context) e
 		return nil
 	}
 
-	return cs.chief.RunMultiTeamPlanning(ctx)
+	return cs.chiefSM.RunMultiTeamPlanning(ctx)
 }
 
 // hasRunningCeremonyDispatch checks if there are running ceremony dispatches of a given type
@@ -163,7 +166,7 @@ func (cs *CeremonyScheduler) hasRunningCeremonyDispatch(ctx context.Context, cer
 		if dispatch.BeadID != "" && len(dispatch.BeadID) > len("ceremony-") {
 			// Check if this is a ceremony dispatch by looking at bead ID pattern
 			if dispatch.BeadID[:9] == "ceremony-" {
-				cs.logger.Debug("found running ceremony dispatch", 
+				cs.logger.Debug("found running ceremony dispatch",
 					"bead_id", dispatch.BeadID)
 				return true
 			}
@@ -184,7 +187,7 @@ func (cs *CeremonyScheduler) containsIgnoreCase(str, substr string) bool {
 				c1 += 32 // convert to lowercase
 			}
 			if c2 >= 'A' && c2 <= 'Z' {
-				c2 += 32 // convert to lowercase  
+				c2 += 32 // convert to lowercase
 			}
 			if c1 != c2 {
 				match = false
@@ -209,7 +212,7 @@ func (cs *CeremonyScheduler) updateSchedule(ceremonyType chief.CeremonyType, sch
 func (cs *CeremonyScheduler) GetSchedules() map[chief.CeremonyType]chief.CeremonySchedule {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
-	
+
 	schedules := make(map[chief.CeremonyType]chief.CeremonySchedule)
 	for k, v := range cs.ceremonySchedules {
 		schedules[k] = v
@@ -242,7 +245,7 @@ func (cs *CeremonyScheduler) runSprintReviewCeremony(ctx context.Context) error 
 		cs.logger.Info("running sprint review ceremony", "project", projectName)
 		result, err := cs.sprintCeremony.RunReview(ctx, projectName)
 		if err != nil {
-			cs.logger.Error("sprint review ceremony failed", 
+			cs.logger.Error("sprint review ceremony failed",
 				"project", projectName, "error", err)
 			if firstErr == nil {
 				firstErr = err
@@ -253,7 +256,7 @@ func (cs *CeremonyScheduler) runSprintReviewCeremony(ctx context.Context) error 
 		// Start monitoring in background (non-blocking)
 		go func(r *learner.CeremonyResult, pName string) {
 			if monitorErr := cs.sprintCeremony.MonitorCompletion(ctx, r); monitorErr != nil {
-				cs.logger.Error("sprint review monitoring failed", 
+				cs.logger.Error("sprint review monitoring failed",
 					"project", pName, "ceremony_id", r.CeremonyID, "error", monitorErr)
 			}
 		}(result, projectName)
@@ -294,7 +297,7 @@ func (cs *CeremonyScheduler) runSprintRetrospectiveCeremony(ctx context.Context)
 		cs.logger.Info("running sprint retrospective ceremony", "project", projectName)
 		result, err := cs.sprintCeremony.RunRetro(ctx, projectName)
 		if err != nil {
-			cs.logger.Error("sprint retrospective ceremony failed", 
+			cs.logger.Error("sprint retrospective ceremony failed",
 				"project", projectName, "error", err)
 			if firstErr == nil {
 				firstErr = err
@@ -305,7 +308,7 @@ func (cs *CeremonyScheduler) runSprintRetrospectiveCeremony(ctx context.Context)
 		// Start monitoring in background (non-blocking)
 		go func(r *learner.CeremonyResult, pName string) {
 			if monitorErr := cs.sprintCeremony.MonitorCompletion(ctx, r); monitorErr != nil {
-				cs.logger.Error("sprint retrospective monitoring failed", 
+				cs.logger.Error("sprint retrospective monitoring failed",
 					"project", pName, "ceremony_id", r.CeremonyID, "error", monitorErr)
 			}
 		}(result, projectName)
@@ -334,7 +337,7 @@ func (cs *CeremonyScheduler) areReviewCeremoniesRunning(ctx context.Context) boo
 			// Check if this is a review ceremony dispatch
 			if len(dispatch.BeadID) > 9 && dispatch.BeadID[:9] == "ceremony-" {
 				if cs.containsIgnoreCase(dispatch.BeadID, "-review-") {
-					cs.logger.Debug("found running review ceremony dispatch", 
+					cs.logger.Debug("found running review ceremony dispatch",
 						"bead_id", dispatch.BeadID)
 					return true
 				}
