@@ -130,19 +130,31 @@ func ListBeads(beadsDir string) ([]Bead, error) {
 func ListBeadsCtx(ctx context.Context, beadsDir string) ([]Bead, error) {
 	root := projectRoot(beadsDir)
 
-	out, err := runBD(ctx, root, "list", "--all", "--json", "--quiet")
-	if err != nil {
-		out, err = runBD(ctx, root, "list", "--all", "--format=json")
-		if err != nil {
-			// Backward compatibility for older bd versions that do not support --all.
-			out, err = runBD(ctx, root, "list", "--json", "--quiet")
-			if err != nil {
-				out, err = runBD(ctx, root, "list", "--format=json")
-				if err != nil {
-					return nil, fmt.Errorf("listing beads: %w", err)
-				}
-			}
+	commands := [][]string{
+		{"list", "--all", "--limit", "0", "--json", "--quiet"},
+		{"list", "--all", "--limit", "0", "--format=json"},
+		{"list", "--all", "--json", "--quiet"},
+		{"list", "--all", "--format=json"},
+		{"list", "--limit", "0", "--json", "--quiet"},
+		{"list", "--limit", "0", "--format=json"},
+		{"list", "--json", "--quiet"},
+		{"list", "--format=json"},
+	}
+
+	var (
+		out     []byte
+		err     error
+		lastErr error
+	)
+	for _, args := range commands {
+		out, err = runBD(ctx, root, args...)
+		if err == nil {
+			break
 		}
+		lastErr = err
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listing beads: %w", lastErr)
 	}
 
 	var beads []Bead
@@ -151,6 +163,28 @@ func ListBeadsCtx(ctx context.Context, beadsDir string) ([]Bead, error) {
 	}
 	resolveDependencies(beads)
 	return beads, nil
+}
+
+// SyncImport refreshes the local beads DB from JSONL in import-only mode.
+func SyncImport(beadsDir string) error {
+	return SyncImportCtx(context.Background(), beadsDir)
+}
+
+// SyncImportCtx is the context-aware version of SyncImport.
+func SyncImportCtx(ctx context.Context, beadsDir string) error {
+	root := projectRoot(beadsDir)
+	_, err := runBD(ctx, root, "sync", "--import-only")
+	if err == nil {
+		return nil
+	}
+
+	// Backward compatibility for older bd versions without --import-only.
+	if strings.Contains(err.Error(), "unknown flag") || strings.Contains(err.Error(), "unknown shorthand flag") {
+		if _, fallbackErr := runBD(ctx, root, "sync"); fallbackErr == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("syncing beads import state: %w", err)
 }
 
 // ShowBead runs bd show --json {beadID} and returns the detail.

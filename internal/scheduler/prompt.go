@@ -213,15 +213,14 @@ Note: You can also use 'gh pr review --approve' or 'gh pr review --request-chang
 	},
 	"ops": func(b beads.Bead, useBranches bool, prDiff string) string {
 		return fmt.Sprintf(`## Instructions (QA/Ops)
-1. Run the full test suite
-2. Verify acceptance criteria are met
-3. If all tests pass: transition to DoD checking: bd update %s --set-labels stage:dod
-4. If tests fail: add failure notes and transition back: bd update %s --set-labels stage:coding
-5. When DoD is complete and all criteria met: bd close %s
-6. Unassign yourself: bd update %s --assignee=""
+	1. Verify acceptance criteria are met with focused validation for this task (do not run unrelated full-repo checks here unless the acceptance criteria require it)
+	2. If acceptance criteria are met: transition to DoD checking: bd update %s --set-labels stage:dod
+	3. If acceptance criteria are not met: add failure notes and transition back: bd update %s --set-labels stage:coding
+	4. When DoD is complete and all criteria met: bd close %s
+	5. Unassign yourself: bd update %s --assignee=""
 
-Note: The system will automatically run Definition of Done checks after you transition to stage:dod.
-`, b.ID, b.ID, b.ID, b.ID)
+	Note: DoD is the gate for full project checks. After stage:dod, the scheduler will run configured Definition of Done checks automatically.
+	`, b.ID, b.ID, b.ID, b.ID)
 	},
 }
 

@@ -58,9 +58,10 @@ const (
 	failureQuarantineWindow      = 45 * time.Minute
 	failureQuarantineLogInterval = 10 * time.Minute
 
-	churnDispatchThreshold = 6
-	churnWindow            = 60 * time.Minute
-	churnBlockInterval     = 20 * time.Minute
+	churnDispatchThreshold      = 6
+	churnTotalDispatchThreshold = 12
+	churnWindow                 = 60 * time.Minute
+	churnBlockInterval          = 20 * time.Minute
 
 	epicBreakdownInterval   = 6 * time.Hour
 	epicBreakdownTitleStart = "Auto: break down epic "
@@ -240,6 +241,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 
 	// Run health checks - stuck dispatch detection and zombie cleanup
 	s.runHealthChecks()
+
+	// Keep the local beads DB synchronized with JSONL before each scheduling pass.
+	s.syncBeadsImports(ctx)
 
 	// Reconcile stale ownership locks and evaluate gateway breaker before new dispatches.
 	s.reconcileExpiredClaimLeases(ctx)
@@ -1623,20 +1627,33 @@ func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, project
 
 	now := time.Now()
 	cutoff := now.Add(-churnWindow)
-	recent := 0
+	recentFailureLike := 0
+	recentAll := 0
 	for _, d := range history {
 		if d.DispatchedAt.Before(cutoff) {
 			continue
 		}
+		if isChurnTotalStatus(d.Status) {
+			recentAll++
+		}
 		if isChurnCountableStatus(d.Status) {
-			recent++
+			recentFailureLike++
 		}
 	}
 
 	key := projectName + ":" + bead.ID
-	if recent < churnDispatchThreshold {
+	if recentFailureLike < churnDispatchThreshold && recentAll < churnTotalDispatchThreshold {
 		delete(s.churnBlock, key)
 		return false
+	}
+
+	triggerCount := recentFailureLike
+	triggerThreshold := churnDispatchThreshold
+	triggerMode := "failure_like"
+	if recentFailureLike < churnDispatchThreshold && recentAll >= churnTotalDispatchThreshold {
+		triggerCount = recentAll
+		triggerThreshold = churnTotalDispatchThreshold
+		triggerMode = "all_status"
 	}
 
 	last, seen := s.churnBlock[key]
@@ -1645,7 +1662,11 @@ func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, project
 			"project", projectName,
 			"bead", bead.ID,
 			"type", bead.Type,
-			"dispatches_in_window", recent,
+			"dispatches_in_window", triggerCount,
+			"dispatches_failure_like", recentFailureLike,
+			"dispatches_all_status", recentAll,
+			"trigger_mode", triggerMode,
+			"threshold", triggerThreshold,
 			"window", churnWindow.String())
 		return true
 	}
@@ -1663,20 +1684,28 @@ func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, project
 			"project", projectName,
 			"bead", bead.ID,
 			"type", bead.Type,
-			"dispatches_in_window", recent,
+			"dispatches_in_window", triggerCount,
+			"dispatches_failure_like", recentFailureLike,
+			"dispatches_all_status", recentAll,
+			"trigger_mode", triggerMode,
+			"threshold", triggerThreshold,
 			"window", churnWindow.String())
 	} else if hasRecentChurnEscalation(issueList, bead.ID, cutoff) {
 		s.logger.Warn("bead blocked by churn guard (recent escalation already recorded)",
 			"project", projectName,
 			"bead", bead.ID,
 			"type", bead.Type,
-			"dispatches_in_window", recent,
+			"dispatches_in_window", triggerCount,
+			"dispatches_failure_like", recentFailureLike,
+			"dispatches_all_status", recentAll,
+			"trigger_mode", triggerMode,
+			"threshold", triggerThreshold,
 			"window", churnWindow.String())
 	} else {
-		title := fmt.Sprintf("Auto: churn guard blocked bead %s (%d dispatches/%s)", bead.ID, recent, churnWindow)
+		title := fmt.Sprintf("Auto: churn guard blocked bead %s (%d dispatches/%s)", bead.ID, triggerCount, churnWindow)
 		description := fmt.Sprintf(
-			"Bead `%s` in project `%s` exceeded churn threshold (%d dispatches in %s) and was blocked from further overnight dispatch.\n\nPlease investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.\n\nBead title: %s\nBead type: %s",
-			bead.ID, projectName, recent, churnWindow, bead.Title, bead.Type,
+			"Bead `%s` in project `%s` exceeded churn threshold and was blocked from further overnight dispatch.\n\nTrigger mode: %s\nFailure-like dispatches in window: %d (threshold: %d)\nAll dispatches in window: %d (threshold: %d)\nWindow: %s\n\nPlease investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.\n\nBead title: %s\nBead type: %s",
+			bead.ID, projectName, triggerMode, recentFailureLike, churnDispatchThreshold, recentAll, churnTotalDispatchThreshold, churnWindow, bead.Title, bead.Type,
 		)
 		deps := []string{fmt.Sprintf("discovered-from:%s", bead.ID)}
 		if issueID, err := beads.CreateIssueCtx(ctx, beadsDir, title, "bug", 1, description, deps); err != nil {
@@ -1686,12 +1715,16 @@ func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, project
 				"project", projectName,
 				"bead", bead.ID,
 				"issue", issueID,
-				"dispatches_in_window", recent)
+				"dispatches_in_window", triggerCount,
+				"dispatches_failure_like", recentFailureLike,
+				"dispatches_all_status", recentAll,
+				"trigger_mode", triggerMode,
+				"threshold", triggerThreshold)
 		}
 	}
 
 	_ = s.store.RecordHealthEventWithDispatch("bead_churn_blocked",
-		fmt.Sprintf("project %s bead %s blocked after %d dispatches in %s", projectName, bead.ID, recent, churnWindow),
+		fmt.Sprintf("project %s bead %s blocked by churn guard mode=%s failure_like=%d/%d all_status=%d/%d in %s", projectName, bead.ID, triggerMode, recentFailureLike, churnDispatchThreshold, recentAll, churnTotalDispatchThreshold, churnWindow),
 		0, bead.ID)
 	s.churnBlock[key] = now
 	return true
@@ -1703,6 +1736,30 @@ func isChurnCountableStatus(status string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func isChurnTotalStatus(status string) bool {
+	switch status {
+	case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Scheduler) syncBeadsImports(ctx context.Context) {
+	for projectName, project := range s.cfg.Projects {
+		if !project.Enabled {
+			continue
+		}
+		beadsDir := config.ExpandHome(strings.TrimSpace(project.BeadsDir))
+		if beadsDir == "" {
+			continue
+		}
+		if err := beads.SyncImportCtx(ctx, beadsDir); err != nil {
+			s.logger.Warn("failed pre-tick beads sync import", "project", projectName, "beads_dir", beadsDir, "error", err)
+		}
 	}
 }
 

@@ -65,7 +65,7 @@ func TestIsChurnBlocked_RecordsEscalationWhenNotQuarantined(t *testing.T) {
 	}
 }
 
-func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *testing.T) {
+func TestIsChurnBlocked_CompletedDispatchesBelowTotalThresholdDoNotBlock(t *testing.T) {
 	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
 	installFakeBDForChurnGuardTest(t)
 
@@ -84,6 +84,31 @@ func TestIsChurnBlocked_CompletedDispatchesDoNotCountTowardChurnThreshold(t *tes
 
 	if hasHealthEventType(events, "bead_churn_blocked") {
 		t.Fatal("did not expect churn escalation health event for completed-only history")
+	}
+}
+
+func TestIsChurnBlocked_CompletedDispatchesAboveTotalThresholdBlock(t *testing.T) {
+	sched, st, beadsDir := newChurnGuardSchedulerHarness(t)
+	installFakeBDForChurnGuardTest(t)
+
+	const beadID = "cortex-completed-only-high-volume"
+	recordDispatchHistory(t, st, beadID, "completed", churnTotalDispatchThreshold+1)
+
+	blocked := sched.isChurnBlocked(context.Background(), beads.Bead{ID: beadID, Type: "task", Title: "completed-only high-volume churn test"}, "cortex", beadsDir)
+	if !blocked {
+		t.Fatal("expected churn guard block for high-volume completed-only history")
+	}
+
+	events, err := st.GetRecentHealthEvents(10)
+	if err != nil {
+		t.Fatalf("get health events: %v", err)
+	}
+
+	if !hasHealthEventType(events, "bead_churn_blocked") {
+		t.Fatal("expected churn escalation health event for high-volume completed-only history")
+	}
+	if hasHealthEventType(events, "bead_quarantined") {
+		t.Fatal("did not expect quarantine event for completed-only history")
 	}
 }
 

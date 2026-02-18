@@ -271,8 +271,8 @@ func TestListBeadsCtxUsesAllFlag(t *testing.T) {
 		t.Fatalf("read args log: %v", err)
 	}
 	got := string(args)
-	if !strings.Contains(got, "list --all --json --quiet") {
-		t.Fatalf("expected bd list to include --all, got %q", got)
+	if !strings.Contains(got, "list --all --limit 0 --json --quiet") {
+		t.Fatalf("expected bd list to include --all --limit 0, got %q", got)
 	}
 }
 
@@ -323,10 +323,92 @@ func TestListBeadsCtxFallsBackWhenAllUnsupported(t *testing.T) {
 		t.Fatalf("read args log: %v", err)
 	}
 	got := string(args)
-	if !strings.Contains(got, "list --all --json --quiet") {
+	if !strings.Contains(got, "list --all --limit 0 --json --quiet") {
 		t.Fatalf("expected initial --all call, got %q", got)
 	}
-	if !strings.Contains(got, "list --json --quiet") {
-		t.Fatalf("expected fallback without --all, got %q", got)
+	if !strings.Contains(got, "list --limit 0 --json --quiet") {
+		t.Fatalf("expected fallback without --all to include --limit 0, got %q", got)
+	}
+}
+
+func TestSyncImportCtxUsesImportOnly(t *testing.T) {
+	projectDir := t.TempDir()
+	beadsDir := filepath.Join(projectDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+	logPath := filepath.Join(projectDir, "args.log")
+
+	fakeBin := t.TempDir()
+	bdPath := filepath.Join(fakeBin, "bd")
+	script := "#!/bin/sh\n" +
+		"echo \"$@\" >> \"$BD_ARGS_LOG\"\n" +
+		"echo 'ok'\n"
+	if err := os.WriteFile(bdPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake bd: %v", err)
+	}
+
+	t.Setenv("BD_ARGS_LOG", logPath)
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+	if err := SyncImportCtx(context.Background(), beadsDir); err != nil {
+		t.Fatalf("SyncImportCtx failed: %v", err)
+	}
+
+	args, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	got := string(args)
+	if !strings.Contains(got, "sync --import-only") {
+		t.Fatalf("expected bd sync to include --import-only, got %q", got)
+	}
+}
+
+func TestSyncImportCtxFallsBackWithoutImportOnly(t *testing.T) {
+	projectDir := t.TempDir()
+	beadsDir := filepath.Join(projectDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+	logPath := filepath.Join(projectDir, "args.log")
+
+	fakeBin := t.TempDir()
+	bdPath := filepath.Join(fakeBin, "bd")
+	script := "#!/bin/sh\n" +
+		"echo \"$@\" >> \"$BD_ARGS_LOG\"\n" +
+		"case \"$*\" in\n" +
+		"  *\"sync --import-only\"*)\n" +
+		"    echo 'unknown flag: --import-only' >&2\n" +
+		"    exit 1\n" +
+		"    ;;\n" +
+		"  *\"sync\"*)\n" +
+		"    echo 'ok'\n" +
+		"    ;;\n" +
+		"  *)\n" +
+		"    echo 'ok'\n" +
+		"    ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(bdPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake bd: %v", err)
+	}
+
+	t.Setenv("BD_ARGS_LOG", logPath)
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+	if err := SyncImportCtx(context.Background(), beadsDir); err != nil {
+		t.Fatalf("SyncImportCtx fallback failed: %v", err)
+	}
+
+	args, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	got := string(args)
+	if !strings.Contains(got, "sync --import-only") {
+		t.Fatalf("expected initial sync with --import-only, got %q", got)
+	}
+	if !strings.Contains(got, "sync\n") && !strings.Contains(got, "sync\r\n") {
+		t.Fatalf("expected fallback sync call, got %q", got)
 	}
 }
