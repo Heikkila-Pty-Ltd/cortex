@@ -3,6 +3,7 @@ package health
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/antigravity-dev/cortex/internal/dispatch"
@@ -28,17 +29,26 @@ func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterfac
 
 	var actions []StuckAction
 	for _, d := range stuck {
+		backendType := strings.TrimSpace(d.Backend)
+		if backendType == "" {
+			if strings.TrimSpace(d.SessionName) != "" {
+				backendType = "tmux"
+			} else {
+				backendType = dispatcher.GetHandleType()
+			}
+		}
+
 		alive := dispatcher.IsAlive(d.PID)
-		if dispatcher.GetHandleType() == "session" && d.SessionName != "" {
+		if backendType == "tmux" && strings.TrimSpace(d.SessionName) != "" {
 			sessionStatus, _ := dispatch.SessionStatus(d.SessionName)
 			alive = sessionStatus == "running"
 		}
 
 		// Kill if still alive
 		if alive {
-			logger.Warn("killing stuck dispatch", "bead", d.BeadID, "handle", d.PID, "handle_type", dispatcher.GetHandleType())
+			logger.Warn("killing stuck dispatch", "bead", d.BeadID, "handle", d.PID, "backend", backendType)
 			var killErr error
-			if dispatcher.GetHandleType() == "session" && d.SessionName != "" {
+			if backendType == "tmux" && strings.TrimSpace(d.SessionName) != "" {
 				killErr = dispatch.KillSession(d.SessionName)
 			} else {
 				killErr = dispatcher.Kill(d.PID)
@@ -46,10 +56,10 @@ func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterfac
 			if killErr != nil {
 				logger.Error("failed to kill stuck process", "handle", d.PID, "error", killErr)
 			}
-			_ = s.RecordHealthEventWithDispatch("stuck_killed", fmt.Sprintf("bead %s handle %d (%s) killed after timeout", d.BeadID, d.PID, dispatcher.GetHandleType()), d.ID, d.BeadID)
+			_ = s.RecordHealthEventWithDispatch("stuck_killed", fmt.Sprintf("bead %s handle %d (%s) killed after timeout", d.BeadID, d.PID, backendType), d.ID, d.BeadID)
 		} else {
-			_ = s.RecordHealthEventWithDispatch("stuck_dead", fmt.Sprintf("bead %s handle %d (%s) already dead", d.BeadID, d.PID, dispatcher.GetHandleType()), d.ID, d.BeadID)
-			logger.Warn("stuck dispatch already dead", "bead", d.BeadID, "handle", d.PID, "handle_type", dispatcher.GetHandleType())
+			_ = s.RecordHealthEventWithDispatch("stuck_dead", fmt.Sprintf("bead %s handle %d (%s) already dead", d.BeadID, d.PID, backendType), d.ID, d.BeadID)
+			logger.Warn("stuck dispatch already dead", "bead", d.BeadID, "handle", d.PID, "backend", backendType)
 		}
 
 		// Mark as failed and check retry eligibility

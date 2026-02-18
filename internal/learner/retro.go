@@ -2,6 +2,7 @@ package learner
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ type RetroReport struct {
 	Failed          int
 	AvgDuration     float64
 	ProviderStats   map[string]ProviderStats
+	FastTierAB      []FastTierCLIStats
 	TierAccuracy    map[string]TierAccuracy
 	Recommendations []string
 }
@@ -49,6 +51,7 @@ func GenerateWeeklyRetro(s *store.Store) (*RetroReport, error) {
 
 	// Provider performance
 	report.ProviderStats, _ = GetProviderStats(s, window)
+	report.FastTierAB, _ = GetFastTierCLIComparison(s, window, []string{"kilo", "aider"})
 
 	// Tier accuracy
 	report.TierAccuracy, _ = GetTierAccuracy(s, window)
@@ -66,6 +69,10 @@ func generateRecommendations(r *RetroReport) []string {
 		if ps.Total >= 5 && ps.FailureRate > 30 {
 			recs = append(recs, fmt.Sprintf("Provider %s had %.0f%% failure rate - consider deprioritizing", ps.Provider, ps.FailureRate))
 		}
+		category, count := topFailureCategory(ps.FailureCategories)
+		if category != "" && count >= 2 {
+			recs = append(recs, fmt.Sprintf("Provider %s most common output failure is %s (%d incidents) - harden prompts/tooling or adjust tier routing", ps.Provider, category, count))
+		}
 	}
 
 	for _, ta := range r.TierAccuracy {
@@ -76,6 +83,10 @@ func generateRecommendations(r *RetroReport) []string {
 
 	if r.TotalDispatches == 0 {
 		recs = append(recs, "No dispatches in the past week - check if projects have open beads")
+	}
+
+	if ab := fastTierABRecommendation(r.FastTierAB); ab != "" {
+		recs = append(recs, ab)
 	}
 
 	return recs
@@ -105,6 +116,16 @@ func FormatRetroMarkdown(r *RetroReport) string {
 		b.WriteString("\n")
 	}
 
+	if len(r.FastTierAB) > 0 {
+		fmt.Fprintf(&b, "## Fast-tier CLI A/B\n")
+		fmt.Fprintf(&b, "| CLI | Total | Success Rate |\n")
+		fmt.Fprintf(&b, "|-----|-------|--------------|\n")
+		for _, ab := range r.FastTierAB {
+			fmt.Fprintf(&b, "| %s | %d | %.0f%% |\n", ab.CLI, ab.Total, ab.SuccessRate)
+		}
+		b.WriteString("\n")
+	}
+
 	if len(r.TierAccuracy) > 0 {
 		fmt.Fprintf(&b, "## Tier Accuracy\n")
 		for _, ta := range r.TierAccuracy {
@@ -122,4 +143,44 @@ func FormatRetroMarkdown(r *RetroReport) string {
 	}
 
 	return b.String()
+}
+
+func topFailureCategory(categories map[string]int) (string, int) {
+	var top string
+	count := 0
+	for category, n := range categories {
+		if n > count {
+			top = category
+			count = n
+		}
+	}
+	return top, count
+}
+
+func fastTierABRecommendation(stats []FastTierCLIStats) string {
+	if len(stats) == 0 {
+		return ""
+	}
+
+	var kilo, aider *FastTierCLIStats
+	for i := range stats {
+		switch strings.ToLower(stats[i].CLI) {
+		case "kilo":
+			kilo = &stats[i]
+		case "aider":
+			aider = &stats[i]
+		}
+	}
+	if kilo == nil || aider == nil || kilo.Total < 3 || aider.Total < 3 {
+		return ""
+	}
+
+	diff := aider.SuccessRate - kilo.SuccessRate
+	if math.Abs(diff) < 15 {
+		return fmt.Sprintf("Fast-tier A/B: kilo %.0f%% (n=%d) vs aider %.0f%% (n=%d). Difference is small; continue observing.", kilo.SuccessRate, kilo.Total, aider.SuccessRate, aider.Total)
+	}
+	if diff > 0 {
+		return fmt.Sprintf("Fast-tier A/B: kilo %.0f%% (n=%d) vs aider %.0f%% (n=%d). Consider preferring aider for fast-tier beads.", kilo.SuccessRate, kilo.Total, aider.SuccessRate, aider.Total)
+	}
+	return fmt.Sprintf("Fast-tier A/B: kilo %.0f%% (n=%d) vs aider %.0f%% (n=%d). Consider preferring kilo for fast-tier beads.", kilo.SuccessRate, kilo.Total, aider.SuccessRate, aider.Total)
 }

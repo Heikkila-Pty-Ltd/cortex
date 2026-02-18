@@ -85,6 +85,8 @@ func (r *DispatcherResolver) createDispatcherForBackend(backend string) (dispatc
 		return dispatch.NewTmuxDispatcher(), nil
 	case "headless_cli":
 		return dispatch.NewDispatcher(), nil
+	case "openclaw":
+		return dispatch.NewDispatcher(), nil
 	default:
 		return nil, fmt.Errorf("unknown backend type: %s", backend)
 	}
@@ -145,6 +147,9 @@ func (r *DispatcherResolver) validateBackend(backend string) error {
 		return nil
 	case "headless_cli":
 		// No additional validation needed for headless CLI
+		return nil
+	case "openclaw":
+		// Existing openclaw dispatcher path
 		return nil
 	default:
 		return fmt.Errorf("unknown backend type")

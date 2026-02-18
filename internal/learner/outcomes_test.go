@@ -2,6 +2,8 @@ package learner
 
 import (
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -146,5 +148,93 @@ func TestOutcomesWithZeroDispatches(t *testing.T) {
 	}
 	if velocity.Completed != 0 || velocity.AvgDurationS != 0 || velocity.BeadsPerDay != 0 {
 		t.Fatalf("expected zeroed velocity, got %+v", velocity)
+	}
+}
+
+func TestGetProviderStatsReadsFailureCategoryFromLogPath(t *testing.T) {
+	s := tempInMemoryStore(t)
+	now := time.Now().Add(-time.Hour)
+	seedDispatch(t, s, "logcat-1", "project-a", "provider-a", "fast", "failed", 0, now)
+
+	logPath := filepath.Join(t.TempDir(), "dispatch.log")
+	if err := os.WriteFile(logPath, []byte("fatal: Permission denied while writing file"), 0644); err != nil {
+		t.Fatalf("write log file: %v", err)
+	}
+
+	_, err := s.DB().Exec(`UPDATE dispatches SET log_path = ?, failure_category = '' WHERE bead_id = ?`, logPath, "logcat-1")
+	if err != nil {
+		t.Fatalf("update dispatch log path failed: %v", err)
+	}
+
+	stats, err := GetProviderStats(s, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("GetProviderStats failed: %v", err)
+	}
+
+	ps, ok := stats["provider-a"]
+	if !ok {
+		t.Fatalf("missing provider-a stats: %v", stats)
+	}
+	if got := ps.FailureCategories["permission_denied"]; got != 1 {
+		t.Fatalf("expected permission_denied=1 from log_path parsing, got %d (%v)", got, ps.FailureCategories)
+	}
+}
+
+func TestGetFastTierCLIComparison(t *testing.T) {
+	s := tempInMemoryStore(t)
+	now := time.Now().Add(-time.Hour)
+
+	seedDispatch(t, s, "ab-1", "project-a", "kilo-model", "fast", "completed", 60, now)
+	seedDispatch(t, s, "ab-2", "project-a", "kilo-model", "fast", "failed", 0, now.Add(time.Minute))
+	seedDispatch(t, s, "ab-3", "project-a", "aider-model", "fast", "completed", 60, now.Add(2*time.Minute))
+	seedDispatch(t, s, "ab-4", "project-a", "aider-model", "fast", "completed", 60, now.Add(3*time.Minute))
+
+	stats, err := GetFastTierCLIComparison(s, 24*time.Hour, []string{"kilo", "aider"})
+	if err != nil {
+		t.Fatalf("GetFastTierCLIComparison failed: %v", err)
+	}
+
+	byCLI := map[string]FastTierCLIStats{}
+	for _, stat := range stats {
+		byCLI[stat.CLI] = stat
+	}
+
+	if byCLI["kilo"].Total != 2 || math.Abs(byCLI["kilo"].SuccessRate-50) > 0.01 {
+		t.Fatalf("unexpected kilo stats: %+v", byCLI["kilo"])
+	}
+	if byCLI["aider"].Total != 2 || math.Abs(byCLI["aider"].SuccessRate-100) > 0.01 {
+		t.Fatalf("unexpected aider stats: %+v", byCLI["aider"])
+	}
+}
+
+func TestGetProviderStatsIgnoresNonFailedStatusesInFailureCategories(t *testing.T) {
+	s := tempInMemoryStore(t)
+	now := time.Now().Add(-time.Hour)
+
+	seedDispatch(t, s, "status-filter-1", "project-a", "provider-a", "fast", "failed", 0, now)
+	seedDispatch(t, s, "status-filter-2", "project-a", "provider-a", "fast", "pending_retry", 0, now.Add(time.Minute))
+	seedDispatch(t, s, "status-filter-3", "project-a", "provider-a", "fast", "running", 0, now.Add(2*time.Minute))
+
+	if _, err := s.DB().Exec(`UPDATE dispatches SET failure_category = 'test_failure' WHERE bead_id = ?`, "status-filter-1"); err != nil {
+		t.Fatalf("update failed dispatch category: %v", err)
+	}
+	if _, err := s.DB().Exec(`UPDATE dispatches SET failure_category = 'unknown' WHERE bead_id = ?`, "status-filter-2"); err != nil {
+		t.Fatalf("update pending_retry dispatch category: %v", err)
+	}
+	if _, err := s.DB().Exec(`UPDATE dispatches SET failure_category = 'unknown' WHERE bead_id = ?`, "status-filter-3"); err != nil {
+		t.Fatalf("update running dispatch category: %v", err)
+	}
+
+	stats, err := GetProviderStats(s, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("GetProviderStats failed: %v", err)
+	}
+
+	ps := stats["provider-a"]
+	if got := ps.FailureCategories["test_failure"]; got != 1 {
+		t.Fatalf("expected test_failure=1, got %d (%v)", got, ps.FailureCategories)
+	}
+	if got := ps.FailureCategories["unknown"]; got != 0 {
+		t.Fatalf("expected unknown failures from non-failed statuses to be ignored, got %d (%v)", got, ps.FailureCategories)
 	}
 }
