@@ -233,6 +233,7 @@ func Load(path string) (*Config, error) {
 	}
 
 	applyDefaults(&cfg)
+	normalizePaths(&cfg)
 
 	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("validating config: %w", err)
@@ -381,6 +382,23 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Chief.AgentID == "" {
 		cfg.Chief.AgentID = "cortex-chief-scrum"
+	}
+}
+
+// normalizePaths expands "~" and trims whitespace for configured filesystem paths.
+func normalizePaths(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+
+	cfg.General.StateDB = ExpandHome(strings.TrimSpace(cfg.General.StateDB))
+	cfg.Dispatch.LogDir = ExpandHome(strings.TrimSpace(cfg.Dispatch.LogDir))
+	cfg.API.Security.AuditLog = ExpandHome(strings.TrimSpace(cfg.API.Security.AuditLog))
+
+	for name, project := range cfg.Projects {
+		project.BeadsDir = ExpandHome(strings.TrimSpace(project.BeadsDir))
+		project.Workspace = ExpandHome(strings.TrimSpace(project.Workspace))
+		cfg.Projects[name] = project
 	}
 }
 
