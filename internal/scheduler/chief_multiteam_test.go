@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/antigravity-dev/cortex/internal/config"
+	"github.com/antigravity-dev/cortex/internal/store"
 )
 
 func TestClassifyPlanningSelection(t *testing.T) {
@@ -42,4 +43,35 @@ func TestRunMultiTeamPlanningDisabled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when chief sm is disabled")
 	}
+}
+
+func TestRunMultiTeamPlanningMissingDependencies(t *testing.T) {
+	cfg := &config.Config{
+		Chief: config.Chief{
+			Enabled: true,
+		},
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	t.Run("missing store", func(t *testing.T) {
+		chiefSM := NewChiefSM(cfg, logger, nil, NewMockDispatcher())
+		err := chiefSM.RunMultiTeamPlanning(context.Background())
+		if err == nil {
+			t.Fatal("expected error when store is missing")
+		}
+	})
+
+	t.Run("missing dispatcher", func(t *testing.T) {
+		st, err := store.Open(":memory:")
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		defer st.Close()
+
+		chiefSM := NewChiefSM(cfg, logger, st, nil)
+		err = chiefSM.RunMultiTeamPlanning(context.Background())
+		if err == nil {
+			t.Fatal("expected error when dispatcher is missing")
+		}
+	})
 }

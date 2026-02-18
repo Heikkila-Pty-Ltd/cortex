@@ -276,6 +276,18 @@ func (c *ChiefSM) RunMultiTeamPlanning(ctx context.Context) error {
 	if c == nil || c.chief == nil {
 		return fmt.Errorf("chief sm is not initialized")
 	}
+	if c.cfg == nil {
+		return fmt.Errorf("chief sm config is not initialized")
+	}
+	if c.store == nil {
+		return fmt.Errorf("chief sm store is not initialized")
+	}
+	if c.dispatcher == nil {
+		return fmt.Errorf("chief sm dispatcher is not initialized")
+	}
+	if c.reviewer == nil {
+		return fmt.Errorf("chief sm reviewer is not initialized")
+	}
 	if !c.cfg.Chief.Enabled {
 		return fmt.Errorf("chief sm not enabled")
 	}
