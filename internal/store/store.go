@@ -11,7 +11,8 @@ import (
 
 // Store provides SQLite-backed persistence for Cortex state.
 type Store struct {
-	db *sql.DB
+	db                  *sql.DB
+	dispatchPersistHook func(point string) error
 }
 
 // Dispatch represents a dispatched agent task.
@@ -578,6 +579,75 @@ func (s *Store) RecordDispatch(beadID, project, agent, provider, tier string, ha
 		return 0, fmt.Errorf("store: record dispatch: %w", err)
 	}
 	return res.LastInsertId()
+}
+
+const (
+	dispatchPersistFailpointBeforeInsert     = "before_insert"
+	dispatchPersistFailpointAfterInsert      = "after_insert"
+	dispatchPersistFailpointBeforeStageWrite = "before_stage_write"
+)
+
+// SetDispatchPersistHookForTesting configures a failpoint hook for transactional scheduler dispatch persistence.
+func (s *Store) SetDispatchPersistHookForTesting(hook func(point string) error) {
+	s.dispatchPersistHook = hook
+}
+
+func (s *Store) maybeFailDispatchPersist(point string) error {
+	if s.dispatchPersistHook == nil {
+		return nil
+	}
+	if err := s.dispatchPersistHook(point); err != nil {
+		return fmt.Errorf("store: dispatch persist failpoint %s: %w", point, err)
+	}
+	return nil
+}
+
+// RecordSchedulerDispatch atomically persists the scheduler's dispatch row plus labels/stage updates.
+func (s *Store) RecordSchedulerDispatch(beadID, project, agent, provider, tier string, handle int, sessionName, prompt, logPath, branch, backend string, labels []string) (int64, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("store: begin scheduler dispatch transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := s.maybeFailDispatchPersist(dispatchPersistFailpointBeforeInsert); err != nil {
+		return 0, err
+	}
+
+	res, err := tx.Exec(
+		`INSERT INTO dispatches (bead_id, project, agent_id, provider, tier, pid, session_name, stage, prompt, log_path, branch, backend) VALUES (?, ?, ?, ?, ?, ?, ?, 'dispatched', ?, ?, ?, ?)`,
+		beadID, project, agent, provider, tier, handle, sessionName, prompt, logPath, branch, backend,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: record scheduler dispatch: %w", err)
+	}
+	dispatchID, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("store: read scheduler dispatch id: %w", err)
+	}
+
+	if err := s.maybeFailDispatchPersist(dispatchPersistFailpointAfterInsert); err != nil {
+		return 0, err
+	}
+
+	normalizedLabels := encodeDispatchLabels(labels)
+	if _, err := tx.Exec(`UPDATE dispatches SET labels = ? WHERE id = ?`, normalizedLabels, dispatchID); err != nil {
+		return 0, fmt.Errorf("store: record scheduler dispatch labels: %w", err)
+	}
+
+	if err := s.maybeFailDispatchPersist(dispatchPersistFailpointBeforeStageWrite); err != nil {
+		return 0, err
+	}
+
+	if _, err := tx.Exec(`UPDATE dispatches SET stage = ? WHERE id = ?`, "running", dispatchID); err != nil {
+		return 0, fmt.Errorf("store: record scheduler dispatch stage: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("store: commit scheduler dispatch transaction: %w", err)
+	}
+
+	return dispatchID, nil
 }
 
 // UpdateDispatchStatus updates a dispatch's status, exit code, and duration.

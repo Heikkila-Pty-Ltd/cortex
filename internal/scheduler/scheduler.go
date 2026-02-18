@@ -592,23 +592,23 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 
 		sessionName := handle.SessionName
 
-		// Record dispatch with session name for crash-resilient tracking
-		dispatchID, err := s.store.RecordDispatch(
-			item.bead.ID, item.name, agent, provider.Model, currentTier, handle.PID, sessionName, prompt, logPath, branchName, backendName,
+		// Persist scheduler dispatch atomically for rollback-safe retries.
+		dispatchID, err := s.store.RecordSchedulerDispatch(
+			item.bead.ID, item.name, agent, provider.Model, currentTier, handle.PID, sessionName, prompt, logPath, branchName, backendName, item.bead.Labels,
 		)
 		if err != nil {
 			s.logger.Error("failed to record dispatch", "bead", item.bead.ID, "error", err)
+			_ = s.store.RecordHealthEventWithDispatch(
+				"dispatch_persist_failed",
+				fmt.Sprintf("bead=%s project=%s agent=%s backend=%s: %v", item.bead.ID, item.name, agent, backendName, err),
+				0,
+				item.bead.ID,
+			)
 			if killErr := backend.Kill(handle); killErr != nil {
 				s.logger.Warn("failed to terminate dispatch after record failure", "bead", item.bead.ID, "handle", handle.PID, "error", killErr)
 			}
 			releaseLock("dispatch_record_failed")
 			continue
-		}
-		if err := s.store.UpdateDispatchLabels(dispatchID, item.bead.Labels); err != nil {
-			s.logger.Warn("failed to record dispatch labels", "dispatch_id", dispatchID, "bead", item.bead.ID, "error", err)
-		}
-		if err := s.store.UpdateDispatchStage(dispatchID, "running"); err != nil {
-			s.logger.Warn("failed to set dispatch stage", "dispatch_id", dispatchID, "stage", "running", "error", err)
 		}
 		if err := s.store.AttachDispatchToClaimLease(item.bead.ID, dispatchID); err != nil {
 			s.logger.Warn("failed to attach dispatch to claim lease", "bead", item.bead.ID, "dispatch_id", dispatchID, "error", err)
