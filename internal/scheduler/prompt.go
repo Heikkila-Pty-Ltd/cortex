@@ -18,22 +18,24 @@ var stageInstructions = map[string]func(bead beads.Bead, useBranches bool, prDif
 You are the scrum master running one end-to-end sprint planning session with the full backlog context provided in this task.
 
 ### 1. Build a Backlog Digest from Context (required)
-Before selecting work, convert the backlog context into a readable planning table:
+First, read the full backlog context from this prompt and normalize it into one planning table:
 
 | ID | Title | Pri | Stage | Est (min) | Depends On | Refinement Status | Blockers/Risks | Selection |
 |----|-------|-----|-------|-----------|------------|-------------------|----------------|-----------|
 
 Backlog digest rules:
-- Group rows by priority (P0, then P1, then P2) so the highest-value work is easiest to scan.
+- Group rows by priority order (P0, then P1, then P2), and keep dependency chains adjacent.
 - Refinement Status values: ready, needs_acceptance, needs_design, needs_estimate, blocked.
-- Use TBD for missing estimates and refine those items before capacity-based selection.
-- Mark blocked items explicitly and do not count them toward sprint commitment.
+- Use TBD for missing estimates, then refine those items before committing sprint scope.
+- Mark blocked items explicitly and exclude them from sprint commitment math.
+- Add a final Selection value per row: selected, deferred, or blocked.
 
 ### 2. Refine, Estimate, and Clarify Candidates
-Use these commands while reviewing each bead:
+Use these commands while reviewing backlog candidates:
 ~~~bash
-# Pull open backlog in priority order
-bd list --status=open --priority-max=P2
+# See unblocked work first, then all open items for full context
+bd ready
+bd list --status=open
 
 # Inspect full details for one item
 bd show <id>
@@ -42,13 +44,16 @@ bd show <id>
 bd update <id> --acceptance="Specific, testable acceptance criteria"
 bd update <id> --design="Implementation notes, affected files, risks"
 bd update <id> --estimate=<minutes>
-bd update <id> --priority=P0
+bd update <id> --priority=<0-2>
+
+# Capture or correct dependencies as needed
+bd dep add <id> <depends-on-id>
 ~~~
 
 Quality bar:
 - Acceptance criteria must be explicit and testable (clear done/not-done outcomes).
 - Design notes should include implementation approach, affected files, dependency notes, and risks.
-- bd --estimate is in **minutes** (never store story points as estimate).
+- bd update --estimate is in **minutes** (never store story points as estimate).
 - If a bead is too large for one sprint slice (for example, >120 minutes), split it into follow-up beads.
 
 ### 3. Capacity-Based Sprint Selection
@@ -67,7 +72,8 @@ Selection policy:
 ### 4. Update Beads and Transition Stage
 For each selected bead (committed this sprint):
 ~~~bash
-bd update <id> --set-labels stage:planning,sprint:selected --assignee=planner
+bd update <id> --set-labels stage:planning,sprint:selected
+bd update <id> --assignee=planner
 ~~~
 
 For refined but deferred beads:
@@ -87,6 +93,7 @@ bd sync
 
 # Transition this sprint-planning bead to planning stage
 bd update %s --set-labels stage:planning
+bd update %s --assignee=""
 
 # Close this sprint-planning bead once plan is finalized
 bd close %s --reason="Sprint planning completed"
@@ -105,6 +112,7 @@ Use this exact structure in your final output:
 
 **Backlog Digest:**
 - [Short summary of total candidates, ready count, blocked count, and key dependency chain]
+- [Table pasted in compact form, grouped by priority]
 
 **Selected Beads:**
 - [ID] [Title] - P[0-2], [estimate min], [why selected], [dependency status]
@@ -117,7 +125,7 @@ Use this exact structure in your final output:
 
 **Command Log:**
 - [bd commands executed for refinement and selection]
-`, b.ID, b.ID)
+`, b.ID, b.ID, b.ID)
 	},
 	"scrum": func(b beads.Bead, useBranches bool, prDiff string) string {
 		return fmt.Sprintf(`## Instructions (Scrum Master)
