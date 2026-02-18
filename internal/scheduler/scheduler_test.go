@@ -1,10 +1,12 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -628,6 +630,349 @@ func TestRunTickTestInfrastructure(t *testing.T) {
 		store := createTestStore(t)
 		if store == nil {
 			t.Error("Expected non-nil store")
+		}
+	})
+}
+
+type MockBackend struct {
+	mu         sync.Mutex
+	dispatches []dispatch.DispatchOpts
+	nextPID    int
+}
+
+func NewMockBackend() *MockBackend {
+	return &MockBackend{
+		dispatches: make([]dispatch.DispatchOpts, 0),
+		nextPID:    2000,
+	}
+}
+
+func (m *MockBackend) Dispatch(ctx context.Context, opts dispatch.DispatchOpts) (dispatch.Handle, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dispatches = append(m.dispatches, opts)
+	handle := dispatch.Handle{
+		PID:         m.nextPID,
+		SessionName: fmt.Sprintf("mock-%d", m.nextPID),
+		Backend:     m.Name(),
+	}
+	m.nextPID++
+	return handle, nil
+}
+
+func (m *MockBackend) Status(handle dispatch.Handle) (dispatch.DispatchStatus, error) {
+	return dispatch.DispatchStatus{State: "running", ExitCode: -1}, nil
+}
+
+func (m *MockBackend) CaptureOutput(handle dispatch.Handle) (string, error) {
+	return "", nil
+}
+
+func (m *MockBackend) Kill(handle dispatch.Handle) error {
+	return nil
+}
+
+func (m *MockBackend) Cleanup(handle dispatch.Handle) error {
+	return nil
+}
+
+func (m *MockBackend) Name() string {
+	return "mock"
+}
+
+func (m *MockBackend) Dispatches() []dispatch.DispatchOpts {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]dispatch.DispatchOpts, len(m.dispatches))
+	copy(out, m.dispatches)
+	return out
+}
+
+func newRunTickScenarioConfig(maxPerTick int, projects map[string]config.Project) *config.Config {
+	return &config.Config{
+		General: config.General{
+			TickInterval:           config.Duration{Duration: 100 * time.Millisecond},
+			MaxPerTick:             maxPerTick,
+			StuckTimeout:           config.Duration{Duration: 0},
+			MaxConcurrentCoders:    20,
+			MaxConcurrentReviewers: 20,
+			MaxConcurrentTotal:     40,
+		},
+		Chief: config.Chief{
+			Enabled: false,
+		},
+		Dispatch: config.Dispatch{
+			Routing: config.DispatchRouting{
+				FastBackend:     "mock",
+				BalancedBackend: "mock",
+				PremiumBackend:  "mock",
+				CommsBackend:    "mock",
+				RetryBackend:    "mock",
+			},
+		},
+		RateLimits: config.RateLimits{
+			Window5hCap: 100,
+			WeeklyCap:   500,
+		},
+		Tiers: config.Tiers{
+			Fast:     []string{"free-provider"},
+			Balanced: []string{"authed-provider"},
+			Premium:  []string{"authed-provider"},
+		},
+		Providers: map[string]config.Provider{
+			"free-provider": {
+				Model:  "free-model",
+				Authed: false,
+			},
+			"authed-provider": {
+				Model:  "authed-model",
+				Authed: true,
+			},
+		},
+		Projects: projects,
+	}
+}
+
+func newRunTickScenarioScheduler(t *testing.T, cfg *config.Config, lister *MockBeadsLister, logBuf *bytes.Buffer) (*Scheduler, *store.Store, *MockBackend) {
+	t.Helper()
+
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("failed to open in-memory store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	rl := dispatch.NewRateLimiter(st, cfg.RateLimits)
+	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	sched := New(cfg, st, rl, NewMockDispatcher(), logger, false)
+	mockBackend := NewMockBackend()
+
+	sched.backends = map[string]dispatch.Backend{
+		"mock":     mockBackend,
+		"openclaw": mockBackend,
+	}
+	sched.listBeads = lister.ListBeads
+	sched.buildCrossProjectGraph = func(context.Context, map[string]config.Project) (*beads.CrossProjectGraph, error) {
+		return nil, nil
+	}
+	sched.syncBeadsImport = func(context.Context, string) error { return nil }
+	sched.claimBeadOwnership = func(context.Context, string, string) error { return nil }
+	sched.releaseBeadOwnership = func(context.Context, string, string) error { return nil }
+	sched.hasLiveSession = func(string) bool { return false }
+	sched.ensureTeam = func(string, string, string, []string, *slog.Logger) ([]string, error) { return nil, nil }
+	sched.ceremonyScheduler = nil
+	sched.lastCompletionCheck = time.Now()
+
+	return sched, st, mockBackend
+}
+
+func TestRunTick_EndToEndScenarios(t *testing.T) {
+	t.Run("happy path dispatches two ready beads", func(t *testing.T) {
+		lister := NewMockBeadsLister()
+		project := config.Project{Enabled: true, Priority: 1, Workspace: "/tmp/ws1", BeadsDir: "/tmp/p1"}
+		cfg := newRunTickScenarioConfig(5, map[string]config.Project{"test-project": project})
+		logBuf := &bytes.Buffer{}
+		sched, _, backend := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+		lister.SetBeads(project.BeadsDir, []beads.Bead{
+			func() beads.Bead {
+				b := createTestBead("happy-1", "first", "task", "open", 1)
+				b.Labels = []string{"stage:ready"}
+				return b
+			}(),
+			func() beads.Bead {
+				b := createTestBead("happy-2", "second", "task", "open", 2)
+				b.Labels = []string{"stage:review"}
+				return b
+			}(),
+		})
+
+		sched.RunTick(context.Background())
+
+		if got := len(backend.Dispatches()); got != 2 {
+			t.Fatalf("dispatch count = %d, want 2", got)
+		}
+	})
+
+	t.Run("rate limited authed providers fall back to free tier", func(t *testing.T) {
+		lister := NewMockBeadsLister()
+		project := config.Project{Enabled: true, Priority: 1, Workspace: "/tmp/ws2", BeadsDir: "/tmp/p2"}
+		cfg := newRunTickScenarioConfig(5, map[string]config.Project{"test-project": project})
+		cfg.RateLimits.Window5hCap = 0
+		cfg.RateLimits.WeeklyCap = 0
+		logBuf := &bytes.Buffer{}
+		sched, _, backend := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+		lister.SetBeads(project.BeadsDir, []beads.Bead{
+			createTestBead("rate-1", "rate limited", "task", "open", 1),
+		})
+
+		sched.RunTick(context.Background())
+
+		dispatches := backend.Dispatches()
+		if len(dispatches) != 1 {
+			t.Fatalf("dispatch count = %d, want 1", len(dispatches))
+		}
+		if dispatches[0].Model != "free-model" {
+			t.Fatalf("provider model = %q, want free-model", dispatches[0].Model)
+		}
+	})
+
+	t.Run("all providers exhausted dispatches zero and logs warning", func(t *testing.T) {
+		lister := NewMockBeadsLister()
+		project := config.Project{Enabled: true, Priority: 1, Workspace: "/tmp/ws3", BeadsDir: "/tmp/p3"}
+		cfg := newRunTickScenarioConfig(5, map[string]config.Project{"test-project": project})
+		cfg.RateLimits.Window5hCap = 0
+		cfg.RateLimits.WeeklyCap = 0
+		cfg.Tiers.Fast = []string{"authed-provider"}
+		logBuf := &bytes.Buffer{}
+		sched, _, backend := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+		lister.SetBeads(project.BeadsDir, []beads.Bead{
+			createTestBead("exhaust-1", "no providers", "task", "open", 1),
+		})
+
+		sched.RunTick(context.Background())
+
+		if got := len(backend.Dispatches()); got != 0 {
+			t.Fatalf("dispatch count = %d, want 0", got)
+		}
+		if !strings.Contains(logBuf.String(), "no provider available, deferring") {
+			t.Fatalf("expected warning log for exhausted providers")
+		}
+	})
+
+	t.Run("already dispatched bead is skipped", func(t *testing.T) {
+		lister := NewMockBeadsLister()
+		project := config.Project{Enabled: true, Priority: 1, Workspace: "/tmp/ws4", BeadsDir: "/tmp/p4"}
+		cfg := newRunTickScenarioConfig(5, map[string]config.Project{"test-project": project})
+		logBuf := &bytes.Buffer{}
+		sched, st, backend := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+		lister.SetBeads(project.BeadsDir, []beads.Bead{
+			createTestBead("already-1", "already running", "task", "open", 1),
+		})
+		if _, err := st.RecordDispatch("already-1", "test-project", "test-project-coder", "authed-model", "balanced", 123, "sess", "prompt", "", "", "mock"); err != nil {
+			t.Fatalf("seed running dispatch: %v", err)
+		}
+
+		sched.RunTick(context.Background())
+
+		if got := len(backend.Dispatches()); got != 0 {
+			t.Fatalf("dispatch count = %d, want 0", got)
+		}
+	})
+
+	t.Run("epic bead is skipped", func(t *testing.T) {
+		lister := NewMockBeadsLister()
+		project := config.Project{Enabled: true, Priority: 1, Workspace: "/tmp/ws5", BeadsDir: "/tmp/p5"}
+		cfg := newRunTickScenarioConfig(5, map[string]config.Project{"test-project": project})
+		logBuf := &bytes.Buffer{}
+		sched, _, backend := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+		lister.SetBeads(project.BeadsDir, []beads.Bead{
+			createTestBead("epic-1", "epic", "epic", "open", 1),
+		})
+		sched.epicBreakup["test-project:epic-1"] = time.Now()
+
+		sched.RunTick(context.Background())
+
+		if got := len(backend.Dispatches()); got != 0 {
+			t.Fatalf("dispatch count = %d, want 0", got)
+		}
+	})
+
+	t.Run("max per tick caps dispatches", func(t *testing.T) {
+		lister := NewMockBeadsLister()
+		project := config.Project{Enabled: true, Priority: 1, Workspace: "/tmp/ws6", BeadsDir: "/tmp/p6"}
+		cfg := newRunTickScenarioConfig(2, map[string]config.Project{"test-project": project})
+		logBuf := &bytes.Buffer{}
+		sched, _, backend := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+		beadList := make([]beads.Bead, 0, 5)
+		for i := 0; i < 5; i++ {
+			bead := createTestBead(fmt.Sprintf("max-%d", i), "cap", "task", "open", i+1)
+			if i%2 == 0 {
+				bead.Labels = []string{"stage:ready"}
+			} else {
+				bead.Labels = []string{"stage:review"}
+			}
+			beadList = append(beadList, bead)
+		}
+		lister.SetBeads(project.BeadsDir, beadList)
+
+		sched.RunTick(context.Background())
+
+		if got := len(backend.Dispatches()); got != 2 {
+			t.Fatalf("dispatch count = %d, want 2", got)
+		}
+	})
+
+	t.Run("agent busy skips dispatch", func(t *testing.T) {
+		lister := NewMockBeadsLister()
+		project := config.Project{Enabled: true, Priority: 1, Workspace: "/tmp/ws7", BeadsDir: "/tmp/p7"}
+		cfg := newRunTickScenarioConfig(5, map[string]config.Project{"test-project": project})
+		logBuf := &bytes.Buffer{}
+		sched, st, backend := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+		lister.SetBeads(project.BeadsDir, []beads.Bead{
+			createTestBead("busy-1", "busy", "task", "open", 1),
+		})
+		if _, err := st.RecordDispatch("other-bead", "test-project", "test-project-coder", "authed-model", "balanced", 777, "sess", "prompt", "", "", "mock"); err != nil {
+			t.Fatalf("seed agent busy dispatch: %v", err)
+		}
+
+		sched.RunTick(context.Background())
+
+		if got := len(backend.Dispatches()); got != 0 {
+			t.Fatalf("dispatch count = %d, want 0", got)
+		}
+	})
+
+	t.Run("multiple projects respect priority ordering", func(t *testing.T) {
+		lister := NewMockBeadsLister()
+		projectA := config.Project{Enabled: true, Priority: 1, Workspace: "/tmp/ws8a", BeadsDir: "/tmp/p8a"}
+		projectB := config.Project{Enabled: true, Priority: 5, Workspace: "/tmp/ws8b", BeadsDir: "/tmp/p8b"}
+		cfg := newRunTickScenarioConfig(2, map[string]config.Project{
+			"project-a": projectA,
+			"project-b": projectB,
+		})
+		logBuf := &bytes.Buffer{}
+		sched, _, backend := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+		lister.SetBeads(projectA.BeadsDir, []beads.Bead{
+			createTestBead("prio-a", "project a", "task", "open", 1),
+		})
+		lister.SetBeads(projectB.BeadsDir, []beads.Bead{
+			createTestBead("prio-b", "project b", "task", "open", 1),
+		})
+
+		sched.RunTick(context.Background())
+
+		dispatches := backend.Dispatches()
+		if len(dispatches) != 2 {
+			t.Fatalf("dispatch count = %d, want 2", len(dispatches))
+		}
+		if dispatches[0].Agent != "project-a-coder" {
+			t.Fatalf("first dispatch agent = %q, want project-a-coder", dispatches[0].Agent)
+		}
+	})
+
+	t.Run("dependency filtering excludes unresolved beads", func(t *testing.T) {
+		lister := NewMockBeadsLister()
+		project := config.Project{Enabled: true, Priority: 1, Workspace: "/tmp/ws9", BeadsDir: "/tmp/p9"}
+		cfg := newRunTickScenarioConfig(5, map[string]config.Project{"test-project": project})
+		logBuf := &bytes.Buffer{}
+		sched, _, backend := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+		blocked := createTestBead("dep-1", "blocked", "task", "open", 1)
+		blocked.DependsOn = []string{"missing-dep"}
+		lister.SetBeads(project.BeadsDir, []beads.Bead{blocked})
+
+		sched.RunTick(context.Background())
+
+		if got := len(backend.Dispatches()); got != 0 {
+			t.Fatalf("dispatch count = %d, want 0", got)
 		}
 	})
 }

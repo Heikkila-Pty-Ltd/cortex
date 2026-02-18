@@ -29,30 +29,37 @@ import (
 
 // Scheduler is the core orchestration loop.
 type Scheduler struct {
-	cfg                   *config.Config
-	store                 *store.Store
-	rateLimiter           *dispatch.RateLimiter
-	dispatcher            dispatch.DispatcherInterface
-	now                   func() time.Time
-	getBacklogBeads       func(context.Context, string, string) ([]*store.BacklogBead, error)
-	runSprintPlanning     func(context.Context) error
-	lifecycleMatrixSender lifecycleMatrixSender
-	lifecycleReporter     lifecycleReporter
-	backends              map[string]dispatch.Backend
-	logger                *slog.Logger
-	dryRun                bool
-	mu                    sync.Mutex
-	paused                bool
-	quarantine            map[string]time.Time
-	churnBlock            map[string]time.Time
-	epicBreakup           map[string]time.Time
-	claimAnomaly          map[string]time.Time
-	gatewayCircuitUntil   time.Time
-	gatewayCircuitLogAt   time.Time
-	planGateLogAt         time.Time
-	ceremonyScheduler     *CeremonyScheduler
-	completionVerifier    *CompletionVerifier
-	lastCompletionCheck   time.Time
+	cfg                    *config.Config
+	store                  *store.Store
+	rateLimiter            *dispatch.RateLimiter
+	dispatcher             dispatch.DispatcherInterface
+	now                    func() time.Time
+	getBacklogBeads        func(context.Context, string, string) ([]*store.BacklogBead, error)
+	runSprintPlanning      func(context.Context) error
+	listBeads              func(string) ([]beads.Bead, error)
+	buildCrossProjectGraph func(context.Context, map[string]config.Project) (*beads.CrossProjectGraph, error)
+	syncBeadsImport        func(context.Context, string) error
+	claimBeadOwnership     func(context.Context, string, string) error
+	releaseBeadOwnership   func(context.Context, string, string) error
+	hasLiveSession         func(string) bool
+	ensureTeam             func(string, string, string, []string, *slog.Logger) ([]string, error)
+	lifecycleMatrixSender  lifecycleMatrixSender
+	lifecycleReporter      lifecycleReporter
+	backends               map[string]dispatch.Backend
+	logger                 *slog.Logger
+	dryRun                 bool
+	mu                     sync.Mutex
+	paused                 bool
+	quarantine             map[string]time.Time
+	churnBlock             map[string]time.Time
+	epicBreakup            map[string]time.Time
+	claimAnomaly           map[string]time.Time
+	gatewayCircuitUntil    time.Time
+	gatewayCircuitLogAt    time.Time
+	planGateLogAt          time.Time
+	ceremonyScheduler      *CeremonyScheduler
+	completionVerifier     *CompletionVerifier
+	lastCompletionCheck    time.Time
 
 	// Provider performance profiling
 	profiles           map[string]learner.ProviderProfile
@@ -158,6 +165,13 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 		dodQueue:                  make(chan dodQueueItem, dodQueueCapacity),
 		dodQueued:                 make(map[string]struct{}),
 		dodInFlight:               make(map[string]struct{}),
+		listBeads:                 beads.ListBeads,
+		buildCrossProjectGraph:    beads.BuildCrossProjectGraph,
+		syncBeadsImport:           beads.SyncImportCtx,
+		claimBeadOwnership:        beads.ClaimBeadOwnershipCtx,
+		releaseBeadOwnership:      beads.ReleaseBeadOwnershipCtx,
+		hasLiveSession:            dispatch.HasLiveSession,
+		ensureTeam:                team.EnsureTeam,
 	}
 
 	// Initialize concurrency controller for admission control
@@ -177,6 +191,55 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 	}
 
 	return scheduler
+}
+
+func (s *Scheduler) listBeadsSafe(beadsDir string) ([]beads.Bead, error) {
+	if s.listBeads != nil {
+		return s.listBeads(beadsDir)
+	}
+	return beads.ListBeads(beadsDir)
+}
+
+func (s *Scheduler) buildCrossProjectGraphSafe(ctx context.Context, projects map[string]config.Project) (*beads.CrossProjectGraph, error) {
+	if s.buildCrossProjectGraph != nil {
+		return s.buildCrossProjectGraph(ctx, projects)
+	}
+	return beads.BuildCrossProjectGraph(ctx, projects)
+}
+
+func (s *Scheduler) syncBeadsImportSafe(ctx context.Context, beadsDir string) error {
+	if s.syncBeadsImport != nil {
+		return s.syncBeadsImport(ctx, beadsDir)
+	}
+	return beads.SyncImportCtx(ctx, beadsDir)
+}
+
+func (s *Scheduler) claimBeadOwnershipSafe(ctx context.Context, beadsDir, beadID string) error {
+	if s.claimBeadOwnership != nil {
+		return s.claimBeadOwnership(ctx, beadsDir, beadID)
+	}
+	return beads.ClaimBeadOwnershipCtx(ctx, beadsDir, beadID)
+}
+
+func (s *Scheduler) releaseBeadOwnershipSafe(ctx context.Context, beadsDir, beadID string) error {
+	if s.releaseBeadOwnership != nil {
+		return s.releaseBeadOwnership(ctx, beadsDir, beadID)
+	}
+	return beads.ReleaseBeadOwnershipCtx(ctx, beadsDir, beadID)
+}
+
+func (s *Scheduler) hasLiveSessionSafe(agent string) bool {
+	if s.hasLiveSession != nil {
+		return s.hasLiveSession(agent)
+	}
+	return dispatch.HasLiveSession(agent)
+}
+
+func (s *Scheduler) ensureTeamSafe(project, workspace, model string, roles []string, logger *slog.Logger) ([]string, error) {
+	if s.ensureTeam != nil {
+		return s.ensureTeam(project, workspace, model, roles, logger)
+	}
+	return team.EnsureTeam(project, workspace, model, roles, logger)
 }
 
 // Start runs the scheduler tick loop until the context is cancelled.
@@ -373,7 +436,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		return projects[i].proj.Priority < projects[j].proj.Priority
 	})
 
-	crossGraph, crossErr := beads.BuildCrossProjectGraph(ctx, s.cfg.Projects)
+	crossGraph, crossErr := s.buildCrossProjectGraphSafe(ctx, s.cfg.Projects)
 	if crossErr != nil {
 		s.logger.Warn("failed to build cross-project dependency graph", "error", crossErr)
 		crossGraph = nil
@@ -382,7 +445,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 	for _, np := range projects {
 		// Auto-spawn team for each enabled project
 		model := s.defaultModel()
-		created, err := team.EnsureTeam(np.name, config.ExpandHome(np.proj.Workspace), model, AllRoles, s.logger)
+		created, err := s.ensureTeamSafe(np.name, config.ExpandHome(np.proj.Workspace), model, AllRoles, s.logger)
 		if err != nil {
 			s.logger.Error("failed to ensure team", "project", np.name, "error", err)
 		} else if len(created) > 0 {
@@ -390,7 +453,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		}
 
 		beadsDir := config.ExpandHome(np.proj.BeadsDir)
-		beadList, err := beads.ListBeads(beadsDir)
+		beadList, err := s.listBeadsSafe(beadsDir)
 		if err != nil {
 			s.logger.Error("failed to list beads", "project", np.name, "error", err)
 			continue
@@ -482,7 +545,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 
 		// Check for live tmux sessions — even if DB says agent is free,
 		// a previous dispatch's tmux session may still be running.
-		if dispatch.HasLiveSession(agent) {
+		if s.hasLiveSessionSafe(agent) {
 			s.logger.Debug("agent has live tmux session, skipping", "agent", agent, "bead", item.bead.ID)
 			continue
 		}
@@ -572,7 +635,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			continue
 		}
 
-		if err := beads.ClaimBeadOwnershipCtx(ctx, itemBeadsDir, item.bead.ID); err != nil {
+		if err := s.claimBeadOwnershipSafe(ctx, itemBeadsDir, item.bead.ID); err != nil {
 			if beads.IsAlreadyClaimed(err) {
 				s.logger.Debug("bead ownership lock unavailable, skipping", "bead", item.bead.ID)
 			} else {
@@ -582,7 +645,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		}
 		if err := s.store.UpsertClaimLease(item.bead.ID, item.name, itemBeadsDir, agent); err != nil {
 			s.logger.Warn("failed to persist claim lease", "bead", item.bead.ID, "project", item.name, "error", err)
-			if releaseErr := beads.ReleaseBeadOwnershipCtx(ctx, itemBeadsDir, item.bead.ID); releaseErr != nil {
+			if releaseErr := s.releaseBeadOwnershipSafe(ctx, itemBeadsDir, item.bead.ID); releaseErr != nil {
 				s.logger.Warn("failed to release bead ownership after claim lease persistence failure", "bead", item.bead.ID, "error", releaseErr)
 			}
 			continue
@@ -593,7 +656,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 				return
 			}
 			released := false
-			if err := beads.ReleaseBeadOwnershipCtx(ctx, itemBeadsDir, item.bead.ID); err != nil {
+			if err := s.releaseBeadOwnershipSafe(ctx, itemBeadsDir, item.bead.ID); err != nil {
 				s.logger.Warn("failed to release bead ownership lock",
 					"bead", item.bead.ID,
 					"reason", reason,
@@ -1033,7 +1096,7 @@ func (s *Scheduler) enqueueDoDCheck(projectName string, project config.Project, 
 }
 
 func (s *Scheduler) lookupDoDBead(projectName string, project config.Project, beadID string) (beads.Bead, bool) {
-	beadList, err := beads.ListBeads(config.ExpandHome(project.BeadsDir))
+	beadList, err := s.listBeadsSafe(config.ExpandHome(project.BeadsDir))
 	if err != nil {
 		s.logger.Error("failed to refresh bead for dod processing", "project", projectName, "bead", beadID, "error", err)
 		return beads.Bead{}, false
@@ -1054,7 +1117,7 @@ func (s *Scheduler) processDoDStage(ctx context.Context) {
 			continue
 		}
 
-		beadList, err := beads.ListBeads(config.ExpandHome(project.BeadsDir))
+		beadList, err := s.listBeadsSafe(config.ExpandHome(project.BeadsDir))
 		if err != nil {
 			s.logger.Error("failed to list beads for DoD processing", "project", projectName, "error", err)
 			continue
@@ -1205,7 +1268,7 @@ func (s *Scheduler) handleOpsQaCompletion(ctx context.Context, dispatch store.Di
 	}
 
 	// Get the bead to check if it's in stage:qa
-	beadList, err := beads.ListBeads(project.BeadsDir)
+	beadList, err := s.listBeadsSafe(project.BeadsDir)
 	if err != nil {
 		s.logger.Error("failed to list beads for ops completion check", "project", projectName, "error", err)
 		return
@@ -2193,7 +2256,7 @@ func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, project
 		return true
 	}
 
-	issueList, listErr := beads.ListBeadsCtx(ctx, beadsDir)
+	issueList, listErr := s.listBeadsSafe(beadsDir)
 	if listErr != nil {
 		s.logger.Warn("failed to list beads for churn escalation dedupe",
 			"project", projectName,
@@ -2279,7 +2342,7 @@ func (s *Scheduler) syncBeadsImports(ctx context.Context) {
 		if beadsDir == "" {
 			continue
 		}
-		if err := beads.SyncImportCtx(ctx, beadsDir); err != nil {
+		if err := s.syncBeadsImportSafe(ctx, beadsDir); err != nil {
 			s.logger.Warn("failed pre-tick beads sync import", "project", projectName, "beads_dir", beadsDir, "error", err)
 		}
 	}
@@ -2779,7 +2842,7 @@ func (s *Scheduler) createGatewayCircuitIssue(ctx context.Context, count int) {
 			continue
 		}
 		beadsDir := config.ExpandHome(project.BeadsDir)
-		issues, err := beads.ListBeadsCtx(ctx, beadsDir)
+		issues, err := s.listBeadsSafe(beadsDir)
 		if err != nil {
 			s.logger.Warn("failed to list beads for gateway circuit escalation dedupe", "project", projectName, "error", err)
 			return
@@ -2845,7 +2908,7 @@ func (s *Scheduler) reconcileExpiredClaimLeases(ctx context.Context) {
 			continue
 		}
 
-		if err := beads.ReleaseBeadOwnershipCtx(ctx, beadsDir, lease.BeadID); err != nil {
+		if err := s.releaseBeadOwnershipSafe(ctx, beadsDir, lease.BeadID); err != nil {
 			s.logClaimAnomalyOnce(
 				"expired_lease_release_failed:"+lease.BeadID,
 				"claim_reconcile_release_failed",
@@ -2899,7 +2962,7 @@ func (s *Scheduler) reconcileProjectClaimHealth(ctx context.Context, projectName
 			if age < claimLeaseTTL+claimLeaseGrace {
 				continue
 			}
-			if err := beads.ReleaseBeadOwnershipCtx(ctx, beadsDir, bead.ID); err != nil {
+			if err := s.releaseBeadOwnershipSafe(ctx, beadsDir, bead.ID); err != nil {
 				s.logClaimAnomalyOnce(
 					"lease_claim_release_failed:"+bead.ID,
 					"claim_reconcile_release_failed",
@@ -2956,7 +3019,7 @@ func (s *Scheduler) reconcileProjectClaimHealth(ctx context.Context, projectName
 			continue
 		}
 
-		if err := beads.ReleaseBeadOwnershipCtx(ctx, beadsDir, bead.ID); err != nil {
+		if err := s.releaseBeadOwnershipSafe(ctx, beadsDir, bead.ID); err != nil {
 			s.logClaimAnomalyOnce(
 				"legacy_claim_release_failed:"+projectName+":"+bead.ID,
 				"claim_reconcile_release_failed",
@@ -2998,7 +3061,7 @@ func (s *Scheduler) reconcileDispatchClaimOnTerminal(ctx context.Context, d stor
 		return nil
 	}
 
-	if err := beads.ReleaseBeadOwnershipCtx(ctx, beadsDir, d.BeadID); err != nil {
+	if err := s.releaseBeadOwnershipSafe(ctx, beadsDir, d.BeadID); err != nil {
 		return fmt.Errorf("release bead ownership: %w", err)
 	}
 	if err := s.store.DeleteClaimLease(d.BeadID); err != nil {
