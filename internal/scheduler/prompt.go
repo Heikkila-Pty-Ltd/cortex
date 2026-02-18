@@ -21,7 +21,7 @@ You are the scrum master running one end-to-end sprint planning session using th
 Refine backlog quality, estimate candidate work, select sprint scope by capacity, and transition selected beads to planning.
 
 ### 1. Build a Backlog Digest from Context (required first step)
-Normalize the backlog context in this prompt into two compact planning views:
+Normalize the backlog context in this prompt into three compact planning views:
 
 View A: quick stage summary (counts + blockers)
 - Ready count
@@ -34,6 +34,13 @@ View B: planning digest table (required)
 | ID | Title | Priority | Stage | Estimate (min) | Dependencies | Refinement Status | Risks/Blockers | Sprint Decision |
 |----|-------|----------|-------|----------------|--------------|-------------------|----------------|-----------------|
 
+View C: capacity worksheet (required)
+- Total capacity (min)
+- Buffer (min and %%)
+- Usable capacity (min)
+- Committed estimate (min)
+- Remaining capacity (min)
+
 Digest rules:
 - Sort by priority (P0, then P1, then P2), while keeping dependency chains adjacent.
 - Refinement Status must be one of: ready, needs_acceptance, needs_design, needs_estimate, blocked.
@@ -42,6 +49,7 @@ Digest rules:
 - Sprint Decision must be one of: selected, deferred, blocked.
 - Add a short header before the table with total candidate count, ready count, blocked count, and key dependency chains.
 - Keep each row single-line and concise so the table is easy to scan in terminal output.
+- Capacity worksheet numbers must reconcile exactly (usable = total - buffer, remaining = usable - committed).
 
 ### 2. Refine, Estimate, and Clarify Candidates
 Use these commands while reviewing and refining beads:
