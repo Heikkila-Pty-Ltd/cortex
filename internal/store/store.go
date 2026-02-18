@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -133,6 +134,7 @@ CREATE TABLE IF NOT EXISTS dispatches (
 	pid INTEGER NOT NULL DEFAULT 0,
 	session_name TEXT NOT NULL DEFAULT '',
 	stage TEXT NOT NULL DEFAULT 'dispatched',
+	workflow TEXT,
 	labels TEXT NOT NULL DEFAULT '',
 	prompt TEXT NOT NULL,
 	dispatched_at DATETIME NOT NULL DEFAULT (datetime('now')),
@@ -371,6 +373,17 @@ func migrate(db *sql.DB) error {
 	if count == 0 {
 		if _, err := db.Exec(`ALTER TABLE dispatches ADD COLUMN stage TEXT NOT NULL DEFAULT 'dispatched'`); err != nil {
 			return fmt.Errorf("add stage column: %w", err)
+		}
+	}
+
+	// Add workflow column if it doesn't exist (nullable for backward compatibility)
+	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('dispatches') WHERE name = 'workflow'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check workflow column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE dispatches ADD COLUMN workflow TEXT`); err != nil {
+			return fmt.Errorf("add workflow column: %w", err)
 		}
 	}
 
@@ -1368,20 +1381,23 @@ func (s *Store) GetBeadStage(project, beadID string) (*BeadStage, error) {
 		return nil, fmt.Errorf("store: get bead stage: %w", err)
 	}
 
-	// Parse stage history JSON
-	if historyJSON != "" && historyJSON != "[]" {
-		// For simplicity, we'll store history as JSON string - proper JSON unmarshaling would be added in production
-		// This is a placeholder for the stage history parsing
+	parsedHistory, err := decodeStageHistory(historyJSON)
+	if err != nil {
+		return nil, fmt.Errorf("store: parse stage history: %w", err)
 	}
+	stage.StageHistory = parsedHistory
 
 	return &stage, nil
 }
 
 // UpsertBeadStage creates or updates a bead stage using composite project+bead_id key.
 func (s *Store) UpsertBeadStage(stage *BeadStage) error {
-	historyJSON := "[]" // Placeholder for stage history JSON serialization
+	historyJSON, err := encodeStageHistory(stage.StageHistory)
+	if err != nil {
+		return fmt.Errorf("store: encode stage history: %w", err)
+	}
 
-	_, err := s.db.Exec(`
+	_, err = s.db.Exec(`
 		INSERT INTO bead_stages (project, bead_id, workflow, current_stage, stage_index, 
 		                        total_stages, stage_history, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
@@ -1419,6 +1435,192 @@ func (s *Store) UpdateBeadStageProgress(project, beadID, newStage string, stageI
 	return nil
 }
 
+// InitBeadWorkflow creates the initial workflow tracking record for a bead.
+func (s *Store) InitBeadWorkflow(project, beadID, workflow string, stages []string) error {
+	project = strings.TrimSpace(project)
+	beadID = strings.TrimSpace(beadID)
+	workflow = strings.TrimSpace(workflow)
+	if project == "" || beadID == "" || workflow == "" {
+		return fmt.Errorf("store: init bead workflow requires project, beadID, and workflow")
+	}
+	if len(stages) == 0 {
+		return fmt.Errorf("store: init bead workflow requires at least one stage")
+	}
+
+	now := time.Now().UTC()
+	history := make([]StageHistoryEntry, 0, len(stages))
+	for i, stageName := range stages {
+		stageName = strings.TrimSpace(stageName)
+		if stageName == "" {
+			return fmt.Errorf("store: init bead workflow contains empty stage name at index %d", i)
+		}
+		entry := StageHistoryEntry{
+			Stage:  stageName,
+			Status: "pending",
+		}
+		if i == 0 {
+			entry.Status = "in_progress"
+			entry.StartedAt = now
+		}
+		history = append(history, entry)
+	}
+
+	return s.UpsertBeadStage(&BeadStage{
+		Project:      project,
+		BeadID:       beadID,
+		Workflow:     workflow,
+		CurrentStage: stages[0],
+		StageIndex:   0,
+		TotalStages:  len(stages),
+		StageHistory: history,
+	})
+}
+
+// RecordStageCompletion marks a stage as completed and optionally records dispatchID.
+func (s *Store) RecordStageCompletion(project, beadID, stageName string, dispatchID int64) error {
+	stage, err := s.GetBeadStage(project, beadID)
+	if err != nil {
+		return err
+	}
+
+	stageName = strings.TrimSpace(stageName)
+	if stageName == "" {
+		stageName = stage.CurrentStage
+	}
+	now := time.Now().UTC()
+
+	updated := false
+	for i := len(stage.StageHistory) - 1; i >= 0; i-- {
+		entry := &stage.StageHistory[i]
+		if entry.Stage != stageName {
+			continue
+		}
+		entry.Status = "completed"
+		entry.CompletedAt = &now
+		if entry.StartedAt.IsZero() {
+			entry.StartedAt = now
+		}
+		if dispatchID > 0 {
+			entry.DispatchID = dispatchID
+		}
+		updated = true
+		break
+	}
+	if !updated {
+		stage.StageHistory = append(stage.StageHistory, StageHistoryEntry{
+			Stage:       stageName,
+			Status:      "completed",
+			StartedAt:   now,
+			CompletedAt: &now,
+			DispatchID:  dispatchID,
+		})
+	}
+	return s.UpsertBeadStage(stage)
+}
+
+// AdvanceStage moves a bead to the next workflow stage, if available.
+func (s *Store) AdvanceStage(project, beadID string) error {
+	stage, err := s.GetBeadStage(project, beadID)
+	if err != nil {
+		return err
+	}
+	if stage.TotalStages <= 0 || stage.StageIndex >= stage.TotalStages-1 {
+		return nil
+	}
+	now := time.Now().UTC()
+
+	currentIdx := stage.StageIndex
+	if currentIdx >= 0 && currentIdx < len(stage.StageHistory) {
+		current := &stage.StageHistory[currentIdx]
+		if current.CompletedAt == nil {
+			current.Status = "completed"
+			current.CompletedAt = &now
+			if current.StartedAt.IsZero() {
+				current.StartedAt = now
+			}
+		}
+	}
+
+	nextIdx := currentIdx + 1
+	nextName := fmt.Sprintf("stage-%d", nextIdx+1)
+	if nextIdx < len(stage.StageHistory) {
+		next := &stage.StageHistory[nextIdx]
+		nextName = next.Stage
+		next.Status = "in_progress"
+		if next.StartedAt.IsZero() {
+			next.StartedAt = now
+		}
+	}
+
+	stage.CurrentStage = nextName
+	stage.StageIndex = nextIdx
+	return s.UpsertBeadStage(stage)
+}
+
+// GetBeadsAtStage lists all beads in a project currently at the given stage.
+func (s *Store) GetBeadsAtStage(project, stageName string) ([]*BeadStage, error) {
+	project = strings.TrimSpace(project)
+	stageName = strings.TrimSpace(stageName)
+	if project == "" || stageName == "" {
+		return nil, fmt.Errorf("store: get beads at stage requires project and stage")
+	}
+
+	rows, err := s.db.Query(`
+		SELECT id, project, bead_id, workflow, current_stage, stage_index,
+		       total_stages, stage_history, created_at, updated_at
+		FROM bead_stages
+		WHERE project = ? AND current_stage = ?
+		ORDER BY updated_at DESC`,
+		project, stageName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: get beads at stage: %w", err)
+	}
+	defer rows.Close()
+
+	var stages []*BeadStage
+	for rows.Next() {
+		var bs BeadStage
+		var historyJSON string
+		if err := rows.Scan(
+			&bs.ID, &bs.Project, &bs.BeadID, &bs.Workflow,
+			&bs.CurrentStage, &bs.StageIndex, &bs.TotalStages,
+			&historyJSON, &bs.CreatedAt, &bs.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan bead at stage: %w", err)
+		}
+		parsedHistory, err := decodeStageHistory(historyJSON)
+		if err != nil {
+			return nil, fmt.Errorf("store: parse stage history for bead %s: %w", bs.BeadID, err)
+		}
+		bs.StageHistory = parsedHistory
+		stages = append(stages, &bs)
+	}
+	return stages, rows.Err()
+}
+
+// IsWorkflowComplete reports whether all workflow stages are completed.
+func (s *Store) IsWorkflowComplete(project, beadID string) (bool, error) {
+	stage, err := s.GetBeadStage(project, beadID)
+	if err != nil {
+		return false, err
+	}
+	if stage.TotalStages == 0 {
+		return false, nil
+	}
+	if stage.StageIndex < stage.TotalStages-1 {
+		return false, nil
+	}
+
+	completed := 0
+	for _, entry := range stage.StageHistory {
+		if strings.EqualFold(entry.Status, "completed") {
+			completed++
+		}
+	}
+	return completed >= stage.TotalStages, nil
+}
+
 // ListBeadStagesForProject retrieves all bead stages for a specific project.
 func (s *Store) ListBeadStagesForProject(project string) ([]*BeadStage, error) {
 	rows, err := s.db.Query(`
@@ -1447,7 +1649,11 @@ func (s *Store) ListBeadStagesForProject(project string) ([]*BeadStage, error) {
 		if err != nil {
 			return nil, fmt.Errorf("store: scan bead stage: %w", err)
 		}
-
+		parsedHistory, err := decodeStageHistory(historyJSON)
+		if err != nil {
+			return nil, fmt.Errorf("store: parse bead stage history: %w", err)
+		}
+		stage.StageHistory = parsedHistory
 		stages = append(stages, &stage)
 	}
 
@@ -1511,7 +1717,11 @@ func (s *Store) GetBeadStagesByBeadIDOnly(beadID string) ([]*BeadStage, error) {
 		if err != nil {
 			return nil, fmt.Errorf("store: scan bead stage: %w", err)
 		}
-
+		parsedHistory, err := decodeStageHistory(historyJSON)
+		if err != nil {
+			return nil, fmt.Errorf("store: parse bead stage history: %w", err)
+		}
+		stage.StageHistory = parsedHistory
 		projectsSeen[stage.Project] = true
 		stages = append(stages, &stage)
 	}
@@ -1530,6 +1740,29 @@ func (s *Store) GetBeadStagesByBeadIDOnly(beadID string) ([]*BeadStage, error) {
 	}
 
 	return stages, nil
+}
+
+func encodeStageHistory(history []StageHistoryEntry) (string, error) {
+	if len(history) == 0 {
+		return "[]", nil
+	}
+	data, err := json.Marshal(history)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func decodeStageHistory(historyJSON string) ([]StageHistoryEntry, error) {
+	historyJSON = strings.TrimSpace(historyJSON)
+	if historyJSON == "" || historyJSON == "[]" {
+		return nil, nil
+	}
+	var history []StageHistoryEntry
+	if err := json.Unmarshal([]byte(historyJSON), &history); err != nil {
+		return nil, err
+	}
+	return history, nil
 }
 
 // ProviderStat holds basic performance statistics for a provider within a time window.
