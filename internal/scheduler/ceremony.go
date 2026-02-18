@@ -16,13 +16,12 @@ import (
 
 // CeremonyScheduler manages cadence-based ceremony scheduling
 type CeremonyScheduler struct {
-	cfg            *config.Config
-	store          *store.Store
-	dispatcher     dispatch.DispatcherInterface
-	logger         *slog.Logger
-	chief          *chief.Chief
-	chiefSM        *ChiefSM
-	sprintCeremony *learner.SprintCeremony
+	cfg        *config.Config
+	store      *store.Store
+	dispatcher dispatch.DispatcherInterface
+	logger     *slog.Logger
+	chief      *chief.Chief
+	chiefSM    *ChiefSM
 
 	mu                sync.RWMutex
 	ceremonySchedules map[chief.CeremonyType]chief.CeremonySchedule
@@ -33,7 +32,6 @@ type CeremonyScheduler struct {
 func NewCeremonyScheduler(cfg *config.Config, store *store.Store, dispatcher dispatch.DispatcherInterface, logger *slog.Logger) *CeremonyScheduler {
 	chiefSM := chief.New(cfg, store, dispatcher, logger)
 	schedulerChiefSM := NewChiefSM(cfg, logger, store, dispatcher)
-	sprintCeremony := learner.NewSprintCeremony(cfg, store, dispatcher, logger)
 
 	cs := &CeremonyScheduler{
 		cfg:               cfg,
@@ -42,7 +40,6 @@ func NewCeremonyScheduler(cfg *config.Config, store *store.Store, dispatcher dis
 		logger:            logger,
 		chief:             chiefSM,
 		chiefSM:           schedulerChiefSM,
-		sprintCeremony:    sprintCeremony,
 		ceremonySchedules: make(map[chief.CeremonyType]chief.CeremonySchedule),
 	}
 
@@ -251,23 +248,19 @@ func (cs *CeremonyScheduler) runSprintReviewCeremony(ctx context.Context) error 
 		}
 
 		cs.logger.Info("running sprint review ceremony", "project", projectName)
-		result, err := cs.sprintCeremony.RunReview(ctx, projectName)
-		if err != nil {
-			cs.logger.Error("sprint review ceremony failed",
-				"project", projectName, "error", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
+		sc := learner.NewSprintCeremony(cs.cfg, cs.store, cs.dispatcher, cs.logger, projectName)
 
-		// Start monitoring in background (non-blocking)
-		go func(r *learner.CeremonyResult, pName string) {
-			if monitorErr := cs.sprintCeremony.MonitorCompletion(ctx, r); monitorErr != nil {
-				cs.logger.Error("sprint review monitoring failed",
-					"project", pName, "ceremony_id", r.CeremonyID, "error", monitorErr)
+		// Run review in background (blocking wait is internal to RunReview)
+		go func(ceremony *learner.SprintCeremony, pName string) {
+			result, err := ceremony.RunReview(ctx)
+			if err != nil {
+				cs.logger.Error("sprint review ceremony failed",
+					"project", pName, "error", err)
+				return
 			}
-		}(result, projectName)
+			cs.logger.Info("sprint review completed",
+				"project", pName, "bead_id", result.BeadID, "success", result.Success)
+		}(sc, projectName)
 
 		successCount++
 	}
@@ -303,23 +296,19 @@ func (cs *CeremonyScheduler) runSprintRetrospectiveCeremony(ctx context.Context)
 		}
 
 		cs.logger.Info("running sprint retrospective ceremony", "project", projectName)
-		result, err := cs.sprintCeremony.RunRetro(ctx, projectName)
-		if err != nil {
-			cs.logger.Error("sprint retrospective ceremony failed",
-				"project", projectName, "error", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
+		sc := learner.NewSprintCeremony(cs.cfg, cs.store, cs.dispatcher, cs.logger, projectName)
 
-		// Start monitoring in background (non-blocking)
-		go func(r *learner.CeremonyResult, pName string) {
-			if monitorErr := cs.sprintCeremony.MonitorCompletion(ctx, r); monitorErr != nil {
-				cs.logger.Error("sprint retrospective monitoring failed",
-					"project", pName, "ceremony_id", r.CeremonyID, "error", monitorErr)
+		// Run retro in background (blocking wait is internal to RunRetro)
+		go func(ceremony *learner.SprintCeremony, pName string) {
+			result, err := ceremony.RunRetro(ctx)
+			if err != nil {
+				cs.logger.Error("sprint retrospective ceremony failed",
+					"project", pName, "error", err)
+				return
 			}
-		}(result, projectName)
+			cs.logger.Info("sprint retrospective completed",
+				"project", pName, "bead_id", result.BeadID, "success", result.Success)
+		}(sc, projectName)
 
 		successCount++
 	}
