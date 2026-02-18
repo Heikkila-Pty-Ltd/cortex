@@ -27,7 +27,7 @@ Refine backlog quality, estimate candidate work, select sprint scope by capacity
 - Keep decisions traceable: every sprint decision must cite estimate, priority, and dependency state.
 
 ### 1. Build a Backlog Digest from Context (required first step)
-Normalize the backlog context in this prompt into three compact planning views:
+Normalize the backlog context in this prompt into compact planning views that are easy to scan in terminal output:
 
 View A: quick stage summary (counts + blockers)
 - Ready count
@@ -60,6 +60,8 @@ Digest rules:
 - Sprint Decision must be one of: selected, deferred, blocked.
 - Add a short header before the table with total candidate count, ready count, blocked count, and key dependency chains.
 - Keep each row single-line and concise so the table is easy to scan in terminal output.
+- If the backlog is large, group table rows by priority section headers ("P0", "P1", "P2") while preserving the same columns.
+- Include dependency IDs inline (comma-separated) instead of long prose in the dependency column.
 - Capacity worksheet numbers must reconcile exactly (usable = total - buffer, remaining = usable - committed).
 - Sprint buckets must include every bead exactly once (selected, deferred, or blocked).
 
@@ -111,6 +113,11 @@ Selection policy:
 7. Produce short deferred and blocked lists with one clear reason each.
 8. If two candidates compete for remaining capacity, pick the lower-risk bead and note the tradeoff.
 
+Selection output requirements:
+- Show the exact committed_estimate_min total used for final selection.
+- Show remaining_capacity_min after each selected bead (or at minimum after final selection).
+- For each deferred bead, include one of: capacity_limit, dependency_missing, refinement_incomplete, risk_too_high.
+
 ### 4. Update Beads and Transition Stage
 For each selected bead (committed this sprint):
 ~~~bash
@@ -159,6 +166,7 @@ Use this exact structure in your final output:
 - [Table pasted in compact form, grouped by priority]
 - [Sprint buckets: selected / deferred / blocked with IDs]
 - [Confirm every candidate bead is accounted for as selected/deferred/blocked]
+- [Include final math check: usable = total - buffer, remaining = usable - committed]
 
 **Selected Beads:**
 - [ID] [Title] - P[0-2], [estimate min], [why selected], [dependency status]
