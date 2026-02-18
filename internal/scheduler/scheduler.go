@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -45,10 +46,10 @@ type Scheduler struct {
 	ceremonyScheduler   *CeremonyScheduler
 	completionVerifier  *CompletionVerifier
 	lastCompletionCheck time.Time
-	
+
 	// Provider performance profiling
-	profiles             map[string]learner.ProviderProfile
-	lastProfileRebuild   time.Time
+	profiles           map[string]learner.ProviderProfile
+	lastProfileRebuild time.Time
 }
 
 const (
@@ -63,9 +64,9 @@ const (
 	epicBreakdownInterval   = 6 * time.Hour
 	epicBreakdownTitleStart = "Auto: break down epic "
 	epicBreakdownTitleEnd   = " into executable bug/task beads"
-	
-	profileRebuildInterval = 24 * time.Hour  // Rebuild profiles daily
-	profileStatsWindow     = 7 * 24 * time.Hour  // Look back 7 days for stats
+
+	profileRebuildInterval = 24 * time.Hour     // Rebuild profiles daily
+	profileStatsWindow     = 7 * 24 * time.Hour // Look back 7 days for stats
 
 	// Completion verification settings
 	completionCheckInterval = 2 * time.Hour // Check for completed beads every 2 hours
@@ -92,10 +93,10 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 	}
 
 	scheduler := &Scheduler{
-		cfg:          cfg,
-		store:        s,
-		rateLimiter:  rl,
-		dispatcher:   d,
+		cfg:         cfg,
+		store:       s,
+		rateLimiter: rl,
+		dispatcher:  d,
 		backends: map[string]dispatch.Backend{
 			"headless_cli": dispatch.NewHeadlessBackend(cfg.Dispatch.CLI, config.ExpandHome(cfg.Dispatch.LogDir), cfg.Dispatch.LogRetentionDays),
 			"tmux":         dispatch.NewTmuxBackend(cfg.Dispatch.CLI, cfg.Dispatch.Tmux.HistoryLimit),
@@ -1057,6 +1058,41 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 			}
 		}
 
+		if status == "completed" && strings.TrimSpace(d.Branch) != "" {
+			baseBranch, mergeErr := s.finalizeDispatchBranch(d)
+			if mergeErr != nil {
+				status = "failed"
+				exitCode = -1
+				finalStage = "failed_needs_check"
+				retryPending = false
+				if errors.Is(mergeErr, git.ErrMergeConflict) {
+					retryReason = "git_merge_conflict"
+					summary := fmt.Sprintf("Auto-merge conflict: %s into %s. Manual resolution required; branch retained for investigation.", d.Branch, baseBranch)
+					if err := s.store.UpdateFailureDiagnosis(d.ID, "git_merge_conflict", summary); err != nil {
+						s.logger.Warn("failed to store merge conflict diagnosis", "dispatch_id", d.ID, "error", err)
+					}
+					_ = s.store.RecordHealthEventWithDispatch(
+						"dispatch_merge_conflict",
+						fmt.Sprintf("bead %s dispatch %d merge conflict on %s -> %s", d.BeadID, d.ID, d.Branch, baseBranch),
+						d.ID,
+						d.BeadID,
+					)
+				} else {
+					retryReason = "git_merge_failed"
+					summary := fmt.Sprintf("Auto-merge failed for %s into %s: %v. Manual check required; branch retained.", d.Branch, baseBranch, mergeErr)
+					if err := s.store.UpdateFailureDiagnosis(d.ID, "git_merge_failed", summary); err != nil {
+						s.logger.Warn("failed to store merge failure diagnosis", "dispatch_id", d.ID, "error", err)
+					}
+					_ = s.store.RecordHealthEventWithDispatch(
+						"dispatch_merge_failed",
+						fmt.Sprintf("bead %s dispatch %d merge failure on %s -> %s: %v", d.BeadID, d.ID, d.Branch, baseBranch, mergeErr),
+						d.ID,
+						d.BeadID,
+					)
+				}
+			}
+		}
+
 		s.logger.Info("dispatch completed",
 			"bead", d.BeadID,
 			"handle", d.PID,
@@ -1162,6 +1198,40 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (s *Scheduler) finalizeDispatchBranch(d store.Dispatch) (string, error) {
+	project, ok := s.cfg.Projects[d.Project]
+	if !ok {
+		return "", fmt.Errorf("project %q not found for dispatch branch finalization", d.Project)
+	}
+	if !project.UseBranches || strings.TrimSpace(d.Branch) == "" {
+		return "", nil
+	}
+
+	workspace := config.ExpandHome(project.Workspace)
+	baseBranch := strings.TrimSpace(project.BaseBranch)
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+	mergeStrategy := strings.TrimSpace(s.cfg.Dispatch.Git.MergeStrategy)
+	if mergeStrategy == "" {
+		mergeStrategy = "merge"
+	}
+
+	if err := git.MergeBranchIntoBase(workspace, d.Branch, baseBranch, mergeStrategy); err != nil {
+		return baseBranch, err
+	}
+	if err := git.DeleteBranch(workspace, d.Branch); err != nil {
+		s.logger.Warn("merged branch but failed to delete feature branch", "dispatch_id", d.ID, "branch", d.Branch, "error", err)
+		_ = s.store.RecordHealthEventWithDispatch(
+			"dispatch_branch_delete_failed",
+			fmt.Sprintf("bead %s dispatch %d merged branch %s but delete failed: %v", d.BeadID, d.ID, d.Branch, err),
+			d.ID,
+			d.BeadID,
+		)
+	}
+	return baseBranch, nil
 }
 
 func detectTerminalOutputFailure(output string) (category string, summary string, flagged bool) {
@@ -2238,35 +2308,35 @@ func isTerminalDispatchStatus(status string) bool {
 // rebuildProfilesIfNeeded rebuilds provider performance profiles periodically.
 func (s *Scheduler) rebuildProfilesIfNeeded() {
 	now := time.Now()
-	
+
 	// Initialize if this is the first run
 	if s.profiles == nil {
 		s.profiles = make(map[string]learner.ProviderProfile)
 	}
-	
+
 	// Only rebuild if enough time has passed
 	if !s.lastProfileRebuild.IsZero() && now.Sub(s.lastProfileRebuild) < profileRebuildInterval {
 		return
 	}
-	
+
 	s.lastProfileRebuild = now
 	s.logger.Debug("rebuilding provider profiles")
-	
+
 	// Build new profiles from dispatch history
 	newProfiles, err := learner.BuildProviderProfiles(s.store, profileStatsWindow)
 	if err != nil {
 		s.logger.Error("failed to rebuild provider profiles", "error", err)
 		return
 	}
-	
+
 	s.profiles = newProfiles
-	
+
 	// Log detected weaknesses for visibility
 	weaknesses := learner.DetectWeaknesses(s.profiles)
 	if len(weaknesses) > 0 {
 		s.logger.Info("detected provider weaknesses", "count", len(weaknesses))
 		for _, w := range weaknesses {
-			s.logger.Debug("weak provider", 
+			s.logger.Debug("weak provider",
 				"provider", w.Provider,
 				"label", w.Label,
 				"failure_rate", w.FailureRate,
@@ -2292,21 +2362,21 @@ func (s *Scheduler) pickProviderWithProfileFiltering(tier string, bead beads.Bea
 	default:
 		tierProviders = s.cfg.Tiers.Balanced
 	}
-	
+
 	// Apply profile-aware filtering
 	filteredProviders := learner.ApplyProfileToTierSelection(s.profiles, bead, tierProviders)
-	
+
 	// Log if filtering occurred
 	if len(filteredProviders) < len(tierProviders) {
 		filtered := len(tierProviders) - len(filteredProviders)
-		s.logger.Debug("filtered weak providers", 
+		s.logger.Debug("filtered weak providers",
 			"bead", bead.ID,
 			"tier", tier,
 			"original_count", len(tierProviders),
 			"filtered_count", filtered,
 			"remaining", len(filteredProviders))
 	}
-	
+
 	// Use filtered providers with rate limiter
 	return s.pickProviderFromCandidates(tier, filteredProviders, excludeModels)
 }
@@ -2333,7 +2403,7 @@ func (s *Scheduler) pickProviderFromCandidates(tier string, candidates []string,
 			return &p, name
 		}
 	}
-	
+
 	return nil, ""
 }
 
