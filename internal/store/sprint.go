@@ -87,11 +87,8 @@ func (s *Store) GetBacklogBeadsCtx(ctx context.Context, project string, beadsDir
 				Bead: &bead,
 			}
 
-			// Enrich with store data
-			if err := s.enrichBacklogBead(project, backlogBead); err != nil {
-				// Log error but continue with other beads
-				continue
-			}
+			// Enrich with store data - don't skip bead if enrichment fails
+			s.enrichBacklogBead(project, backlogBead) // ignore errors
 
 			backlogBeads = append(backlogBeads, backlogBead)
 		}
@@ -172,20 +169,20 @@ func (s *Store) BuildDependencyGraph(beadList []*beads.Bead) (*beads.DepGraph, e
 
 // Helper functions
 
-func (s *Store) enrichBacklogBead(project string, backlogBead *BacklogBead) error {
-	// Get stage info
+func (s *Store) enrichBacklogBead(project string, backlogBead *BacklogBead) {
+	// Get stage info - best effort
 	stageInfo, err := s.GetBeadStage(project, backlogBead.ID)
-	if err != nil && err != sql.ErrNoRows {
-		return fmt.Errorf("failed to get stage info: %w", err)
-	}
-	if err != sql.ErrNoRows {
+	if err == nil {
 		backlogBead.StageInfo = stageInfo
 	}
 
-	// Get dispatch statistics
+	// Get dispatch statistics - best effort
 	dispatches, err := s.GetDispatchesByBead(backlogBead.ID)
 	if err != nil {
-		return fmt.Errorf("failed to get dispatches: %w", err)
+		// If we can't get dispatches, just set defaults
+		backlogBead.DispatchCount = 0
+		backlogBead.FailureCount = 0
+		return
 	}
 
 	backlogBead.DispatchCount = len(dispatches)
@@ -204,8 +201,6 @@ func (s *Store) enrichBacklogBead(project string, backlogBead *BacklogBead) erro
 	
 	backlogBead.LastDispatchAt = lastDispatch
 	backlogBead.FailureCount = failureCount
-
-	return nil
 }
 
 func (s *Store) getInProgressBeadsCtx(ctx context.Context, project string, beadsDir string) ([]*BacklogBead, error) {
@@ -238,9 +233,7 @@ func (s *Store) getInProgressBeadsCtx(ctx context.Context, project string, beads
 				Bead: &bead,
 			}
 
-			if err := s.enrichBacklogBead(project, backlogBead); err != nil {
-				continue
-			}
+			s.enrichBacklogBead(project, backlogBead)
 
 			inProgressBeads = append(inProgressBeads, backlogBead)
 		}
@@ -266,9 +259,7 @@ func (s *Store) getRecentCompletionsCtx(ctx context.Context, project string, bea
 				Bead: &bead,
 			}
 
-			if err := s.enrichBacklogBead(project, backlogBead); err != nil {
-				continue
-			}
+			s.enrichBacklogBead(project, backlogBead)
 
 			recentCompletions = append(recentCompletions, backlogBead)
 		}
@@ -278,41 +269,65 @@ func (s *Store) getRecentCompletionsCtx(ctx context.Context, project string, bea
 }
 
 func (s *Store) buildDepGraphFromBeads(beadList []*beads.Bead) (*beads.DepGraph, error) {
-	// Since DepGraph fields are not exported, we'll work with what we can access
-	// For now, return nil as the dependency analysis can be done with the bead data directly
-	// This would need to be implemented once the beads package provides appropriate API
-	
-	// The dependency information is available in each bead's DependsOn field
-	// Sprint planning can use this data directly from the BacklogBead structures
-	return nil, nil
+	// Convert []*beads.Bead to []beads.Bead for the BuildDepGraph function
+	beadSlice := make([]beads.Bead, len(beadList))
+	for i, bead := range beadList {
+		beadSlice[i] = *bead
+	}
+	return beads.BuildDepGraph(beadSlice), nil
 }
 
 func (s *Store) calculateReadinessStats(backlogBeads []*BacklogBead, depGraph *beads.DepGraph) (readyCount, blockedCount int) {
 	for _, bead := range backlogBeads {
-		// A bead is ready if it has no unresolved dependencies
-		if len(bead.DependsOn) == 0 {
-			readyCount++
+		if s.isBeadBlocked(bead, depGraph) {
+			blockedCount++
+			bead.IsBlocked = true
+			bead.BlockingReasons = s.getBlockingReasons(bead, depGraph)
 		} else {
-			// Check if all dependencies are satisfied
-			isReady := true
-			for range bead.DependsOn {
-				// This would need to check if the dependency is completed
-				// For now, assume any dependency makes it blocked
-				isReady = false
-				break
-			}
-			
-			if isReady {
-				readyCount++
-			} else {
-				blockedCount++
-				bead.IsBlocked = true
-				bead.BlockingReasons = bead.DependsOn // Simplified
-			}
+			readyCount++
 		}
 	}
 	
 	return readyCount, blockedCount
+}
+
+// isBeadBlocked checks if a bead is blocked by unresolved dependencies.
+func (s *Store) isBeadBlocked(bead *BacklogBead, graph *beads.DepGraph) bool {
+	if graph == nil {
+		// If no dependency graph, assume bead with dependencies is blocked
+		return len(bead.DependsOn) > 0
+	}
+	
+	for _, depID := range bead.DependsOn {
+		if dep, exists := graph.Nodes()[depID]; exists {
+			if dep.Status != "closed" {
+				return true
+			}
+		} else {
+			// Dependency doesn't exist in graph - consider blocked
+			return true
+		}
+	}
+	return false
+}
+
+// getBlockingReasons returns the IDs of dependencies that are blocking this bead.
+func (s *Store) getBlockingReasons(bead *BacklogBead, graph *beads.DepGraph) []string {
+	if graph == nil {
+		return bead.DependsOn // Return all dependencies as blocking reasons
+	}
+	
+	var blockingReasons []string
+	for _, depID := range bead.DependsOn {
+		if dep, exists := graph.Nodes()[depID]; exists {
+			if dep.Status != "closed" {
+				blockingReasons = append(blockingReasons, depID)
+			}
+		} else {
+			blockingReasons = append(blockingReasons, depID+" (missing)")
+		}
+	}
+	return blockingReasons
 }
 
 // GetCurrentSprintBoundary returns the current sprint boundary if one exists.
