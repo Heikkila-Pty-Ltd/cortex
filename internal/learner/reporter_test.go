@@ -234,6 +234,24 @@ func TestDispatchMessageCallsDispatcher(t *testing.T) {
 	}
 }
 
+func TestSendProjectMessageUsesProjectScrumAgent(t *testing.T) {
+	s := tempInMemoryStore(t)
+	mock := &recordingDispatcher{}
+	reporter := newReporterForTest(t, s, mock)
+
+	reporter.SendProjectMessage(context.Background(), "project-a", "hello project")
+
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected exactly one dispatch, got %d", len(mock.calls))
+	}
+	if mock.calls[0].agent != "project-a-scrum" {
+		t.Fatalf("expected project scrum agent, got %q", mock.calls[0].agent)
+	}
+	if mock.calls[0].prompt != "hello project" {
+		t.Fatalf("expected message body to pass through, got %q", mock.calls[0].prompt)
+	}
+}
+
 func TestSendProjectDigestFallsBackToMainAgent(t *testing.T) {
 	s := tempInMemoryStore(t)
 	mock := &selectiveFailDispatcher{

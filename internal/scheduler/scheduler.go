@@ -32,6 +32,7 @@ type Scheduler struct {
 	store               *store.Store
 	rateLimiter         *dispatch.RateLimiter
 	dispatcher          dispatch.DispatcherInterface
+	lifecycleReporter   lifecycleReporter
 	backends            map[string]dispatch.Backend
 	logger              *slog.Logger
 	dryRun              bool
@@ -125,6 +126,9 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 	// Initialize completion verifier
 	scheduler.completionVerifier = NewCompletionVerifier(s, logger.With("component", "completion_verifier"))
 	scheduler.completionVerifier.SetProjects(cfg.Projects)
+	if strings.EqualFold(strings.TrimSpace(cfg.Reporter.Channel), "matrix") {
+		scheduler.lifecycleReporter = learner.NewReporter(cfg.Reporter, s, d, logger.With("component", "lifecycle_reporter"))
+	}
 
 	return scheduler
 }
@@ -215,6 +219,18 @@ func (s *Scheduler) CancelDispatch(id int64) error {
 	if err := s.reconcileDispatchClaimOnTerminal(context.Background(), *d, "cancelled"); err != nil {
 		s.logger.Warn("failed to reconcile dispatch claim after cancel", "dispatch_id", id, "bead", d.BeadID, "error", err)
 	}
+	s.reportBeadLifecycle(context.Background(), beadLifecycleEvent{
+		Project:       d.Project,
+		BeadID:        d.BeadID,
+		DispatchID:    d.ID,
+		Event:         lifecycleEventForDispatchStatus("cancelled"),
+		WorkflowStage: workflowStageFromLabelsCSV(d.Labels),
+		DispatchStage: "cancelled",
+		Status:        "cancelled",
+		AgentID:       d.AgentID,
+		Provider:      d.Provider,
+		Tier:          d.Tier,
+	})
 
 	s.logger.Info("dispatch cancelled", "id", id, "bead", d.BeadID, "handle", d.PID)
 	return nil
@@ -614,6 +630,19 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			"session", sessionName,
 			"backend", backendName,
 		)
+		s.reportBeadLifecycle(ctx, beadLifecycleEvent{
+			Project:       item.name,
+			BeadID:        item.bead.ID,
+			DispatchID:    dispatchID,
+			Event:         "dispatch_started",
+			WorkflowStage: stage,
+			DispatchStage: "running",
+			Status:        "running",
+			AgentID:       agent,
+			Provider:      provider.Model,
+			Tier:          currentTier,
+			Note:          fmt.Sprintf("role=%s backend=%s", role, backendName),
+		})
 		dispatched++
 	}
 
@@ -715,6 +744,14 @@ func (s *Scheduler) closeBead(ctx context.Context, projectName string, project c
 	_ = s.store.RecordHealthEventWithDispatch("bead_closed",
 		fmt.Sprintf("project %s bead %s closed after DoD validation: %s", projectName, bead.ID, reason),
 		0, bead.ID)
+	s.reportBeadLifecycle(ctx, beadLifecycleEvent{
+		Project:       projectName,
+		BeadID:        bead.ID,
+		Event:         "bead_completed",
+		WorkflowStage: "stage:done",
+		Status:        "completed",
+		Note:          reason,
+	})
 }
 
 // transitionBeadToCoding transitions a bead back to stage:coding with failure notes
@@ -747,6 +784,14 @@ func (s *Scheduler) transitionBeadToCoding(ctx context.Context, projectName stri
 	_ = s.store.RecordHealthEventWithDispatch("dod_failure",
 		fmt.Sprintf("project %s bead %s DoD failed, returned to coding: %s", projectName, bead.ID, failureReason),
 		0, bead.ID)
+	s.reportBeadLifecycle(ctx, beadLifecycleEvent{
+		Project:       projectName,
+		BeadID:        bead.ID,
+		Event:         "bead_stage_transition",
+		WorkflowStage: "stage:coding",
+		Status:        "open",
+		Note:          failureReason,
+	})
 }
 
 // handleOpsQaCompletion checks if a completed dispatch was ops/qa work and transitions to DoD if configured
@@ -839,6 +884,14 @@ func (s *Scheduler) transitionBeadToDod(ctx context.Context, projectName string,
 	_ = s.store.RecordHealthEventWithDispatch("ops_to_dod_transition",
 		fmt.Sprintf("project %s bead %s transitioned to DoD stage after ops/qa completion", projectName, bead.ID),
 		0, bead.ID)
+	s.reportBeadLifecycle(ctx, beadLifecycleEvent{
+		Project:       projectName,
+		BeadID:        bead.ID,
+		Event:         "bead_stage_transition",
+		WorkflowStage: "stage:dod",
+		Status:        "open",
+		Note:          "ops/qa completed; awaiting DoD validation",
+	})
 }
 
 // defaultModel returns the model from the first balanced provider, or falls back to any provider.
@@ -1226,6 +1279,26 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 					s.logger.Debug("failed to heartbeat claim lease after retry queue", "dispatch_id", d.ID, "bead", d.BeadID, "error", err)
 				}
 			}
+
+			note := ""
+			if retryReason != "" {
+				note = fmt.Sprintf("retry_reason=%s", retryReason)
+			}
+			s.reportBeadLifecycle(ctx, beadLifecycleEvent{
+				Project:       d.Project,
+				BeadID:        d.BeadID,
+				DispatchID:    d.ID,
+				Event:         lifecycleEventForDispatchStatus(status),
+				WorkflowStage: workflowStageFromLabelsCSV(d.Labels),
+				DispatchStage: finalStage,
+				Status:        status,
+				AgentID:       d.AgentID,
+				Provider:      d.Provider,
+				Tier:          d.Tier,
+				ExitCode:      exitCode,
+				DurationS:     duration,
+				Note:          note,
+			})
 		}
 
 		// Run failure diagnostics on captured output
@@ -1835,6 +1908,21 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			if err := s.reconcileDispatchClaimOnTerminal(ctx, retry, "failed"); err != nil {
 				s.logger.Warn("failed to release claim for over-retry dispatch", "dispatch_id", retry.ID, "bead", retry.BeadID, "error", err)
 			}
+			s.reportBeadLifecycle(ctx, beadLifecycleEvent{
+				Project:       retry.Project,
+				BeadID:        retry.BeadID,
+				DispatchID:    retry.ID,
+				Event:         lifecycleEventForDispatchStatus("failed"),
+				WorkflowStage: workflowStageFromLabelsCSV(retry.Labels),
+				DispatchStage: "failed",
+				Status:        "failed",
+				AgentID:       retry.AgentID,
+				Provider:      retry.Provider,
+				Tier:          retry.Tier,
+				ExitCode:      -1,
+				DurationS:     duration,
+				Note:          "max retries exceeded",
+			})
 			continue
 		}
 
@@ -1875,6 +1963,21 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			if err := s.reconcileDispatchClaimOnTerminal(ctx, retry, "failed"); err != nil {
 				s.logger.Warn("failed to release claim after retry project failure", "dispatch_id", retry.ID, "bead", retry.BeadID, "error", err)
 			}
+			s.reportBeadLifecycle(ctx, beadLifecycleEvent{
+				Project:       retry.Project,
+				BeadID:        retry.BeadID,
+				DispatchID:    retry.ID,
+				Event:         lifecycleEventForDispatchStatus("failed"),
+				WorkflowStage: workflowStageFromLabelsCSV(retry.Labels),
+				DispatchStage: "failed",
+				Status:        "failed",
+				AgentID:       retry.AgentID,
+				Provider:      retry.Provider,
+				Tier:          retry.Tier,
+				ExitCode:      -1,
+				DurationS:     duration,
+				Note:          "retry project missing or disabled",
+			})
 			continue
 		}
 
@@ -1912,6 +2015,21 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			if err := s.reconcileDispatchClaimOnTerminal(ctx, retry, "failed"); err != nil {
 				s.logger.Warn("failed to release claim after retry provider selection failure", "dispatch_id", retry.ID, "bead", retry.BeadID, "error", err)
 			}
+			s.reportBeadLifecycle(ctx, beadLifecycleEvent{
+				Project:       retry.Project,
+				BeadID:        retry.BeadID,
+				DispatchID:    retry.ID,
+				Event:         lifecycleEventForDispatchStatus("failed"),
+				WorkflowStage: workflowStageFromLabelsCSV(retry.Labels),
+				DispatchStage: "failed_needs_check",
+				Status:        "failed",
+				AgentID:       retry.AgentID,
+				Provider:      retry.Provider,
+				Tier:          retry.Tier,
+				ExitCode:      -1,
+				DurationS:     duration,
+				Note:          "retry provider selection failed",
+			})
 			continue
 		}
 
@@ -1928,6 +2046,21 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			if err := s.reconcileDispatchClaimOnTerminal(ctx, retry, "failed"); err != nil {
 				s.logger.Warn("failed to release claim after retry backend resolution failure", "dispatch_id", retry.ID, "bead", retry.BeadID, "error", err)
 			}
+			s.reportBeadLifecycle(ctx, beadLifecycleEvent{
+				Project:       retry.Project,
+				BeadID:        retry.BeadID,
+				DispatchID:    retry.ID,
+				Event:         lifecycleEventForDispatchStatus("failed"),
+				WorkflowStage: workflowStageFromLabelsCSV(retry.Labels),
+				DispatchStage: "failed_needs_check",
+				Status:        "failed",
+				AgentID:       retry.AgentID,
+				Provider:      retry.Provider,
+				Tier:          retry.Tier,
+				ExitCode:      -1,
+				DurationS:     duration,
+				Note:          "retry backend selection failed",
+			})
 			continue
 		}
 
@@ -1960,6 +2093,21 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			if err := s.reconcileDispatchClaimOnTerminal(ctx, retry, "failed"); err != nil {
 				s.logger.Warn("failed to release claim after retry dispatch launch failure", "dispatch_id", retry.ID, "bead", retry.BeadID, "error", err)
 			}
+			s.reportBeadLifecycle(ctx, beadLifecycleEvent{
+				Project:       retry.Project,
+				BeadID:        retry.BeadID,
+				DispatchID:    retry.ID,
+				Event:         lifecycleEventForDispatchStatus("failed"),
+				WorkflowStage: workflowStageFromLabelsCSV(retry.Labels),
+				DispatchStage: "failed",
+				Status:        "failed",
+				AgentID:       retry.AgentID,
+				Provider:      retry.Provider,
+				Tier:          retry.Tier,
+				ExitCode:      -1,
+				DurationS:     duration,
+				Note:          "retry dispatch launch failed",
+			})
 			continue
 		}
 
@@ -1990,6 +2138,33 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 		if err := s.store.UpdateDispatchStatus(retry.ID, "retried", 0, duration); err != nil {
 			s.logger.Error("failed to update retry status", "id", retry.ID, "error", err)
 		}
+		s.reportBeadLifecycle(ctx, beadLifecycleEvent{
+			Project:       retry.Project,
+			BeadID:        retry.BeadID,
+			DispatchID:    retry.ID,
+			Event:         lifecycleEventForDispatchStatus("retried"),
+			WorkflowStage: workflowStageFromLabelsCSV(retry.Labels),
+			DispatchStage: "retried",
+			Status:        "retried",
+			AgentID:       retry.AgentID,
+			Provider:      retry.Provider,
+			Tier:          retry.Tier,
+			DurationS:     duration,
+			Note:          fmt.Sprintf("superseded by dispatch %d", newDispatchID),
+		})
+		s.reportBeadLifecycle(ctx, beadLifecycleEvent{
+			Project:       retry.Project,
+			BeadID:        retry.BeadID,
+			DispatchID:    newDispatchID,
+			Event:         "dispatch_retry_started",
+			WorkflowStage: workflowStageFromLabelsCSV(retry.Labels),
+			DispatchStage: "running",
+			Status:        "running",
+			AgentID:       retry.AgentID,
+			Provider:      provider.Model,
+			Tier:          selectedTier,
+			Note:          fmt.Sprintf("retry attempt=%d backend=%s", retry.Retries+1, backendName),
+		})
 
 		s.logger.Info("dispatch retry successful",
 			"bead", retry.BeadID,

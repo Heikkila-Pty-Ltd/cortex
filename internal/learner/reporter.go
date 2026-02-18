@@ -137,6 +137,11 @@ func (r *Reporter) SendAlert(ctx context.Context, alertType string, message stri
 	r.dispatchMessage(ctx, alert)
 }
 
+// SendProjectMessage dispatches an arbitrary project-scoped message via the project scrum agent.
+func (r *Reporter) SendProjectMessage(ctx context.Context, projectName, message string) {
+	r.dispatchProjectMessage(ctx, projectName, message)
+}
+
 func (r *Reporter) dispatchMessage(ctx context.Context, message string) {
 	agent := strings.TrimSpace(r.cfg.AgentID)
 	if agent == "" {
