@@ -128,11 +128,18 @@ func ListBeads(beadsDir string) ([]Bead, error) {
 func ListBeadsCtx(ctx context.Context, beadsDir string) ([]Bead, error) {
 	root := projectRoot(beadsDir)
 
-	out, err := runBD(ctx, root, "list", "--json", "--quiet")
+	out, err := runBD(ctx, root, "list", "--all", "--json", "--quiet")
 	if err != nil {
-		out, err = runBD(ctx, root, "list", "--format=json")
+		out, err = runBD(ctx, root, "list", "--all", "--format=json")
 		if err != nil {
-			return nil, fmt.Errorf("listing beads: %w", err)
+			// Backward compatibility for older bd versions that do not support --all.
+			out, err = runBD(ctx, root, "list", "--json", "--quiet")
+			if err != nil {
+				out, err = runBD(ctx, root, "list", "--format=json")
+				if err != nil {
+					return nil, fmt.Errorf("listing beads: %w", err)
+				}
+			}
 		}
 	}
 
