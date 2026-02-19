@@ -8,6 +8,9 @@ LOCK_FILE="${TEST_SAFE_LOCK_FILE:-$ROOT/.tmp/go-test.lock}"
 LOCK_WAIT_SEC="${TEST_SAFE_LOCK_WAIT_SEC:-120}"
 GO_TEST_TIMEOUT="${TEST_SAFE_GO_TEST_TIMEOUT:-10m}"
 JSON_OUT="${TEST_SAFE_JSON_OUT:-}"
+BD_LOCK_CLEANUP_MINUTES="${TEST_SAFE_BD_LOCK_CLEANUP_MINUTES:-5}"
+BD_LOCK_CLEANUP_DISABLED="${TEST_SAFE_BD_LOCK_CLEANUP_DISABLED:-0}"
+BD_LOCK_CLEANUP_REQUIRE_FORCE="${TEST_SAFE_BD_LOCK_CLEANUP_REQUIRE_FORCE:-0}"
 
 mkdir -p "$(dirname "$LOCK_FILE")"
 
@@ -16,9 +19,19 @@ if [[ ${#args[@]} -eq 0 ]]; then
   args=("./...")
 fi
 
+if [[ "${BD_LOCK_CLEANUP_DISABLED}" != "1" ]]; then
+  if [[ -x "${ROOT}/scripts/cleanup-bd-locks.sh" ]]; then
+    BD_LOCK_CLEANUP_REQUIRE_FORCE="${BD_LOCK_CLEANUP_REQUIRE_FORCE}" \
+      "${ROOT}/scripts/cleanup-bd-locks.sh" "${BD_LOCK_CLEANUP_MINUTES}"
+  fi
+fi
+
 exec 9>"$LOCK_FILE"
 if ! flock -w "$LOCK_WAIT_SEC" 9; then
   echo "test-safe: failed to acquire lock within ${LOCK_WAIT_SEC}s: $LOCK_FILE" >&2
+  echo "test-safe: if this is stale, check for lingering runners with:" >&2
+  echo "  pgrep -af 'test-safe.sh|go test -json|go test ./internal'" >&2
+  echo "  or stale lock file holders before retrying" >&2
   exit 73
 fi
 
