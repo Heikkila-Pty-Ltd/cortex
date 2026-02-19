@@ -121,11 +121,17 @@ func TestChiefSprintReviewerGatherSprintCompletionData_EndToEnd(t *testing.T) {
 	if beta.VelocityMetrics.EstimatedMinutes != 0 {
 		t.Fatalf("beta estimated minutes = %d, want 0", beta.VelocityMetrics.EstimatedMinutes)
 	}
+	if beta.VelocityMetrics.ActualDays != 0 {
+		t.Fatalf("beta actual days = %d, want 0", beta.VelocityMetrics.ActualDays)
+	}
 	if beta.VelocityMetrics.VelocityBeadsPerDay != 0 {
 		t.Fatalf("beta velocity beads/day = %.4f, want 0", beta.VelocityMetrics.VelocityBeadsPerDay)
 	}
 	if beta.VelocityMetrics.VelocityMinutesPerDay != 0 {
 		t.Fatalf("beta velocity minutes/day = %.4f, want 0", beta.VelocityMetrics.VelocityMinutesPerDay)
+	}
+	if beta.VelocityMetrics.AverageCompletionTime != 0 {
+		t.Fatalf("beta average completion time = %.4f, want 0", beta.VelocityMetrics.AverageCompletionTime)
 	}
 
 	if len(completionData.CrossProjectDeps) != 1 {
@@ -141,8 +147,8 @@ func TestChiefSprintReviewerGatherSprintCompletionData_EndToEnd(t *testing.T) {
 	if len(milestone.TargetProjects) != 1 || milestone.TargetProjects[0] != "beta" {
 		t.Fatalf("milestone target projects = %v, want [beta]", milestone.TargetProjects)
 	}
-	if milestone.UnblockedWork != 2 {
-		t.Fatalf("milestone unblocked work = %d, want 2", milestone.UnblockedWork)
+	if milestone.UnblockedWork != 3 {
+		t.Fatalf("milestone unblocked work = %d, want 3 distinct beads", milestone.UnblockedWork)
 	}
 }
 
@@ -213,6 +219,19 @@ JSON
     "estimated_minutes":60,
     "depends_on":["alpha-1"],
     "created_at":"2026-02-03T08:30:00Z",
+    "updated_at":"2026-02-08T11:00:00Z"
+  },
+  {
+    "id":"beta-3",
+    "title":"Migrate legacy client to shared API endpoint",
+    "description":"Carried over migration work that depends on alpha milestone",
+    "status":"open",
+    "priority":3,
+    "issue_type":"task",
+    "labels":["sprint:selected","carryover"],
+    "estimated_minutes":45,
+    "depends_on":["alpha-1"],
+    "created_at":"2026-01-20T08:30:00Z",
     "updated_at":"2026-02-08T11:00:00Z"
   }
 ]

@@ -794,7 +794,7 @@ func (c *ChiefSprintReviewer) isCrossProjectMilestone(bead beads.Bead) bool {
 // findUnblockedProjects determines which projects were unblocked by a milestone completion
 func (c *ChiefSprintReviewer) findUnblockedProjects(ctx context.Context, milestone beads.Bead, projectCompletions map[string]*ProjectSprintData, sourceProject string) ([]string, int) {
 	targetProjects := []string{}
-	unblockedCount := 0
+	unblockedByID := map[string]struct{}{}
 
 	// Look for beads in other projects that might depend on this milestone
 	for projectName, projectData := range projectCompletions {
@@ -808,7 +808,7 @@ func (c *ChiefSprintReviewer) findUnblockedProjects(ctx context.Context, milesto
 				if !contains(targetProjects, projectName) {
 					targetProjects = append(targetProjects, projectName)
 				}
-				unblockedCount++
+				unblockedByID[projectName+":"+bead.ID] = struct{}{}
 			}
 		}
 
@@ -818,12 +818,12 @@ func (c *ChiefSprintReviewer) findUnblockedProjects(ctx context.Context, milesto
 				if !contains(targetProjects, projectName) {
 					targetProjects = append(targetProjects, projectName)
 				}
-				unblockedCount++
+				unblockedByID[projectName+":"+bead.ID] = struct{}{}
 			}
 		}
 	}
 
-	return targetProjects, unblockedCount
+	return targetProjects, len(unblockedByID)
 }
 
 // beadDependsOnMilestone checks if a bead likely depends on a milestone
