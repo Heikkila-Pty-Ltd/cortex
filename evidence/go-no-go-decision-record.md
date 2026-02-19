@@ -1,75 +1,75 @@
 # Cortex GO/NO-GO Decision Record
 
-Decision timestamp: 2026-02-18T12:35:00+10:00  
+Decision timestamp: 2026-02-19T20:04:45+10:00  
 Decision scope: external launch eligibility  
 Decision: `NO-GO`
 
 ## Decision Rationale
 
-The explicit launch decision contract requires all four gates to pass. Three pass and one fails.
+Contracted launch gates are reviewed gate-by-gate. The decision is `NO-GO` because required gates 1 and 4 are failing.
 
-Failing gate:
+Failing gates:
 
-- Burn-in 7-day SLO overall = `FAIL` because critical event total is `113` against threshold `<= 0`.
+- Open P1 bugs = `1` (required `0`) from `bd list --status=open --json` (`cortex-cin`)
+- 7-day burn-in overall SLO = `FAIL` (critical events `113` > `0`) from [`artifacts/launch/burnin/burnin-final-2026-02-18.json`](artifacts/launch/burnin/burnin-final-2026-02-18.json)
 
 Passing gates:
 
-- Open P1 bugs = `0` (required `0`)
-- Open P2 bugs = `0` (required `<= 3`)
+- Open P2 bugs = `1` (required `<= 3`)
 - `failed_needs_check` unresolved older than 24h = `0` (required `0`)
-
-Therefore launch remains `NO-GO`.
 
 ## Evidence Referenced
 
 - `evidence/launch-evidence-bundle.md`
+- `evidence/launch-readiness-certificate.md`
 - `evidence/risk-assessment-report.md`
 - `evidence/risk-mitigation-plan.md`
 - `evidence/launch-risk-register.json`
+- `evidence/launch-readiness-matrix.md`
+- `evidence/validation-report.md`
 - `artifacts/launch/burnin/burnin-final-2026-02-18.json`
 - `docs/LAUNCH_READINESS_CHECKLIST.md`
 
 ## Measured Gate Values
 
-| Gate | Threshold | Measured | Result |
+| Gate | Threshold | Measured | Status |
 | --- | --- | --- | --- |
-| Open P1 bugs | `0` | `0` | PASS |
-| Open P2 bugs | `<= 3` | `0` | PASS |
+| Open P1 bugs | `0` | `1` (`cortex-cin`) | FAIL |
+| Open P2 bugs | `<= 3` | `1` (`cortex-up7`) | PASS |
 | `failed_needs_check` unresolved >24h | `0` | `0` | PASS |
-| Burn-in 7-day SLO overall | `PASS` | `FAIL` | FAIL |
+| Burn-in 7-day SLO overall | `PASS` | `FAIL` (`critical_event_total=113`) | FAIL |
+| Operational runbooks | PASS required | PASS | PASS |
+| Release packaging | PASS required | PASS | PASS |
+| Safety evidence completeness | PASS required | FAIL | FAIL |
+
+## P0/P1 Gate Decision Matrix
+
+| Gate | Priority | Status | Evidence |
+| --- | --- | --- | --- |
+| Self-healing reliability (`docs/LAUNCH_READINESS_CHECKLIST.md`) | P0 | FAIL | `artifacts/launch/runbooks/stuck-dispatch-tabletop-drill-20260218.md` |
+| Burn-in stability (`docs/LAUNCH_READINESS_CHECKLIST.md`) | P0 | FAIL | `artifacts/launch/burnin/burnin-final-2026-02-18.md` |
+| Security/control-plane (`docs/LAUNCH_READINESS_CHECKLIST.md`) | P0 | CONDITIONAL | `internal/config/config_test.go`, `docs/api-security.md` |
+| Observability (`docs/LAUNCH_READINESS_CHECKLIST.md`) | P0 | PASS | `docs/LAUNCH_READINESS_CHECKLIST.md` |
+| Operational runbooks (`docs/LAUNCH_READINESS_CHECKLIST.md`) | P1 | PASS | `artifacts/launch/runbooks/backup-restore-drill-20260218.md` |
+| Data protection (`evidence/launch-readiness-matrix.md`) | P1 | PASS | `artifacts/launch/runbooks/backup-restore-drill-20260218.md` |
+| Release readiness (`evidence/launch-readiness-matrix.md`) | P1 | PASS | `release/dry-run-results.json` |
+| LLM safety evidence (`evidence/launch-readiness-matrix.md`) | P1 | FAIL | `evidence/risk-assessment-report.md` |
 
 ## Conditions to Move from NO-GO to GO
 
 Required before a new `GO` decision:
 
-1. Burn-in critical-event gate passes across a full 7-day window.
-2. Security scan artifact exists and contains no unapproved critical findings.
-3. Safety trial/compliance/review artifacts are complete and signed.
-4. Project owner and ops owner re-approve with updated measured gate values.
+1. Close open P1 bugs and remeasure `open P1 bugs = 0` from live beads.
+2. Run and publish a 7-day burn-in pass with critical event total `<= 0`.
+3. Produce `security/scan-results.json` and confirm no unapproved critical findings.
+4. Produce safety evidence artifacts (`safety/llm-operator-trial-results.json`, `safety/compliance-documentation.md`, `safety/safety-review-results.json`).
+5. Re-approve in writing with updated gate outcomes by both required approvers.
 
 ## Assumptions and Constraints
 
-1. Decision contract gates remain unchanged from 2026-02-18 governance note.
-2. Cortex continues operating in internal hardening mode.
-3. Ongoing autonomy improvements continue while launch remains blocked.
-
-## Launch Window and Milestones
-
-Planned checkpoints:
-
-1. 2026-02-19: mitigation progress checkpoint
-2. 2026-02-21: security/safety evidence checkpoint
-3. 2026-02-24: pre-launch readiness checkpoint
-4. Earliest launch candidate date: 2026-02-27
-
-## Post-Launch Monitoring and Success Criteria
-
-If a later `GO` is approved, first 14 days must satisfy:
-
-1. No new P1 bugs.
-2. `failed_needs_check` unresolved >24h remains zero.
-3. Burn-in style reliability metrics remain inside agreed thresholds daily.
-4. Rollback trigger adherence verified for all critical incidents.
+1. Live gate readings remain bound to `~/.local/share/cortex/cortex.db` for unresolved incident checks.
+2. `bd` is the authoritative source for open-bead counts used in this contract.
+3. Cortex remains in internal hardening mode until all required gates pass.
 
 ## Formal Approvals
 
@@ -77,12 +77,12 @@ Project Owner Approval:
 Name: Simon Heikkila  
 Role: Project Owner  
 Decision: `NO-GO`  
-Signed at: 2026-02-18T12:35:00+10:00  
+Signed at: 2026-02-19T20:04:45+10:00  
 Signature: `Simon Heikkila`
 
 Ops Owner Approval:  
 Name: Simon Heikkila  
 Role: Ops Owner (acting)  
 Decision: `NO-GO`  
-Signed at: 2026-02-18T12:35:00+10:00  
+Signed at: 2026-02-19T20:04:45+10:00  
 Signature: `Simon Heikkila`
