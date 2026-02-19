@@ -57,7 +57,7 @@ release/*.json
 release/*.jsonl
 release/*.log
 
-# Archive - historical data
+# Archive - historical data (large, move to external storage)
 archive/
 
 # Operational artifacts and evidence
