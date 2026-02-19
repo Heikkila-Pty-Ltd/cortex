@@ -133,6 +133,24 @@ All configuration lives in `cortex.toml`:
 | `balanced` | List of provider names for balanced tier |
 | `premium` | List of provider names for premium tier |
 
+### [dispatch.cost_control]
+
+Optional Spark-first and churn guard policy knobs.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `enabled` | `false` | Enable policy enforcement |
+| `spark_first` | `false` | Prefer `fast` tier for routine work |
+| `retry_escalation_attempt` | `2` | Earliest retry count where non-fast retry tiers are allowed |
+| `complexity_escalation_minutes` | `120` | Allow non-fast tier for large beads at/above this estimate |
+| `risky_review_labels` | built-in list | Labels that force review escalation (e.g. security/migration) |
+| `force_spark_at_weekly_usage_pct` | `0` (off) | Force Spark-only tiers once weekly authed usage reaches this percent |
+| `daily_cost_cap_usd` | `0` (off) | Force Spark-only tiers once 24h recorded spend reaches cap |
+| `per_bead_cost_cap_usd` | `0` (off) | Block further dispatches for beads over this cost |
+| `per_bead_stage_attempt_limit` | `0` (off) | Max attempts per bead stage/role in window before cooldown |
+| `stage_attempt_window` | `"6h"` | Rolling window for stage attempt counting |
+| `stage_cooldown` | `"45m"` | Cooldown after stage attempt limit is hit |
+
 ### [health]
 
 | Key | Default | Description |
