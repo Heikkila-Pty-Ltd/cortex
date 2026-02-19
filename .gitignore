@@ -30,6 +30,8 @@ state/
 .cortex/*.tsv
 .cortex/*.jsonl
 .cortex/*.lock
+.cortex/*.out
+.cortex/*.latest
 
 # Beads runtime data
 .beads/*.log
@@ -43,6 +45,14 @@ state/
 
 # Evidence raw data
 evidence/.raw/
+
+# Generated release artifacts
+release/*.json
+release/*.jsonl
+release/*.log
+
+# Archive - historical data (large, move to external storage)
+# archive/
 
 # Temporary files
 .tmp/
