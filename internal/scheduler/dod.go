@@ -25,6 +25,7 @@ type DoDChecker struct {
 	coverageMin       int      // optional: fail if coverage < N%
 	requireEstimate   bool     // bead must have estimate before closing
 	requireAcceptance bool     // bead must have acceptance criteria
+	onCheckStart      func(string)
 }
 
 // DoDResult contains the overall result of running all DoD checks.
@@ -70,6 +71,11 @@ func (d *DoDChecker) IsEnabled() bool {
 	return len(d.checks) > 0 || d.coverageMin > 0 || d.requireEstimate || d.requireAcceptance
 }
 
+// SetOnCheckStart registers an optional callback invoked before each check command starts.
+func (d *DoDChecker) SetOnCheckStart(cb func(string)) {
+	d.onCheckStart = cb
+}
+
 // Check runs all DoD checks in the project workspace.
 // This is called by the scheduler when a dispatch completes (before marking bead as done).
 // Returns pass/fail with details for each check and overall failures.
@@ -87,6 +93,9 @@ func (d *DoDChecker) Check(ctx context.Context, workspace string, bead beads.Bea
 
 	// Run command checks
 	for _, check := range d.checks {
+		if d.onCheckStart != nil {
+			d.onCheckStart(check)
+		}
 		checkResult, err := d.runCheck(ctx, workspace, check)
 		if err != nil {
 			return nil, fmt.Errorf("running check %q: %w", check, err)
@@ -308,7 +317,7 @@ func (r *DoDResult) String() string {
 // Summary returns a detailed summary including timing and output information.
 func (r *DoDResult) Summary() string {
 	var summary strings.Builder
-	
+
 	if r.Passed {
 		summary.WriteString(fmt.Sprintf("✅ DoD PASSED (%d checks completed)\n", len(r.Checks)))
 	} else {
@@ -317,7 +326,7 @@ func (r *DoDResult) Summary() string {
 			summary.WriteString(fmt.Sprintf("  %d. %s\n", i+1, failure))
 		}
 	}
-	
+
 	if len(r.Checks) > 0 {
 		summary.WriteString("\nCheck Details:\n")
 		for i, check := range r.Checks {
@@ -325,9 +334,9 @@ func (r *DoDResult) Summary() string {
 			if !check.Passed {
 				status = "❌"
 			}
-			summary.WriteString(fmt.Sprintf("  %s Check %d: %s (exit %d, %v)\n", 
+			summary.WriteString(fmt.Sprintf("  %s Check %d: %s (exit %d, %v)\n",
 				status, i+1, check.Command, check.ExitCode, check.Duration))
-			
+
 			if check.Output != "" && !check.Passed {
 				// Only show output for failed checks to avoid clutter
 				lines := strings.Split(check.Output, "\n")
@@ -343,7 +352,7 @@ func (r *DoDResult) Summary() string {
 			}
 		}
 	}
-	
+
 	return summary.String()
 }
 
@@ -374,7 +383,7 @@ func (d *DoDChecker) ValidateConfiguration() error {
 		if check == "" {
 			return fmt.Errorf("empty command in DoD checks")
 		}
-		
+
 		// Warn about potentially dangerous commands
 		dangerousCommands := []string{"rm", "sudo", "chmod", "mv /", "dd", "mkfs"}
 		for _, dangerous := range dangerousCommands {
@@ -383,11 +392,11 @@ func (d *DoDChecker) ValidateConfiguration() error {
 			}
 		}
 	}
-	
+
 	// Validate coverage range
 	if d.coverageMin < 0 || d.coverageMin > 100 {
 		return fmt.Errorf("coverage minimum must be between 0-100, got %d", d.coverageMin)
 	}
-	
+
 	return nil
 }

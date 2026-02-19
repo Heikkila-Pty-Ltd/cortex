@@ -32,7 +32,7 @@ func NewRWMutexManager(initial *Config) *RWMutexManager {
 func (m *RWMutexManager) Get() *Config {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.cfg.Clone()
+	return m.cfg
 }
 
 // Set updates the current config pointer under an exclusive lock.

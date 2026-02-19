@@ -183,6 +183,7 @@ type Dispatch struct {
 	Timeouts         DispatchTimeouts     `toml:"timeouts"`
 	Git              DispatchGit          `toml:"git"`
 	Tmux             DispatchTmux         `toml:"tmux"`
+	CostControl      DispatchCostControl  `toml:"cost_control"`
 	LogDir           string               `toml:"log_dir"`
 	LogRetentionDays int                  `toml:"log_retention_days"`
 }
@@ -221,6 +222,21 @@ type DispatchTmux struct {
 	SessionPrefix string `toml:"session_prefix"` // default "cortex-"
 }
 
+// DispatchCostControl defines configurable dispatch policies to reduce expensive usage/churn.
+type DispatchCostControl struct {
+	Enabled                     bool     `toml:"enabled"`
+	SparkFirst                  bool     `toml:"spark_first"`
+	RetryEscalationAttempt      int      `toml:"retry_escalation_attempt"`
+	ComplexityEscalationMinutes int      `toml:"complexity_escalation_minutes"`
+	RiskyReviewLabels           []string `toml:"risky_review_labels"`
+	ForceSparkAtWeeklyUsagePct  float64  `toml:"force_spark_at_weekly_usage_pct"`
+	DailyCostCapUSD             float64  `toml:"daily_cost_cap_usd"`
+	PerBeadCostCapUSD           float64  `toml:"per_bead_cost_cap_usd"`
+	PerBeadStageAttemptLimit    int      `toml:"per_bead_stage_attempt_limit"`
+	StageAttemptWindow          Duration `toml:"stage_attempt_window"`
+	StageCooldown               Duration `toml:"stage_cooldown"`
+}
+
 type Chief struct {
 	Enabled             bool   `toml:"enabled"`               // Enable Chief Scrum Master
 	MatrixRoom          string `toml:"matrix_room"`           // Matrix room for coordination
@@ -247,6 +263,7 @@ func (cfg *Config) Clone() *Config {
 	cloned.Workflows = cloneWorkflows(cfg.Workflows)
 	cloned.API.Security.AllowedTokens = cloneStringSlice(cfg.API.Security.AllowedTokens)
 	cloned.Dispatch.CLI = cloneCLIConfigMap(cfg.Dispatch.CLI)
+	cloned.Dispatch.CostControl.RiskyReviewLabels = cloneStringSlice(cfg.Dispatch.CostControl.RiskyReviewLabels)
 	return &cloned
 }
 
@@ -350,7 +367,7 @@ func Load(path string) (*Config, error) {
 }
 
 // LoadManager reads config from path and returns a thread-safe manager.
-func LoadManager(path string) (*RWMutexManager, error) {
+func LoadManager(path string) (ConfigManager, error) {
 	cfg, err := Load(path)
 	if err != nil {
 		return nil, err
@@ -450,6 +467,29 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Dispatch.Tmux.SessionPrefix == "" {
 		cfg.Dispatch.Tmux.SessionPrefix = "cortex-"
+	}
+
+	// Dispatch cost-control defaults
+	if cfg.Dispatch.CostControl.RetryEscalationAttempt == 0 {
+		cfg.Dispatch.CostControl.RetryEscalationAttempt = 2
+	}
+	if cfg.Dispatch.CostControl.ComplexityEscalationMinutes == 0 {
+		cfg.Dispatch.CostControl.ComplexityEscalationMinutes = 120
+	}
+	if len(cfg.Dispatch.CostControl.RiskyReviewLabels) == 0 {
+		cfg.Dispatch.CostControl.RiskyReviewLabels = []string{
+			"risk:high",
+			"security",
+			"migration",
+			"breaking-change",
+			"database",
+		}
+	}
+	if cfg.Dispatch.CostControl.StageAttemptWindow.Duration == 0 {
+		cfg.Dispatch.CostControl.StageAttemptWindow.Duration = 6 * time.Hour
+	}
+	if cfg.Dispatch.CostControl.StageCooldown.Duration == 0 {
+		cfg.Dispatch.CostControl.StageCooldown.Duration = 45 * time.Minute
 	}
 
 	// Dispatch log retention
@@ -688,6 +728,9 @@ func validate(cfg *Config) error {
 	// Validate dispatch CLI configuration
 	if err := ValidateDispatchConfig(cfg); err != nil {
 		return fmt.Errorf("dispatch configuration: %w", err)
+	}
+	if err := validateDispatchCostControlConfig(cfg.Dispatch.CostControl); err != nil {
+		return fmt.Errorf("dispatch cost control configuration: %w", err)
 	}
 
 	return nil
@@ -957,6 +1000,34 @@ func validateDoDConfig(projectName string, dod DoDConfig) error {
 	// Note: Empty checks array is valid - DoD can be coverage-only or flags-only
 	// Note: All string commands in checks are valid - we can't validate arbitrary commands
 
+	return nil
+}
+
+func validateDispatchCostControlConfig(cc DispatchCostControl) error {
+	if cc.RetryEscalationAttempt < 0 {
+		return fmt.Errorf("retry_escalation_attempt cannot be negative")
+	}
+	if cc.ComplexityEscalationMinutes < 0 {
+		return fmt.Errorf("complexity_escalation_minutes cannot be negative")
+	}
+	if cc.ForceSparkAtWeeklyUsagePct < 0 || cc.ForceSparkAtWeeklyUsagePct > 100 {
+		return fmt.Errorf("force_spark_at_weekly_usage_pct must be between 0 and 100")
+	}
+	if cc.DailyCostCapUSD < 0 {
+		return fmt.Errorf("daily_cost_cap_usd cannot be negative")
+	}
+	if cc.PerBeadCostCapUSD < 0 {
+		return fmt.Errorf("per_bead_cost_cap_usd cannot be negative")
+	}
+	if cc.PerBeadStageAttemptLimit < 0 {
+		return fmt.Errorf("per_bead_stage_attempt_limit cannot be negative")
+	}
+	if cc.PerBeadStageAttemptLimit > 0 && cc.StageAttemptWindow.Duration <= 0 {
+		return fmt.Errorf("stage_attempt_window must be > 0 when per_bead_stage_attempt_limit is set")
+	}
+	if cc.PerBeadStageAttemptLimit > 0 && cc.StageCooldown.Duration < 0 {
+		return fmt.Errorf("stage_cooldown cannot be negative")
+	}
 	return nil
 }
 

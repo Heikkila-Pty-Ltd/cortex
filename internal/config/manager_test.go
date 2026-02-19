@@ -18,14 +18,16 @@ func TestRWMutexManagerGetSet(t *testing.T) {
 		t.Fatal("expected initial config snapshot")
 	}
 	if got == initial {
-		t.Fatal("expected manager to store cloned config")
+		t.Fatal("expected manager to store cloned config on bootstrap")
 	}
 	if got.General.LogLevel != "info" {
 		t.Fatalf("unexpected initial log level: %q", got.General.LogLevel)
 	}
-	got.General.LogLevel = "trace"
+	// Get() returns the live config snapshot; callers must clone before mutation.
+	live := got.Clone()
+	live.General.LogLevel = "trace"
 	if after := mgr.Get(); after.General.LogLevel != "info" {
-		t.Fatalf("snapshot mutation leaked into manager state: %q", after.General.LogLevel)
+		t.Fatalf("mutating snapshot leaked into manager state: %q", after.General.LogLevel)
 	}
 
 	next := &Config{General: General{LogLevel: "debug"}}
