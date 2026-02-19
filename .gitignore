@@ -5,7 +5,12 @@
 /cortex
 *.test
 
-# Lock files
+# Tools binaries (build from source)
+/tools/db-backup
+/tools/db-restore
+
+# Lock files (anywhere)
+*.lock
 .beads/.bv.lock
 
 # Local config (do not commit)
@@ -15,17 +20,42 @@ cortex.runner.toml
 
 # Local state
 *.db
+*.db-shm
+*.db-wal
 .local/
+state/
 
 # Runtime data
 .cortex/*.log
 .cortex/*.tsv
 .cortex/*.jsonl
-.evidence/.raw/
+.cortex/*.lock
+
+# Beads runtime data
+.beads/*.log
+.beads/*.jsonl
+.beads/*.db
+.beads/*.db.disabled
+.beads/dolt/
+.beads/.local_version
+.beads/last-touched
+.beads/dolt-access.lock
+
+# Evidence raw data
+evidence/.raw/
 
 # Temporary files
 .tmp/
+*.tmp
+*.temp
 
 # OS files
 .DS_Store
 Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
