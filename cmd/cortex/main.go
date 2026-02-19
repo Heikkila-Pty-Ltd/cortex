@@ -168,6 +168,8 @@ func main() {
 	if *once {
 		logger.Info("running single tick (--once mode)")
 		sched.RunTick(ctx)
+		logger.Info("single tick complete, waiting for dispatched agents to finish")
+		sched.WaitForRunningDispatches(ctx, 1*time.Second)
 		logger.Info("single tick complete, exiting")
 		return
 	}

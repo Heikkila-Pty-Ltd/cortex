@@ -1073,6 +1073,47 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 	s.logger.Info("tick complete", "dispatched", dispatched, "ready", len(allReady))
 }
 
+// WaitForRunningDispatches blocks until no running dispatches remain.
+// It repeatedly reconciles running dispatch status so terminal dispatches
+// are marked completed/failed while waiting.
+func (s *Scheduler) WaitForRunningDispatches(ctx context.Context, pollInterval time.Duration) {
+	if pollInterval <= 0 {
+		pollInterval = 1 * time.Second
+	}
+
+	for {
+		running, err := s.store.GetRunningDispatches()
+		if err != nil {
+			s.logger.Error("failed to query running dispatches while waiting", "error", err)
+			return
+		}
+		if len(running) == 0 {
+			return
+		}
+
+		s.logger.Info("waiting for running dispatches", "count", len(running))
+		s.checkRunningDispatches(ctx)
+
+		running, err = s.store.GetRunningDispatches()
+		if err != nil {
+			s.logger.Error("failed to query running dispatches after reconcile", "error", err)
+			return
+		}
+		if len(running) == 0 {
+			return
+		}
+
+		timer := time.NewTimer(pollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			s.logger.Warn("stopped waiting for running dispatches", "reason", "context_cancelled", "error", ctx.Err())
+			return
+		case <-timer.C:
+		}
+	}
+}
+
 // checkCeremonies evaluates ceremony schedules and triggers them if due
 func (s *Scheduler) checkCeremonies(ctx context.Context) {
 	if s.ceremonyScheduler != nil {
