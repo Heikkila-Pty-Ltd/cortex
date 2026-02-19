@@ -135,7 +135,7 @@ func TestPickProvider_AuthedAllowed(t *testing.T) {
 
 func TestPickProvider_ParallelDispatchAttempts(t *testing.T) {
 	s := tempStore(t)
-	rl := NewRateLimiter(s, config.RateLimits{Window5hCap: 1, WeeklyCap: 1, WeeklyHeadroomPct: 80})
+	rl := NewRateLimiter(s, config.RateLimits{Window5hCap: 2, WeeklyCap: 2, WeeklyHeadroomPct: 80})
 
 	var wg sync.WaitGroup
 	type result struct {
@@ -177,6 +177,14 @@ func TestPickProvider_ParallelDispatchAttempts(t *testing.T) {
 
 	if passed != 1 {
 		t.Fatalf("expected exactly 1 dispatch attempt to be allowed, got %d", passed)
+	}
+
+	count, err := s.CountAuthedUsage5h()
+	if err != nil {
+		t.Fatalf("failed to read authed usage: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 recorded dispatch, got %d", count)
 	}
 }
 

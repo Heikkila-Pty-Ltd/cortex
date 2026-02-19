@@ -15,6 +15,14 @@ type RateLimiter struct {
 	mu    sync.Mutex
 }
 
+type dispatchReserveResult int
+
+const (
+	dispatchReserveOK dispatchReserveResult = iota
+	dispatchReservePreLimit
+	dispatchReservePostLimit
+)
+
 // NewRateLimiter creates a new rate limiter backed by the given store.
 func NewRateLimiter(s *store.Store, cfg config.RateLimits) *RateLimiter {
 	return &RateLimiter{store: s, cfg: cfg}
@@ -54,11 +62,8 @@ func (r *RateLimiter) RecordAuthedDispatch(provider, agentID, beadID string) (in
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if ok, reason := r.canDispatchAuthedLocked(); !ok {
-		return 0, fmt.Errorf("rate limit exceeded before recording dispatch: %s", reason)
-	}
-
-	return r.store.RecordProviderUsage(provider, agentID, beadID)
+	usageID, _, err := r.recordAuthedDispatchLocked(provider, agentID, beadID)
+	return usageID, err
 }
 
 // ReleaseAuthedDispatch removes a previously recorded usage event (reservation rollback).
@@ -140,6 +145,9 @@ func (r *RateLimiter) pickAndReserveFromCandidates(
 	excludeModels map[string]bool,
 	agentID, beadID string,
 ) (*config.Provider, string, int64, func(), error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	for _, name := range candidates {
 		p, ok := providers[name]
 		if !ok {
@@ -157,26 +165,13 @@ func (r *RateLimiter) pickAndReserveFromCandidates(
 		}
 
 		// Check authed gates (optimistic check)
-		ok, _ = r.CanDispatchAuthed()
-		if !ok {
-			continue
-		}
-
-		// Attempt reservation (atomic insert)
-		usageID, err := r.RecordAuthedDispatch(p.Model, agentID, beadID)
+		usageID, reserveResult, err := r.recordAuthedDispatchLocked(p.Model, agentID, beadID)
 		if err != nil {
-			// Continue to next provider on reservation error (more resilient than failing fast)
+			if reserveResult == dispatchReservePostLimit {
+				return nil, "", 0, nil, err
+			}
+			// Continue to next provider on pre-limit or transient store errors.
 			continue
-		}
-
-		// Double-check limits after reservation to ensure we didn't race over the limit
-		ok, reason := r.CanDispatchAuthed()
-		if !ok {
-			_ = r.ReleaseAuthedDispatch(usageID)
-			// Since limits are global (all authed providers share the same cap),
-			// if we're over limit now, we're over limit for ALL authed providers.
-			// Return immediately rather than wasting cycles on remaining candidates.
-			return nil, "", 0, nil, fmt.Errorf("rate limit exceeded after reservation: %s", reason)
 		}
 
 		// Success with reservation
@@ -193,6 +188,9 @@ func (r *RateLimiter) pickAndReserveFromCandidates(
 // Returns nil if no provider is available (caller should handle tier downgrade).
 // DEPRECATED: Use PickAndReserveProvider instead.
 func (r *RateLimiter) PickProvider(tier string, providers map[string]config.Provider, tiers config.Tiers) *config.Provider {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	var tierProviders []string
 	switch tier {
 	case "fast":
@@ -215,7 +213,7 @@ func (r *RateLimiter) PickProvider(tier string, providers map[string]config.Prov
 			return &p
 		}
 
-		if canDispatch, _ := r.CanDispatchAuthed(); !canDispatch {
+		if canDispatch, _ := r.canDispatchAuthedLocked(); !canDispatch {
 			continue
 		}
 
@@ -247,4 +245,31 @@ func UpgradeTier(tier string) string {
 	default:
 		return ""
 	}
+}
+
+// recordAuthedDispatchLocked attempts to reserve one authed dispatch under lock.
+// It returns the usage ID on success or a non-nil error with one of:
+// - dispatchReservePreLimit when the limit was already exceeded
+// - dispatchReservePostLimit when reservation temporarily overshot the limit
+// - dispatchReserveOK for no known rate limit breach
+func (r *RateLimiter) recordAuthedDispatchLocked(provider, agentID, beadID string) (int64, dispatchReserveResult, error) {
+	ok, reason := r.canDispatchAuthedLocked()
+	if !ok {
+		return 0, dispatchReservePreLimit, fmt.Errorf("rate limit exceeded before recording dispatch: %s", reason)
+	}
+
+	usageID, err := r.store.RecordProviderUsage(provider, agentID, beadID)
+	if err != nil {
+		return 0, dispatchReserveOK, err
+	}
+
+	ok, reason = r.canDispatchAuthedLocked()
+	if !ok {
+		if delErr := r.store.DeleteProviderUsage(usageID); delErr != nil {
+			return 0, dispatchReservePostLimit, fmt.Errorf("rollback failed after over-limit reservation: %w", delErr)
+		}
+		return 0, dispatchReservePostLimit, fmt.Errorf("rate limit exceeded after reservation: %s", reason)
+	}
+
+	return usageID, dispatchReserveOK, nil
 }
