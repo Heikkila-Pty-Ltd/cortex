@@ -23,6 +23,9 @@ jobs:
       - name: Prime temp directory
         run: mkdir -p .tmp
 
+      - name: Lint backlog scope/DoD
+        run: make lint-beads
+
       - name: Run race test target
         run: make test-race-ci
 

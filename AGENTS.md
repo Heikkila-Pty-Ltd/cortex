@@ -118,6 +118,56 @@ Use `scripts/test-safe.sh` instead of raw `go test` in shared workspaces.
 - Use descriptive titles and set appropriate priority/type
 - Always `bd sync` before ending session
 
+### OpenClaw Main: Creating Beads (Required Format)
+
+For `open`/`in_progress` beads, Cortex dispatch expects proper structure. Missing fields will block assignment.
+
+- Required before work can dispatch:
+  - Clear scope in `description`
+  - `acceptance_criteria` with explicit test requirement
+  - `acceptance_criteria` with explicit DoD requirement
+  - Positive estimate in minutes (`--estimate > 0`)
+
+Use this pattern:
+
+```bash
+# 1) Create scoped bead
+bd create \
+  --type task \
+  --priority 2 \
+  --title "Implement X in Y" \
+  --description "Goal, scope boundaries, touched files/components, and dependency context."
+
+# 2) Add execution gates (AC + estimate)
+bd update <id> \
+  --acceptance "- Behavior/outcome is observable and testable.
+- Add/update tests covering changed behavior; targeted test suite passes.
+- DoD: closure notes include verification evidence, risk/rollback notes, and follow-ups." \
+  --estimate 90
+
+# 3) Wire dependencies/parent where relevant
+bd dep add <id> <depends-on-id>
+# or
+bd update <id> --parent <parent-id>
+
+# 4) Verify bead shape before leaving it open
+bd show <id>
+make lint-beads
+```
+
+Sizing guidance (minutes):
+- Small fix/docs: `30-60`
+- Typical task/bug: `60-120`
+- Large feature slice: `120-240` (prefer splitting instead of bigger estimates)
+
+Definition of Ready checklist:
+- Unambiguous scope and non-goals
+- Concrete acceptance criteria (not vague outcomes)
+- Test plan implied by acceptance criteria
+- DoD clause present
+- Estimate set
+- Dependencies declared
+
 ### Epic Breakdown Completion Checklist
 
 **When completing epic breakdown tasks (like "Auto: break down epic X"):**

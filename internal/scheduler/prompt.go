@@ -98,6 +98,12 @@ Per-bead refinement checklist (complete before selection):
 - Estimate: minutes only; include confidence note in appended notes when uncertainty is high.
 - Dependencies: all blockers represented with bd dep add and reflected in sprint decision.
 
+Bead spec guardrail (required, token-light):
+- Scope sentence present in description (what is in/out).
+- Acceptance includes one explicit test line.
+- Acceptance includes one explicit DoD line.
+- Estimate is set (` + "`--estimate`" + ` > 0, minutes).
+
 Quality bar:
 - Acceptance criteria must be explicit and testable with clear pass/fail outcomes.
 - Design notes should include approach, affected files, dependencies, and risks.
@@ -205,21 +211,31 @@ Use this exact structure in your final output:
 	"scrum": func(b beads.Bead, useBranches bool, prDiff string) string {
 		return fmt.Sprintf(`## Instructions (Scrum Master)
 1. Review and refine the task description
-2. Add or improve acceptance criteria using: bd update %s --acceptance="..."
-3. Break down if too large — create sub-tasks with bd create
-4. Transition to planning: bd update %s --set-labels stage:planning
-5. Unassign yourself: bd update %s --assignee=""
-`, b.ID, b.ID, b.ID)
+2. Ensure bead spec minimum before handoff:
+   - scope sentence in description
+   - acceptance has a test line
+   - acceptance has a DoD line
+   - estimate is set in minutes (>0)
+3. Add or improve acceptance criteria using: bd update %s --acceptance="..."
+4. Set estimate if missing: bd update %s --estimate=<minutes>
+5. Break down if too large — create sub-tasks with bd create
+6. Transition to planning: bd update %s --set-labels stage:planning
+7. Unassign yourself: bd update %s --assignee=""
+`, b.ID, b.ID, b.ID, b.ID)
 	},
 	"planner": func(b beads.Bead, useBranches bool, prDiff string) string {
 		return fmt.Sprintf(`## Instructions (Planner)
 1. Read the task description and acceptance criteria carefully
-2. Create an implementation plan with design notes: bd update %s --design="..."
-3. Identify files to create or modify, list them in the design
-4. Estimate effort if not set
-5. Transition to ready: bd update %s --set-labels stage:ready
-6. Unassign yourself: bd update %s --assignee=""
-`, b.ID, b.ID, b.ID)
+2. Run bead-spec preflight before planning:
+   - description has clear scope
+   - acceptance includes test + DoD lines
+   - estimate is set in minutes (>0); set it if missing
+3. Create an implementation plan with design notes: bd update %s --design="..."
+4. Identify files to create or modify, list them in the design
+5. Set estimate if still missing: bd update %s --estimate=<minutes>
+6. Transition to ready: bd update %s --set-labels stage:ready
+7. Unassign yourself: bd update %s --assignee=""
+`, b.ID, b.ID, b.ID, b.ID)
 	},
 	"coder": func(b beads.Bead, useBranches bool, prDiff string) string {
 		shortTitle := b.Title

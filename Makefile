@@ -16,7 +16,7 @@ RACE_CI_LOG_OUT ?= .tmp/test-race.log
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build install clean test test-race test-race-ci service-install service-start service-stop
+.PHONY: help build install clean test lint-beads test-race test-race-ci service-install service-start service-stop
 
 help:
 	@echo "Available targets:"
@@ -24,6 +24,7 @@ help:
 	@echo "  make install      - Build and install cortex to ~/.local/bin"
 	@echo "  make clean        - Remove build artifacts"
 	@echo "  make test         - Run all tests"
+	@echo "  make lint-beads   - Validate open/in-progress beads have acceptance criteria + DoD gates"
 	@echo "  make test-race    - Run race tests for concurrency-critical packages via scripts/test-safe.sh"
 	@echo "  make test-race-ci - CI race entrypoint with timeout/log output for debugging failures"
 	@echo "  make service-install - Install user systemd service"
@@ -41,6 +42,9 @@ clean:
 
 test:
 	go test ./...
+
+lint-beads:
+	scripts/lint-beads.sh
 
 test-race:
 	TEST_SAFE_GO_TEST_TIMEOUT=$(RACE_TIMEOUT) \
