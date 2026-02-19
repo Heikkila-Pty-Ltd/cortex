@@ -403,11 +403,12 @@ func Load(path string) (*Config, error) {
 	}
 
 	var cfg Config
-	if err := toml.Unmarshal(data, &cfg); err != nil {
+	md, err := toml.Decode(string(data), &cfg)
+	if err != nil {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
 
-	applyDefaults(&cfg)
+	applyDefaults(&cfg, md)
 	normalizePaths(&cfg)
 
 	if err := validate(&cfg); err != nil {
@@ -430,7 +431,7 @@ func LoadManager(path string) (ConfigManager, error) {
 	return NewRWMutexManager(cfg), nil
 }
 
-func applyDefaults(cfg *Config) {
+func applyDefaults(cfg *Config, md toml.MetaData) {
 	if cfg.General.TickInterval.Duration == 0 {
 		cfg.General.TickInterval.Duration = 60 * time.Second
 	}
@@ -625,6 +626,11 @@ func applyDefaults(cfg *Config) {
 		}
 		if strings.TrimSpace(project.MergeMethod) == "" {
 			project.MergeMethod = "squash"
+		}
+		project.MergeMethod = strings.ToLower(strings.TrimSpace(project.MergeMethod))
+
+		if !md.IsDefined("projects", name, "auto_revert_on_failure") {
+			project.AutoRevertOnFailure = true
 		}
 
 		// Sprint planning defaults (optional - no defaults applied to maintain backward compatibility)

@@ -148,8 +148,8 @@ priority = 1
 	if len(project.PostMergeChecks) != 0 {
 		t.Errorf("post_merge_checks = %v, want empty", project.PostMergeChecks)
 	}
-	if project.AutoRevertOnFailure {
-		t.Error("auto_revert_on_failure = true, want false")
+	if !project.AutoRevertOnFailure {
+		t.Error("auto_revert_on_failure = false, want true")
 	}
 }
 
@@ -196,6 +196,28 @@ auto_revert_on_failure = true
 	}
 	if !project.AutoRevertOnFailure {
 		t.Error("auto_revert_on_failure = false, want true")
+	}
+}
+
+func TestLoadProjectMergeConfigExplicitAutoRevertSetting(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.merge-explicit-false]
+enabled = true
+beads_dir = "/tmp/merge-explicit-false/.beads"
+workspace = "/tmp/merge-explicit-false"
+priority = 1
+auto_revert_on_failure = false
+`
+	path := writeTestConfig(t, cfg)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	project := loaded.Projects["merge-explicit-false"]
+	if project.AutoRevertOnFailure {
+		t.Error("auto_revert_on_failure = true, want false")
 	}
 }
 
