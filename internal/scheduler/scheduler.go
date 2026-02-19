@@ -59,6 +59,7 @@ type Scheduler struct {
 	epicBreakup             map[string]time.Time
 	claimAnomaly            map[string]time.Time
 	dispatchBlockAnomaly    map[string]time.Time
+	mergeGateRateLimitUntil map[string]time.Time
 	lifecycleRateLimitUntil map[string]time.Time
 	lifecycleRateLimitLog   map[string]time.Time
 	gatewayCircuitUntil     time.Time
@@ -156,6 +157,9 @@ const (
 	dodQueueCapacity      = 128
 	tickWatchdogThreshold = 90 * time.Second
 	sprintPlanningDedup   = 24 * time.Hour
+	mergeGateRateLimit    = 20 * time.Second
+	mergeGateMaxPerTick   = 1
+	mergeGateCooldownKey  = "merge-gate"
 )
 
 var (
@@ -208,6 +212,7 @@ func NewWithConfigManager(cfgManager config.ConfigManager, s *store.Store, rl *d
 		epicBreakup:               make(map[string]time.Time),
 		claimAnomaly:              make(map[string]time.Time),
 		dispatchBlockAnomaly:      make(map[string]time.Time),
+		mergeGateRateLimitUntil:  make(map[string]time.Time),
 		lifecycleRateLimitUntil:   make(map[string]time.Time),
 		lifecycleRateLimitLog:     make(map[string]time.Time),
 		utilizationSampleInterval: 1 * time.Minute,
@@ -392,6 +397,25 @@ func (s *Scheduler) latestCommitSHASafe(workspace string) (string, error) {
 		return s.latestCommitSHA(workspace)
 	}
 	return git.LatestCommitSHA(workspace)
+}
+
+func (s *Scheduler) getMergeGateRateLimitUntil() (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mergeGateRateLimitUntil == nil {
+		return time.Time{}, false
+	}
+	until, ok := s.mergeGateRateLimitUntil[mergeGateCooldownKey]
+	return until, ok
+}
+
+func (s *Scheduler) setMergeGateRateLimitUntil(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mergeGateRateLimitUntil == nil {
+		s.mergeGateRateLimitUntil = make(map[string]time.Time)
+	}
+	s.mergeGateRateLimitUntil[mergeGateCooldownKey] = now.Add(mergeGateRateLimit)
 }
 
 func workflowStageForBead(bead beads.Bead) string {
@@ -2394,6 +2418,19 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 }
 
 func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
+	now := time.Now
+	if s.now != nil {
+		now = s.now
+	}
+	nowTime := now()
+
+	if until, ok := s.getMergeGateRateLimitUntil(); ok && nowTime.Before(until) {
+		s.logger.Info("merge-gate rate limit active, skipping merge processing", "until", until)
+		return
+	}
+
+	mergesThisTick := 0
+
 	for projectName, project := range s.cfg.Projects {
 		if !project.Enabled || !project.UseBranches {
 			continue
@@ -2407,6 +2444,10 @@ func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
 		}
 
 		for _, bead := range beadList {
+			if mergesThisTick >= mergeGateMaxPerTick {
+				s.logger.Info("merge-gate per-tick max reached, deferring remaining merges", "project", projectName, "max", mergeGateMaxPerTick)
+				return
+			}
 			if !strings.EqualFold(strings.TrimSpace(bead.Status), "open") {
 				continue
 			}
@@ -2436,8 +2477,10 @@ func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
 				continue
 			}
 			if reviewStatus == nil || !isPRApproved(reviewStatus) {
+				s.logger.Info("PR not approved for merge", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber)
 				continue
 			}
+			s.logger.Info("merge gate approved PR detected", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber)
 
 			mergeMethod := strings.TrimSpace(project.MergeMethod)
 			if mergeMethod == "" {
@@ -2445,15 +2488,32 @@ func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
 			}
 
 			if err := s.mergePRSafe(workspace, dispatch.PRNumber, mergeMethod); err != nil {
-				s.logger.Error("failed to merge approved PR", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber, "method", mergeMethod, "error", err)
-				_ = s.store.RecordHealthEventWithDispatch(
-					"pr_merge_failed",
-					fmt.Sprintf("project %s bead %s could not merge approved PR #%d: %v", projectName, bead.ID, dispatch.PRNumber, err),
-					dispatch.ID,
-					bead.ID,
-				)
+				mergesThisTick++
+				s.setMergeGateRateLimitUntil(nowTime)
+				if isMergeConflictError(err) {
+					s.logger.Warn("merge conflict prevented PR merge", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber, "method", mergeMethod, "error", err)
+					_ = s.store.RecordHealthEventWithDispatch(
+						"pr_merge_conflict",
+						fmt.Sprintf("project %s bead %s failed merge PR #%d due conflict: %v", projectName, bead.ID, dispatch.PRNumber, err),
+						dispatch.ID,
+						bead.ID,
+					)
+				} else {
+					s.logger.Error("failed to merge approved PR", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber, "method", mergeMethod, "error", err)
+					_ = s.store.RecordHealthEventWithDispatch(
+						"pr_merge_failed",
+						fmt.Sprintf("project %s bead %s could not merge approved PR #%d: %v", projectName, bead.ID, dispatch.PRNumber, err),
+						dispatch.ID,
+						bead.ID,
+					)
+				}
+				notify := fmt.Sprintf("[merge failed] project=%s bead=%s pr=%d error=%v", projectName, bead.ID, dispatch.PRNumber, err)
+				s.notifySchedulerEscalation(ctx, notify)
 				continue
 			}
+
+			mergesThisTick++
+			s.setMergeGateRateLimitUntil(nowTime)
 
 			commitSHA, err := s.latestCommitSHASafe(workspace)
 			if err != nil {
@@ -2492,7 +2552,10 @@ func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
 			s.notifySchedulerEscalation(ctx, fmt.Sprintf("[post-merge check failed] project=%s bead=%s reason=%s", projectName, bead.ID, failureMsg))
 
 			if commitSHA != "" && project.AutoRevertOnFailure {
+				s.logger.Warn("auto-reverting merge after post-merge check failure", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber, "commit", commitSHA)
+				s.notifySchedulerEscalation(ctx, fmt.Sprintf("[auto-revert] project=%s bead=%s pr=%d", projectName, bead.ID, dispatch.PRNumber))
 				if err := s.revertMergeSafe(workspace, commitSHA); err != nil {
+					s.notifySchedulerEscalation(ctx, fmt.Sprintf("[auto-revert failed] project=%s bead=%s pr=%d commit=%s reason=%v", projectName, bead.ID, dispatch.PRNumber, commitSHA, err))
 					_ = s.store.RecordHealthEventWithDispatch(
 						"pr_merge_revert_failed",
 						fmt.Sprintf("project %s bead %s failed to revert commit %s: %v", projectName, bead.ID, commitSHA, err),
@@ -2500,7 +2563,12 @@ func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
 						bead.ID,
 					)
 					s.logger.Error("failed to revert merge after check failure", "project", projectName, "bead", bead.ID, "commit", commitSHA, "error", err)
+				} else {
+					s.notifySchedulerEscalation(ctx, fmt.Sprintf("[auto-revert complete] project=%s bead=%s commit=%s", projectName, bead.ID, commitSHA))
 				}
+			} else if project.AutoRevertOnFailure {
+				s.logger.Warn("post-merge check failure without commit SHA for auto-revert", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber)
+				s.notifySchedulerEscalation(ctx, fmt.Sprintf("[auto-revert skipped] project=%s bead=%s missing commit sha", projectName, bead.ID))
 			}
 			s.transitionBeadToCoding(ctx, projectName, project, bead, failureMsg)
 		}
@@ -2515,6 +2583,29 @@ func isPRApproved(status *git.PRStatus) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(status.ReviewDecision), "APPROVED")
+}
+
+func isMergeConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if errMsg == "" {
+		return false
+	}
+	conflictMarkers := []string{
+		"merge conflict",
+		"conflict",
+		"automatic merge failed",
+		"could not apply",
+		"failed to merge",
+	}
+	for _, marker := range conflictMarkers {
+		if strings.Contains(errMsg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Scheduler) finalizeDispatchBranch(d store.Dispatch) (string, error) {

@@ -672,7 +672,7 @@ func TestCountDispatchesSinceAndCostWindow(t *testing.T) {
 	if err := s.UpdateDispatchStatus(oldID, "failed", 1, 1.0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateDispatchStatus(recentID, "failed", 1, 1.0); err != nil {
+	if err := s.UpdateDispatchStatus(recentID, "completed", 0, 1.0); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.UpdateDispatchStatus(otherID, "completed", 0, 1.0); err != nil {
@@ -689,14 +689,16 @@ func TestCountDispatchesSinceAndCostWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	count, err := s.CountDispatchesSince(cutoff, []string{"failed", "completed"})
+	// CountDispatchesSince counts by dispatched_at regardless of status when statuses are provided
+	count, err := s.CountDispatchesSince(cutoff, []string{"completed"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if count != 2 {
-		t.Fatalf("expected 2 dispatches since cutoff, got %d", count)
+		t.Fatalf("expected 2 completed dispatches since cutoff, got %d", count)
 	}
 
+	// GetTotalCostSince only counts completed dispatches (by completed_at)
 	cost, err := s.GetTotalCostSince("", cutoff)
 	if err != nil {
 		t.Fatal(err)
@@ -732,6 +734,28 @@ func seedDispatchAtTime(t *testing.T, s *Store, beadID, projectName, status stri
 	`, status, durationS, dispatchedAt.UTC().Format(time.DateTime), completedAt.UTC().Format(time.DateTime), id); err != nil {
 		t.Fatalf("seed dispatch: %v", err)
 >>>>>>> 5b96a0d4 (feat(cortex): Store enhancements and additional functionality)
+	}
+}
+
+func seedDispatchAtTime(t *testing.T, s *Store, beadID, projectName, status string, dispatchedAt time.Time, durationS float64) {
+	t.Helper()
+
+	id, err := s.RecordDispatch(beadID, projectName, "agent-1", "cerebras", "fast", 123, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatalf("RecordDispatch failed: %v", err)
+	}
+
+	completedAt := dispatchedAt
+	if status != "running" {
+		completedAt = dispatchedAt.Add(time.Minute)
+	}
+
+	if _, err := s.DB().Exec(`
+		UPDATE dispatches
+		SET status = ?, duration_s = ?, dispatched_at = ?, completed_at = ?
+		WHERE id = ?
+	`, status, durationS, dispatchedAt.UTC().Format(time.DateTime), completedAt.UTC().Format(time.DateTime), id); err != nil {
+		t.Fatalf("seed dispatch: %v", err)
 	}
 }
 

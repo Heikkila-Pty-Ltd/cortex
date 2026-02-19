@@ -1286,3 +1286,194 @@ func TestRunTick_EndToEndScenarios(t *testing.T) {
 		}
 	})
 }
+
+func setupRunTickMergeWorkflowScenario(t *testing.T, beadIDs []string, withFailure bool, autoRevert bool, approved bool) (*Scheduler, *store.Store, *mergeFlowState, string, *bytes.Buffer) {
+	t.Helper()
+
+	workspace := t.TempDir()
+	beadsDir := workspace + "/.beads"
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("create beads dir: %v", err)
+	}
+
+	project := config.Project{
+		Enabled:             true,
+		Priority:            1,
+		Workspace:           workspace,
+		BeadsDir:            beadsDir,
+		UseBranches:         true,
+		AutoRevertOnFailure: autoRevert,
+		PostMergeChecks:     []string{"go test ./..."},
+	}
+	cfg := newRunTickScenarioConfig(5, map[string]config.Project{"test-project": project})
+	cfg.Reporter = config.Reporter{DefaultRoom: "!scheduler-test:matrix.org"}
+	logBuf := &bytes.Buffer{}
+	lister := NewMockBeadsLister()
+	sched, st, _ := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+	bdLogPath := workspace + "/bd.log"
+	bdDir := writeFakeBDScript(t, bdLogPath)
+	t.Setenv("PATH", bdDir+":"+os.Getenv("PATH"))
+
+	state := &mergeFlowState{}
+	sched.mergePR = func(string, int, string) error {
+		state.mergeCalls++
+		return nil
+	}
+	sched.revertMerge = func(_ string, sha string) error {
+		state.revertCalls++
+		state.revertSHA = sha
+		return nil
+	}
+	sched.latestCommitSHA = func(_ string) (string, error) { return "abc123", nil }
+
+	reviewDecision := "CHANGES_REQUESTED"
+	if approved {
+		reviewDecision = "APPROVED"
+	}
+	sched.getPRStatus = func(string, string) (*git.PRStatus, error) {
+		return &git.PRStatus{State: "open", ReviewDecision: reviewDecision}, nil
+	}
+	sched.runPostMergeChecks = func(_ string, _ []string) (*git.DoDResult, error) {
+		if withFailure {
+			return &git.DoDResult{
+				Passed:   false,
+				Checks:   []git.CheckResult{{Command: "go test ./...", ExitCode: 1, Passed: false}},
+				Failures: []string{"checks failed"},
+			}, nil
+		}
+		return &git.DoDResult{
+			Passed:   true,
+			Checks:   []git.CheckResult{{Command: "go test ./...", ExitCode: 0, Passed: true}},
+			Failures: []string{},
+		}, nil
+	}
+
+	beadsToMerge := make([]beads.Bead, 0, len(beadIDs))
+	for _, beadID := range beadIDs {
+		bead := createTestBead(beadID, "Merge gate workflow", "task", "open", 1)
+		bead.Labels = []string{"stage:review"}
+		beadsToMerge = append(beadsToMerge, bead)
+		seedDispatchAndStatus(t, st, beadID)
+	}
+	lister.SetBeads(beadsDir, beadsToMerge)
+
+	return sched, st, state, bdLogPath, logBuf
+}
+
+func TestRunTick_MergeWorkflow(t *testing.T) {
+	t.Run("approved PR merges and closes bead after checks pass", func(t *testing.T) {
+		sched, _, state, bdLogPath, _ := setupRunTickMergeWorkflowScenario(t, []string{"merge-pass-1"}, false, true, true)
+		sender := &recordingLifecycleMatrixSender{}
+		sched.lifecycleMatrixSender = sender
+
+		sched.RunTick(context.Background())
+
+		if state.mergeCalls != 1 {
+			t.Fatalf("merge calls = %d, want 1", state.mergeCalls)
+		}
+		if state.revertCalls != 0 {
+			t.Fatalf("revert calls = %d, want 0", state.revertCalls)
+		}
+		commands := readLogLines(t, bdLogPath)
+		if !stringContainsLinePrefix(commands, "close merge-pass-1") {
+			t.Fatalf("expected close command in bd log, got: %v", commands)
+		}
+		if stringContainsLineContains(commands, "update merge-pass-1", "stage:coding") {
+			t.Fatalf("did not expect transition-to-coding when checks pass, got: %v", commands)
+		}
+		if containsAutoRevertNotification(sender.messages) {
+			t.Fatalf("did not expect auto-revert notification when merge succeeds, got %v", sender.messages)
+		}
+	})
+
+	t.Run("approved PR fails checks and auto-reverts before reopening", func(t *testing.T) {
+		sched, _, state, bdLogPath, _ := setupRunTickMergeWorkflowScenario(t, []string{"merge-fail-1"}, true, true, true)
+		sender := &recordingLifecycleMatrixSender{}
+		sched.lifecycleMatrixSender = sender
+
+		sched.RunTick(context.Background())
+
+		if state.mergeCalls != 1 {
+			t.Fatalf("merge calls = %d, want 1", state.mergeCalls)
+		}
+		if state.revertCalls != 1 {
+			t.Fatalf("revert calls = %d, want 1", state.revertCalls)
+		}
+		if state.revertSHA != "abc123" {
+			t.Fatalf("revert sha = %q, want abc123", state.revertSHA)
+		}
+		commands := readLogLines(t, bdLogPath)
+		if !stringContainsLineContains(commands, "update merge-fail-1", "stage:coding") {
+			t.Fatalf("expected transition to coding after failed checks, got: %v", commands)
+		}
+		if stringContainsLinePrefix(commands, "close merge-fail-1") {
+			t.Fatalf("did not expect close after failed checks, got: %v", commands)
+		}
+		if !containsAutoRevertNotification(sender.messages) {
+			t.Fatalf("expected auto-revert escalation message, got %v", sender.messages)
+		}
+	})
+
+	t.Run("merge-gate is rate limited per tick and paced by cooldown", func(t *testing.T) {
+		sched, _, state, _, logBuf := setupRunTickMergeWorkflowScenario(t, []string{"merge-rate-1", "merge-rate-2"}, false, true, true)
+		now := time.Now()
+		sched.now = func() time.Time { return now }
+		sched.RunTick(context.Background())
+		if state.mergeCalls != 1 {
+			t.Fatalf("merge calls after first tick = %d, want 1", state.mergeCalls)
+		}
+		sched.RunTick(context.Background())
+		if state.mergeCalls != 1 {
+			t.Fatalf("merge calls after second tick (cooldown window) = %d, want 1", state.mergeCalls)
+		}
+		now = now.Add(mergeGateRateLimit + time.Second)
+		sched.RunTick(context.Background())
+		if state.mergeCalls != 2 {
+			t.Fatalf("merge calls after cooldown = %d, want 2", state.mergeCalls)
+		}
+		if !strings.Contains(logBuf.String(), "merge-gate per-tick max reached, deferring remaining merges") {
+			t.Fatalf("expected per-tick merge cap log during first tick, got: %s", logBuf.String())
+		}
+	})
+
+	t.Run("does not merge PRs without approval", func(t *testing.T) {
+		sched, _, state, bdLogPath, _ := setupRunTickMergeWorkflowScenario(t, []string{"merge-not-approved"}, false, true, false)
+
+		sched.RunTick(context.Background())
+
+		if state.mergeCalls != 0 {
+			t.Fatalf("merge calls = %d, want 0", state.mergeCalls)
+		}
+		if got := readLogLines(t, bdLogPath); len(got) != 0 {
+			t.Fatalf("expected no bd commands for unapproved PR, got %v", got)
+		}
+	})
+}
+
+func stringContainsLinePrefix(lines []string, prefix string) bool {
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func stringContainsLineContains(lines []string, substr1, substr2 string) bool {
+	for _, line := range lines {
+		if strings.Contains(line, substr1) && strings.Contains(line, substr2) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAutoRevertNotification(messages []string) bool {
+	for _, msg := range messages {
+		if strings.Contains(msg, "[auto-revert") {
+			return true
+		}
+	}
+	return false
+}

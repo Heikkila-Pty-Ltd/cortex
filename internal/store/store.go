@@ -1122,60 +1122,6 @@ func (s *Store) CountOverflowQueue() (int, error) {
 	return count, nil
 }
 
-// CountDispatchesSince counts dispatches in the supplied statuses since cutoff.
-func (s *Store) CountDispatchesSince(cutoff time.Time, statuses []string) (int, error) {
-	if cutoff.IsZero() {
-		return 0, nil
-	}
-
-	normalized := make([]string, 0, len(statuses))
-	for _, status := range statuses {
-		status = strings.TrimSpace(status)
-		if status != "" {
-			normalized = append(normalized, status)
-		}
-	}
-	if len(normalized) == 0 {
-		return 0, nil
-	}
-
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(normalized)), ",")
-	query := `SELECT COUNT(*) FROM dispatches WHERE dispatched_at >= ? AND status IN (` + placeholders + `)`
-	args := make([]any, 0, len(normalized)+1)
-	args = append(args, cutoff.UTC().Format(time.DateTime))
-	for _, status := range normalized {
-		args = append(args, status)
-	}
-
-	var count int
-	if err := s.db.QueryRow(query, args...).Scan(&count); err != nil {
-		return 0, fmt.Errorf("store: count dispatches since: %w", err)
-	}
-	return count, nil
-}
-
-// GetTotalCostSince returns total cost in USD for dispatches since cutoff.
-func (s *Store) GetTotalCostSince(project string, cutoff time.Time) (float64, error) {
-	project = strings.TrimSpace(project)
-	var totalCost float64
-	var err error
-	if project == "" {
-		err = s.db.QueryRow(
-			`SELECT COALESCE(SUM(cost_usd), 0) FROM dispatches WHERE dispatched_at >= ?`,
-			cutoff.UTC().Format(time.DateTime),
-		).Scan(&totalCost)
-	} else {
-		err = s.db.QueryRow(
-			`SELECT COALESCE(SUM(cost_usd), 0) FROM dispatches WHERE project = ? AND dispatched_at >= ?`,
-			project, cutoff.UTC().Format(time.DateTime),
-		).Scan(&totalCost)
-	}
-	if err != nil {
-		return 0, fmt.Errorf("store: get total cost since: %w", err)
-	}
-	return totalCost, nil
-}
-
 // GetRunningDispatchStageCounts returns counts of running dispatches grouped by stage.
 func (s *Store) GetRunningDispatchStageCounts() (map[string]int, error) {
 	rows, err := s.db.Query(`SELECT stage, COUNT(*) FROM dispatches WHERE status='running' GROUP BY stage`)
