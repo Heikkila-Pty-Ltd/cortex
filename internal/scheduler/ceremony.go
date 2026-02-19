@@ -69,13 +69,19 @@ func (cs *CeremonyScheduler) initializeSchedules() {
 	retroSchedule := cs.getSprintRetrospectiveSchedule()
 	cs.ceremonySchedules[chief.CeremonySprintRetro] = retroSchedule
 
+	// Overall retrospective (runs after per-project retros complete)
+	overallRetroSchedule := cs.getOverallRetrospectiveSchedule()
+	cs.ceremonySchedules[chief.CeremonyRetrospective] = overallRetroSchedule
+
 	cs.logger.Info("ceremony schedules initialized",
 		"multi_team_planning_day", multiTeamSchedule.DayOfWeek.String(),
 		"multi_team_planning_time", multiTeamSchedule.TimeOfDay.Format("15:04"),
 		"sprint_review_day", reviewSchedule.DayOfWeek.String(),
 		"sprint_review_time", reviewSchedule.TimeOfDay.Format("15:04"),
 		"sprint_retro_day", retroSchedule.DayOfWeek.String(),
-		"sprint_retro_time", retroSchedule.TimeOfDay.Format("15:04"))
+		"sprint_retro_time", retroSchedule.TimeOfDay.Format("15:04"),
+		"overall_retro_day", overallRetroSchedule.DayOfWeek.String(),
+		"overall_retro_time", overallRetroSchedule.TimeOfDay.Format("15:04"))
 }
 
 // CheckCeremonies evaluates and triggers ceremonies based on their schedules
@@ -127,6 +133,8 @@ func (cs *CeremonyScheduler) checkAndRunCeremony(ctx context.Context, ceremonyTy
 		err = cs.runSprintReviewCeremony(ctx)
 	case chief.CeremonySprintRetro:
 		err = cs.runSprintRetrospectiveCeremony(ctx)
+	case chief.CeremonyRetrospective:
+		err = cs.runOverallRetrospectiveCeremony(ctx)
 	default:
 		cs.logger.Warn("unknown ceremony type", "type", ceremonyType)
 		return
@@ -324,6 +332,20 @@ func (cs *CeremonyScheduler) runSprintRetrospectiveCeremony(ctx context.Context)
 	return nil
 }
 
+func (cs *CeremonyScheduler) runOverallRetrospectiveCeremony(ctx context.Context) error {
+	if cs.hasRunningCeremonyDispatch(ctx, "overall-retrospective") {
+		cs.logger.Info("overall retrospective ceremony already running, skipping")
+		return nil
+	}
+
+	if cs.areProjectRetrosRunning(ctx) {
+		cs.logger.Info("per-project retrospectives still running, deferring overall retrospective")
+		return nil
+	}
+
+	return cs.chiefSM.RunOverallRetrospective(ctx)
+}
+
 // areReviewCeremoniesRunning checks if any sprint review ceremonies are still running
 func (cs *CeremonyScheduler) areReviewCeremoniesRunning(ctx context.Context) bool {
 	running, err := cs.store.GetRunningDispatches()
@@ -338,6 +360,27 @@ func (cs *CeremonyScheduler) areReviewCeremoniesRunning(ctx context.Context) boo
 			if len(dispatch.BeadID) > 9 && dispatch.BeadID[:9] == "ceremony-" {
 				if cs.containsIgnoreCase(dispatch.BeadID, "-review-") {
 					cs.logger.Debug("found running review ceremony dispatch",
+						"bead_id", dispatch.BeadID)
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func (cs *CeremonyScheduler) areProjectRetrosRunning(ctx context.Context) bool {
+	running, err := cs.store.GetRunningDispatches()
+	if err != nil {
+		cs.logger.Error("failed to check running dispatches for retrospective ceremonies", "error", err)
+		return false
+	}
+
+	for _, dispatch := range running {
+		if dispatch.BeadID != "" && len(dispatch.BeadID) > len("ceremony-") {
+			if len(dispatch.BeadID) > 9 && dispatch.BeadID[:9] == "ceremony-" {
+				if cs.containsIgnoreCase(dispatch.BeadID, "-retrospective-") && !cs.containsIgnoreCase(dispatch.BeadID, "-overall-retrospective-") {
+					cs.logger.Debug("found running project retrospective dispatch",
 						"bead_id", dispatch.BeadID)
 					return true
 				}
@@ -396,6 +439,29 @@ func (cs *CeremonyScheduler) getSprintRetrospectiveSchedule() chief.CeremonySche
 	return chief.CeremonySchedule{
 		Type:      chief.CeremonySprintRetro,
 		Cadence:   24 * time.Hour, // Check daily
+		DayOfWeek: weekday,
+		TimeOfDay: targetTime,
+	}
+}
+
+func (cs *CeremonyScheduler) getOverallRetrospectiveSchedule() chief.CeremonySchedule {
+	weekday := time.Friday
+	hour := 18
+	minute := 0
+	loc := time.UTC
+
+	if cs.cfg != nil {
+		if parsedLoc, err := cs.cfg.Cadence.LoadLocation(); err == nil {
+			loc = parsedLoc
+		} else {
+			cs.logger.Warn("invalid cadence timezone for overall retrospective; using UTC", "error", err)
+		}
+	}
+
+	targetTime := time.Date(0, 1, 1, hour, minute, 0, 0, loc)
+	return chief.CeremonySchedule{
+		Type:      chief.CeremonyRetrospective,
+		Cadence:   24 * time.Hour,
 		DayOfWeek: weekday,
 		TimeOfDay: targetTime,
 	}

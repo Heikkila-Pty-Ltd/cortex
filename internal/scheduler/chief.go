@@ -301,8 +301,15 @@ func (c *ChiefSM) RunMultiTeamPlanning(ctx context.Context) error {
 	}
 
 	capacityBudgets := make(map[string]int, len(c.cfg.Projects))
-	for project := range c.cfg.Projects {
-		capacityBudgets[project] = c.cfg.RateLimits.Budget[project]
+	for projectName, projectCfg := range c.cfg.Projects {
+		if !projectCfg.Enabled {
+			continue
+		}
+		if budget, ok := c.cfg.RateLimits.Budget[projectName]; ok {
+			capacityBudgets[projectName] = budget
+			continue
+		}
+		capacityBudgets[projectName] = 0
 	}
 
 	// 4: gather provider profiles (best effort).
@@ -337,7 +344,9 @@ func (c *ChiefSM) RunMultiTeamPlanning(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("serialize portfolio context: %w", err)
 	}
-	dispatchCtx := chiefpkg.WithMultiTeamPortfolioContext(ctx, string(portfolioCtxJSON))
+	// Keep post-dispatch allocation processing alive even if the scheduler's trigger
+	// context is cancelled immediately after dispatch submission.
+	dispatchCtx := chiefpkg.WithMultiTeamPortfolioContext(context.WithoutCancel(ctx), string(portfolioCtxJSON))
 
 	// 7-11: dispatch Chief SM at premium/Opus tier to reason about trade-offs and publish plan.
 	if err := c.chief.RunMultiTeamPlanning(dispatchCtx); err != nil {
@@ -354,6 +363,61 @@ func (c *ChiefSM) RunMultiTeamPlanning(ctx context.Context) error {
 			len(portfolioCtx.ProjectPlanningResults)),
 	); err != nil {
 		c.logger.Warn("failed to record multi-team planning start event", "error", err)
+	}
+
+	return nil
+}
+
+// RunOverallRetrospective gathers cross-project retro context and dispatches Chief SM for a portfolio retrospective.
+func (c *ChiefSM) RunOverallRetrospective(ctx context.Context) error {
+	if c == nil || c.chief == nil {
+		return fmt.Errorf("chief sm is not initialized")
+	}
+	if c.cfg == nil {
+		return fmt.Errorf("chief sm config is not initialized")
+	}
+	if c.store == nil {
+		return fmt.Errorf("chief sm store is not initialized")
+	}
+	if c.dispatcher == nil {
+		return fmt.Errorf("chief sm dispatcher is not initialized")
+	}
+	if c.reviewer == nil {
+		return fmt.Errorf("chief sm reviewer is not initialized")
+	}
+	if !c.cfg.Chief.Enabled {
+		return fmt.Errorf("chief sm not enabled")
+	}
+
+	period := 14 * 24 * time.Hour
+	if configured, err := c.cfg.Cadence.SprintLengthDuration(); err == nil {
+		period = configured
+	}
+
+	c.logger.Info("starting scheduler overall retrospective context gathering", "period", period)
+	retroData, err := c.reviewer.GatherCrossProjectRetroData(ctx, period)
+	if err != nil {
+		return fmt.Errorf("gather cross-project retrospective data: %w", err)
+	}
+
+	retroJSON, err := json.MarshalIndent(retroData, "", "  ")
+	if err != nil {
+		return fmt.Errorf("serialize cross-project retrospective data: %w", err)
+	}
+	dispatchCtx := chiefpkg.WithCrossProjectRetroContext(context.WithoutCancel(ctx), string(retroJSON))
+
+	if err := c.chief.RunOverallRetrospective(dispatchCtx); err != nil {
+		return fmt.Errorf("dispatch chief overall retrospective: %w", err)
+	}
+
+	if err := c.store.RecordHealthEvent(
+		"overall_retrospective_started",
+		fmt.Sprintf("projects=%d systemic_issues=%d providers=%d",
+			len(retroData.ProjectRetroReports),
+			len(retroData.SystemicIssues),
+			len(retroData.CrossProjectProviders)),
+	); err != nil {
+		c.logger.Warn("failed to record overall retrospective start event", "error", err)
 	}
 
 	return nil

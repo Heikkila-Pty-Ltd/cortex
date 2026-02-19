@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -216,6 +217,98 @@ func TestGetMultiTeamPlanningScheduleUsesCadenceOverrides(t *testing.T) {
 	}
 	if schedule.TimeOfDay.Location().String() != "America/New_York" {
 		t.Errorf("Expected America/New_York timezone, got %s", schedule.TimeOfDay.Location().String())
+	}
+}
+
+func TestWithMultiTeamPortfolioContext(t *testing.T) {
+	ctx := context.Background()
+	ctx = WithMultiTeamPortfolioContext(ctx, `{"foo":"bar"}`)
+
+	payload, ok := MultiTeamPortfolioContextFromContext(ctx)
+	if !ok {
+		t.Fatal("expected context payload to be present")
+	}
+	if payload != `{"foo":"bar"}` {
+		t.Fatalf("unexpected payload: %q", payload)
+	}
+}
+
+func TestBuildMultiTeamPlanningPromptUsesInjectedContext(t *testing.T) {
+	cfg := &config.Config{
+		Chief: config.Chief{
+			Enabled: true,
+		},
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	chief := New(cfg, nil, nil, logger)
+
+	ctx := WithMultiTeamPortfolioContext(context.Background(), `{"generated_at":"2026-02-18T00:00:00Z"}`)
+	prompt := chief.buildMultiTeamPlanningPrompt(ctx)
+
+	if !strings.Contains(prompt, "Authoritative, Scheduler-Prepared") {
+		t.Fatalf("expected injected prompt section, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, `"generated_at":"2026-02-18T00:00:00Z"`) {
+		t.Fatalf("expected injected JSON in prompt, got: %s", prompt)
+	}
+}
+
+func TestWithCrossProjectRetroContext(t *testing.T) {
+	ctx := context.Background()
+	ctx = WithCrossProjectRetroContext(ctx, `{"period":"2026-02-01 to 2026-02-14"}`)
+
+	payload, ok := CrossProjectRetroContextFromContext(ctx)
+	if !ok {
+		t.Fatal("expected retrospective context payload to be present")
+	}
+	if payload != `{"period":"2026-02-01 to 2026-02-14"}` {
+		t.Fatalf("unexpected payload: %q", payload)
+	}
+}
+
+func TestBuildOverallRetrospectivePromptUsesInjectedContext(t *testing.T) {
+	cfg := &config.Config{
+		Chief: config.Chief{
+			Enabled: true,
+		},
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	chief := New(cfg, nil, nil, logger)
+
+	ctx := WithCrossProjectRetroContext(context.Background(), `{"project_retro_reports":{"cortex":{"period":"7d"}}}`)
+	prompt := chief.buildOverallRetrospectivePrompt(ctx)
+
+	if !strings.Contains(prompt, "Overall Sprint Retrospective Ceremony") {
+		t.Fatalf("expected overall retrospective heading, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, `"project_retro_reports":{"cortex":{"period":"7d"}}`) {
+		t.Fatalf("expected injected retrospective context, got: %s", prompt)
+	}
+	if !strings.Contains(prompt, "## Action Items") {
+		t.Fatalf("expected action items contract in prompt, got: %s", prompt)
+	}
+}
+
+func TestParseRetrospectiveActionItems(t *testing.T) {
+	output := `
+# Overall Sprint Retrospective
+
+## Highlights
+- shared wins
+
+## Action Items
+- [P1] Reduce retry churn on failing provider | project:cortex | owner:ops | why:high retry waste
+- [P3] Clarify cross-team handoff checklist | project = api | owner = scrum | reason = ownership gaps
+`
+	items := parseRetrospectiveActionItems(output)
+	if len(items) != 2 {
+		t.Fatalf("expected 2 action items, got %d", len(items))
+	}
+	if items[0].Priority != 1 || items[0].ProjectName != "cortex" {
+		t.Fatalf("unexpected first item parse: %+v", items[0])
+	}
+	if items[1].Priority != 3 || items[1].ProjectName != "api" {
+		t.Fatalf("unexpected second item parse: %+v", items[1])
 	}
 }
 

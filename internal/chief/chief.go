@@ -22,6 +22,38 @@ type Chief struct {
 	dispatcher dispatch.DispatcherInterface
 	logger     *slog.Logger
 	allocator  *AllocationRecorder
+	retro      *RetrospectiveRecorder
+}
+
+type multiTeamPortfolioContextKey struct{}
+type crossProjectRetroContextKey struct{}
+
+// WithMultiTeamPortfolioContext attaches scheduler-prepared portfolio context for sprint_planning_multi prompts.
+func WithMultiTeamPortfolioContext(ctx context.Context, payload string) context.Context {
+	return context.WithValue(ctx, multiTeamPortfolioContextKey{}, payload)
+}
+
+// MultiTeamPortfolioContextFromContext returns scheduler-prepared portfolio context, if present.
+func MultiTeamPortfolioContextFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	payload, ok := ctx.Value(multiTeamPortfolioContextKey{}).(string)
+	return strings.TrimSpace(payload), ok && strings.TrimSpace(payload) != ""
+}
+
+// WithCrossProjectRetroContext attaches scheduler-prepared cross-project retrospective context.
+func WithCrossProjectRetroContext(ctx context.Context, payload string) context.Context {
+	return context.WithValue(ctx, crossProjectRetroContextKey{}, payload)
+}
+
+// CrossProjectRetroContextFromContext returns scheduler-prepared retrospective context, if present.
+func CrossProjectRetroContextFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	payload, ok := ctx.Value(crossProjectRetroContextKey{}).(string)
+	return strings.TrimSpace(payload), ok && strings.TrimSpace(payload) != ""
 }
 
 // CeremonyType represents different types of ceremonies
@@ -47,12 +79,14 @@ type CeremonySchedule struct {
 // New creates a new Chief instance
 func New(cfg *config.Config, store *store.Store, dispatcher dispatch.DispatcherInterface, logger *slog.Logger) *Chief {
 	allocator := NewAllocationRecorder(cfg, store, dispatcher, logger)
+	retroRecorder := NewRetrospectiveRecorder(cfg, store, dispatcher, logger)
 	return &Chief{
 		cfg:        cfg,
 		store:      store,
 		dispatcher: dispatcher,
 		logger:     logger,
 		allocator:  allocator,
+		retro:      retroRecorder,
 	}
 }
 
@@ -105,7 +139,7 @@ func (c *Chief) RunMultiTeamPlanning(ctx context.Context) error {
 	c.logger.Info("starting multi-team sprint planning ceremony")
 
 	// Create a ceremony dispatch bead to track this work
-	ceremonyBead := c.createCeremonyBead("Multi-team sprint planning ceremony")
+	ceremonyBead := c.createCeremonyBead("Multi-team sprint planning ceremony", "multi-team-planning")
 
 	// Dispatch the Chief SM with portfolio context
 	dispatchID, err := c.dispatchChiefSM(ctx, ceremonyBead, "sprint_planning_multi")
@@ -118,15 +152,39 @@ func (c *Chief) RunMultiTeamPlanning(ctx context.Context) error {
 		"bead_id", ceremonyBead.ID)
 
 	// Start a background process to monitor completion and record allocations
-	go c.monitorCeremonyCompletion(ctx, ceremonyBead.ID, dispatchID)
+	go c.monitorCeremonyCompletion(ctx, ceremonyBead.ID, CeremonyMultiTeamPlanning, dispatchID)
+
+	return nil
+}
+
+// RunOverallRetrospective executes the Chief SM overall retrospective ceremony after per-project retros.
+func (c *Chief) RunOverallRetrospective(ctx context.Context) error {
+	if !c.cfg.Chief.Enabled {
+		return fmt.Errorf("chief sm not enabled")
+	}
+
+	c.logger.Info("starting overall retrospective ceremony")
+
+	ceremonyBead := c.createCeremonyBead("Overall cross-project retrospective ceremony", "overall-retrospective")
+	dispatchID, err := c.dispatchChiefSM(ctx, ceremonyBead, "overall_retrospective")
+	if err != nil {
+		return fmt.Errorf("failed to dispatch chief sm overall retrospective: %w", err)
+	}
+
+	c.logger.Info("overall retrospective ceremony dispatched",
+		"dispatch_id", dispatchID,
+		"bead_id", ceremonyBead.ID)
+
+	go c.monitorCeremonyCompletion(ctx, ceremonyBead.ID, CeremonyRetrospective, dispatchID)
 
 	return nil
 }
 
 // monitorCeremonyCompletion monitors a ceremony dispatch and processes results when complete
-func (c *Chief) monitorCeremonyCompletion(ctx context.Context, ceremonyID string, dispatchID int64) {
+func (c *Chief) monitorCeremonyCompletion(ctx context.Context, ceremonyID string, ceremonyType CeremonyType, dispatchID int64) {
 	c.logger.Info("monitoring ceremony completion",
 		"ceremony_id", ceremonyID,
+		"ceremony_type", ceremonyType,
 		"dispatch_id", dispatchID)
 
 	// Poll for completion (in production, this would use event-driven completion)
@@ -159,7 +217,7 @@ func (c *Chief) monitorCeremonyCompletion(ctx context.Context, ceremonyID string
 					"ceremony_id", ceremonyID,
 					"dispatch_id", dispatchID)
 
-				if err := c.processCeremonyResults(ctx, ceremonyID, dispatchID); err != nil {
+				if err := c.processCeremonyResults(ctx, ceremonyID, ceremonyType, dispatchID); err != nil {
 					c.logger.Error("failed to process ceremony results",
 						"ceremony_id", ceremonyID,
 						"error", err)
@@ -178,7 +236,7 @@ func (c *Chief) monitorCeremonyCompletion(ctx context.Context, ceremonyID string
 }
 
 // processCeremonyResults processes the output of a completed ceremony dispatch
-func (c *Chief) processCeremonyResults(ctx context.Context, ceremonyID string, dispatchID int64) error {
+func (c *Chief) processCeremonyResults(ctx context.Context, ceremonyID string, ceremonyType CeremonyType, dispatchID int64) error {
 	// Get the ceremony output
 	output, err := c.store.GetOutput(dispatchID)
 	if err != nil {
@@ -189,29 +247,44 @@ func (c *Chief) processCeremonyResults(ctx context.Context, ceremonyID string, d
 		"ceremony_id", ceremonyID,
 		"output_length", len(output))
 
-	// Parse allocation decisions from the Chief SM output
-	allocation, err := c.allocator.ParseAllocationFromOutput(ctx, ceremonyID, output)
-	if err != nil {
-		return fmt.Errorf("parse allocation from output: %w", err)
-	}
+	switch ceremonyType {
+	case CeremonyMultiTeamPlanning:
+		// Parse allocation decisions from the Chief SM output.
+		allocation, parseErr := c.allocator.ParseAllocationFromOutput(ctx, ceremonyID, output)
+		if parseErr != nil {
+			return fmt.Errorf("parse allocation from output: %w", parseErr)
+		}
 
-	// Record the allocation decision and send to Matrix room
-	if err := c.allocator.RecordAllocationDecision(ctx, ceremonyID, allocation); err != nil {
-		return fmt.Errorf("record allocation decision: %w", err)
-	}
+		// Record the allocation decision and send to Matrix room.
+		if recordErr := c.allocator.RecordAllocationDecision(ctx, ceremonyID, allocation); recordErr != nil {
+			return fmt.Errorf("record allocation decision: %w", recordErr)
+		}
 
-	c.logger.Info("ceremony results processed successfully",
-		"ceremony_id", ceremonyID,
-		"allocation_id", allocation.ID)
+		c.logger.Info("ceremony results processed successfully",
+			"ceremony_id", ceremonyID,
+			"ceremony_type", ceremonyType,
+			"allocation_id", allocation.ID)
+	case CeremonyRetrospective:
+		if err := c.retro.RecordRetrospectiveResults(ctx, ceremonyID, output); err != nil {
+			return fmt.Errorf("record retrospective results: %w", err)
+		}
+		c.logger.Info("ceremony results processed successfully",
+			"ceremony_id", ceremonyID,
+			"ceremony_type", ceremonyType)
+	default:
+		c.logger.Info("ceremony completed with no post-processor",
+			"ceremony_id", ceremonyID,
+			"ceremony_type", ceremonyType)
+	}
 
 	return nil
 }
 
 // createCeremonyBead creates a synthetic bead to track ceremony work
-func (c *Chief) createCeremonyBead(title string) beads.Bead {
+func (c *Chief) createCeremonyBead(title string, ceremonySlug string) beads.Bead {
 	now := time.Now()
 	return beads.Bead{
-		ID:          fmt.Sprintf("ceremony-%d", now.Unix()),
+		ID:          fmt.Sprintf("ceremony-%s-%d", strings.TrimSpace(ceremonySlug), now.Unix()),
 		Title:       title,
 		Description: "Synthetic bead for tracking Chief SM ceremony dispatch",
 		Type:        "task",
@@ -288,6 +361,8 @@ func (c *Chief) buildCeremonyPrompt(ctx context.Context, template string) string
 	switch template {
 	case "sprint_planning_multi":
 		return c.buildMultiTeamPlanningPrompt(ctx)
+	case "overall_retrospective":
+		return c.buildOverallRetrospectivePrompt(ctx)
 	default:
 		return fmt.Sprintf("Execute Chief SM ceremony: %s", template)
 	}
@@ -295,6 +370,35 @@ func (c *Chief) buildCeremonyPrompt(ctx context.Context, template string) string
 
 // buildMultiTeamPlanningPrompt creates the multi-team sprint planning prompt
 func (c *Chief) buildMultiTeamPlanningPrompt(ctx context.Context) string {
+	if injectedContext, ok := MultiTeamPortfolioContextFromContext(ctx); ok {
+		return fmt.Sprintf(`# Multi-Team Sprint Planning Ceremony
+
+You are the **Chief Scrum Master** conducting a unified sprint planning across all projects.
+
+## Portfolio Context (Authoritative, Scheduler-Prepared)
+
+Use this JSON as the source of truth for this ceremony. It already includes all project backlogs, cross-project dependencies, capacity budgets, provider profiles, and per-project sprint planning status.
+
+`+"```json"+`
+%s
+`+"```"+`
+
+## Your Mission
+
+1. Review cross-project dependencies and prioritize upstream unblockers.
+2. Allocate capacity across projects based on urgency, dependencies, and budget constraints.
+3. Identify provider-tier conflicts and recommend staggering where needed.
+4. Produce a unified sprint plan for coordination and rationale.
+
+## Required Outcomes
+
+- Record allocations in store.
+- Apply any recommended budget rebalancing updates.
+- Send unified sprint plan to the coordination Matrix room.
+- Ensure this planning runs before per-project sprint planning.
+`, injectedContext)
+	}
+
 	// **GATHER PORTFOLIO CONTEXT** - This is the missing integration!
 	c.logger.Info("gathering portfolio context for multi-team planning")
 
@@ -415,6 +519,51 @@ You are the **Chief Scrum Master** conducting a unified sprint planning across a
 - **Output**: Unified sprint plan with capacity allocations and dependency prioritization
 
 Execute the full ceremony workflow now.`
+}
+
+func (c *Chief) buildOverallRetrospectivePrompt(ctx context.Context) string {
+	if injectedContext, ok := CrossProjectRetroContextFromContext(ctx); ok {
+		return fmt.Sprintf(`# Overall Sprint Retrospective Ceremony
+
+You are the **Chief Scrum Master** leading the end-of-sprint portfolio retrospective after per-project retrospectives have completed.
+
+## Cross-Project Retrospective Context (Authoritative, Scheduler-Prepared)
+
+Use this JSON as the source of truth.
+
+`+"```json"+`
+%s
+`+"```"+`
+
+## Required Outcomes
+
+1. Summarize systemic wins and recurring issues across projects.
+2. Publish a concise coordination update suitable for the Matrix room.
+3. Produce explicit follow-up action items in this exact section format:
+   - `+"```"+`
+## Action Items
+- [P1] Improve dependency handoff checklist | project:cortex | owner:chief-sm | why:handoff ambiguity caused delays
+- [P2] Rebalance provider usage for retries | project:cortex | owner:ops | why:failure concentration
+`+"```"+`
+4. Keep each action item concrete, scoped, and executable as a bead.
+`, injectedContext)
+	}
+
+	return `# Overall Sprint Retrospective Ceremony
+
+You are the **Chief Scrum Master** leading the end-of-sprint portfolio retrospective after per-project retrospectives have completed.
+
+## Required Outcomes
+
+1. Gather key outcomes from all project retros.
+2. Identify systemic patterns across teams.
+3. Send a concise coordination summary for the Matrix room.
+4. Produce follow-up action items using:
+
+## Action Items
+- [P1] <title> | project:<project> | owner:<owner> | why:<reason>
+
+Only include actionable, concrete items that should become follow-up beads.`
 }
 
 // GetMultiTeamPlanningSchedule returns the default schedule for multi-team planning
