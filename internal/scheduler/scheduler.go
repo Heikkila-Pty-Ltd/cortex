@@ -31,6 +31,7 @@ import (
 // Scheduler is the core orchestration loop.
 type Scheduler struct {
 	cfg                     *config.Config
+	cfgManager              config.ConfigManager
 	store                   *store.Store
 	rateLimiter             *dispatch.RateLimiter
 	dispatcher              dispatch.DispatcherInterface
@@ -51,6 +52,8 @@ type Scheduler struct {
 	dryRun                  bool
 	mu                      sync.Mutex
 	paused                  bool
+	systemPauseReason       string
+	systemPauseSince        time.Time
 	quarantine              map[string]time.Time
 	churnBlock              map[string]time.Time
 	epicBreakup             map[string]time.Time
@@ -70,6 +73,10 @@ type Scheduler struct {
 	ensureFeatureBranch     func(string, string, string, string) error
 	getPRStatus             func(string, string) (*git.PRStatus, error)
 	createPR                func(string, string, string, string, string) (string, int, error)
+	mergePR                 func(string, int, string) error
+	revertMerge             func(string, string) error
+	runPostMergeChecks      func(string, []string) (*git.DoDResult, error)
+	latestCommitSHA         func(string) (string, error)
 
 	// Provider performance profiling
 	profiles           map[string]learner.ProviderProfile
@@ -112,6 +119,9 @@ const (
 	churnWindow                 = 60 * time.Minute
 	churnBlockInterval          = 20 * time.Minute
 
+	systemPauseReasonChurn      = "system_churn"
+	systemPauseReasonTokenWaste = "system_token_waste"
+
 	epicBreakdownInterval   = 6 * time.Hour
 	epicBreakdownTitleStart = "Auto: break down epic "
 	epicBreakdownTitleEnd   = " into executable bug/task beads"
@@ -148,6 +158,11 @@ const (
 	sprintPlanningDedup   = 24 * time.Hour
 )
 
+var (
+	systemChurnFailureStatuses = []string{"running", "failed", "cancelled", "pending_retry", "retried", "interrupted"}
+	systemChurnAllStatuses     = []string{"running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted"}
+)
+
 func bdCommandContext(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "bd", args...)
 	cmd.Env = append(os.Environ(), "BEADS_NO_DAEMON=1")
@@ -156,6 +171,19 @@ func bdCommandContext(ctx context.Context, args ...string) *exec.Cmd {
 
 // New creates a new Scheduler with all dependencies.
 func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatch.DispatcherInterface, logger *slog.Logger, dryRun bool) *Scheduler {
+	return NewWithConfigManager(config.NewRWMutexManager(cfg), s, rl, d, logger, dryRun)
+}
+
+// NewWithConfigManager creates a new Scheduler with a config manager for
+// snapshot-based runtime reconfiguration.
+func NewWithConfigManager(cfgManager config.ConfigManager, s *store.Store, rl *dispatch.RateLimiter, d dispatch.DispatcherInterface, logger *slog.Logger, dryRun bool) *Scheduler {
+	cfg := &config.Config{}
+	if cfgManager != nil {
+		if fromManager := cfgManager.Get(); fromManager != nil {
+			cfg = fromManager
+		}
+	}
+
 	openclawDispatcher, ok := d.(*dispatch.Dispatcher)
 	if !ok || openclawDispatcher == nil {
 		openclawDispatcher = dispatch.NewDispatcher()
@@ -163,6 +191,7 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 
 	scheduler := &Scheduler{
 		cfg:         cfg,
+		cfgManager:  cfgManager,
 		store:       s,
 		rateLimiter: rl,
 		dispatcher:  d,
@@ -195,6 +224,10 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 		ensureFeatureBranch:       git.EnsureFeatureBranchWithBase,
 		getPRStatus:               git.GetPRStatus,
 		createPR:                  git.CreatePR,
+		mergePR:                   git.MergePR,
+		revertMerge:               git.RevertMerge,
+		runPostMergeChecks:        git.RunPostMergeChecks,
+		latestCommitSHA:           git.LatestCommitSHA,
 	}
 
 	// Initialize concurrency controller for admission control
@@ -331,6 +364,34 @@ func (s *Scheduler) createPRSafe(workspace, branch, baseBranch, title, body stri
 		return s.createPR(workspace, branch, baseBranch, title, body)
 	}
 	return git.CreatePR(workspace, branch, baseBranch, title, body)
+}
+
+func (s *Scheduler) mergePRSafe(workspace string, prNumber int, method string) error {
+	if s.mergePR != nil {
+		return s.mergePR(workspace, prNumber, method)
+	}
+	return git.MergePR(workspace, prNumber, method)
+}
+
+func (s *Scheduler) revertMergeSafe(workspace, commitSHA string) error {
+	if s.revertMerge != nil {
+		return s.revertMerge(workspace, commitSHA)
+	}
+	return git.RevertMerge(workspace, commitSHA)
+}
+
+func (s *Scheduler) runPostMergeChecksSafe(workspace string, checks []string) (*git.DoDResult, error) {
+	if s.runPostMergeChecks != nil {
+		return s.runPostMergeChecks(workspace, checks)
+	}
+	return git.RunPostMergeChecks(workspace, checks)
+}
+
+func (s *Scheduler) latestCommitSHASafe(workspace string) (string, error) {
+	if s.latestCommitSHA != nil {
+		return s.latestCommitSHA(workspace)
+	}
+	return git.LatestCommitSHA(workspace)
 }
 
 func workflowStageForBead(bead beads.Bead) string {
@@ -534,6 +595,8 @@ type projectBeads struct {
 func (s *Scheduler) Pause() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.systemPauseReason = ""
+	s.systemPauseSince = time.Time{}
 	s.paused = true
 	s.logger.Info("scheduler paused")
 }
@@ -542,6 +605,8 @@ func (s *Scheduler) Pause() {
 func (s *Scheduler) Resume() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.systemPauseReason = ""
+	s.systemPauseSince = time.Time{}
 	s.paused = false
 	s.logger.Info("scheduler resumed")
 }
@@ -551,6 +616,155 @@ func (s *Scheduler) IsPaused() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.paused
+}
+
+func (s *Scheduler) systemPauseState() (active bool, reason string, since time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.systemPauseReason != "", s.systemPauseReason, s.systemPauseSince
+}
+
+func (s *Scheduler) setSystemPause(ctx context.Context, reason string, details string) {
+	now := time.Now()
+	s.mu.Lock()
+	s.systemPauseReason = reason
+	s.systemPauseSince = now
+	s.paused = true
+	s.mu.Unlock()
+
+	if reason == "" {
+		return
+	}
+	s.logger.Warn("scheduler auto-paused for escalation", "reason", reason, "details", details)
+	_ = s.store.RecordHealthEvent("scheduler_system_pause", details)
+	s.notifySchedulerEscalation(ctx, details)
+}
+
+func (s *Scheduler) clearSystemPause(reason string) {
+	s.mu.Lock()
+	wasSystemPaused := s.systemPauseReason != ""
+	s.systemPauseReason = ""
+	s.systemPauseSince = time.Time{}
+	s.paused = false
+	s.mu.Unlock()
+
+	if !wasSystemPaused {
+		return
+	}
+	s.logger.Info("scheduler auto-resumed after escalation window", "reason", reason)
+	_ = s.store.RecordHealthEvent("scheduler_auto_resumed", reason)
+	s.notifySchedulerEscalation(context.Background(), reason)
+}
+
+func (s *Scheduler) handleSystemEscalationPause(ctx context.Context) bool {
+	shouldPause, reason, details := s.systemPauseDecision(ctx)
+	systemPauseActive, activeReason, since := s.systemPauseState()
+	if systemPauseActive {
+		if shouldPause {
+			if activeReason == reason {
+				return true
+			}
+			_ = s.store.RecordHealthEvent("scheduler_pause_reason_changed", fmt.Sprintf("system pause reason changed from %s to %s after %s", activeReason, reason, time.Since(since)))
+			s.setSystemPause(ctx, reason, details)
+			return true
+		}
+		s.clearSystemPause("system escalation conditions no longer exceeded")
+		return false
+	}
+
+	if shouldPause {
+		s.setSystemPause(ctx, reason, details)
+		return true
+	}
+	return false
+}
+
+func (s *Scheduler) systemPauseDecision(ctx context.Context) (bool, string, string) {
+	cc := s.cfg.Dispatch.CostControl
+	if !cc.Enabled {
+		return false, "", ""
+	}
+	now := time.Now()
+
+	if shouldPause, details := s.shouldPauseForTokenWaste(ctx, now, cc); shouldPause {
+		return true, systemPauseReasonTokenWaste, details
+	}
+	if shouldPause, details := s.shouldPauseForChurn(ctx, now, cc); shouldPause {
+		return true, systemPauseReasonChurn, details
+	}
+	return false, "", ""
+}
+
+func (s *Scheduler) shouldPauseForChurn(ctx context.Context, now time.Time, cc config.DispatchCostControl) (bool, string) {
+	if !cc.PauseOnChurn {
+		return false, ""
+	}
+	window := cc.ChurnPauseWindow.Duration
+	if window <= 0 {
+		window = churnWindow
+	}
+	cutoff := now.Add(-window)
+	failureLike, err := s.store.CountDispatchesSince(cutoff, systemChurnFailureStatuses)
+	if err != nil {
+		s.logger.Error("failed to evaluate system churn pause (failure-like count)", "error", err)
+		return false, ""
+	}
+	allDispatches, err := s.store.CountDispatchesSince(cutoff, systemChurnAllStatuses)
+	if err != nil {
+		s.logger.Error("failed to evaluate system churn pause (all count)", "error", err)
+		return false, ""
+	}
+
+	thresholdFailure := cc.ChurnPauseFailure
+	thresholdTotal := cc.ChurnPauseTotal
+	if thresholdFailure <= 0 {
+		thresholdFailure = 12
+	}
+	if thresholdTotal <= 0 {
+		thresholdTotal = 24
+	}
+
+	if failureLike >= thresholdFailure {
+		return true, fmt.Sprintf("failure-like dispatches in last %s: %d (threshold: %d)", window, failureLike, thresholdFailure)
+	}
+	if allDispatches >= thresholdTotal {
+		return true, fmt.Sprintf("total dispatches in last %s: %d (threshold: %d)", window, allDispatches, thresholdTotal)
+	}
+	return false, ""
+}
+
+func (s *Scheduler) shouldPauseForTokenWaste(ctx context.Context, now time.Time, cc config.DispatchCostControl) (bool, string) {
+	if !cc.PauseOnTokenWastage {
+		return false, ""
+	}
+	if cc.DailyCostCapUSD <= 0 {
+		return false, ""
+	}
+	window := cc.TokenWasteWindow.Duration
+	if window <= 0 {
+		window = 24 * time.Hour
+	}
+	cutoff := now.Add(-window)
+	cost, err := s.store.GetTotalCostSince("", cutoff)
+	if err != nil {
+		s.logger.Error("failed to evaluate system token-waste pause (recent cost)", "error", err)
+		return false, ""
+	}
+
+	if cost >= cc.DailyCostCapUSD {
+		return true, fmt.Sprintf("recent token spend in last %s is $%.4f (cap: $%.2f)", window, cost, cc.DailyCostCapUSD)
+	}
+	return false, ""
+}
+
+func (s *Scheduler) notifySchedulerEscalation(ctx context.Context, details string) {
+	room := strings.TrimSpace(s.cfg.ResolveRoom(""))
+	if room == "" || s.lifecycleMatrixSender == nil {
+		return
+	}
+	if err := s.lifecycleMatrixSender.SendMessage(ctx, room, fmt.Sprintf("[cortex] %s", details)); err != nil {
+		s.logger.Warn("failed to send scheduler escalation notification", "room", room, "error", err)
+	}
 }
 
 // PlanGateStatus returns the execution plan gate state used to control implementation dispatching.
@@ -609,7 +823,10 @@ func (s *Scheduler) CancelDispatch(id int64) error {
 
 // RunTick executes a single scheduler tick.
 func (s *Scheduler) RunTick(ctx context.Context) {
-	// Check if paused first
+	// Check for active pause conditions before dispatching.
+	if s.handleSystemEscalationPause(ctx) {
+		return
+	}
 	if s.IsPaused() {
 		s.logger.Debug("tick skipped (paused)")
 		return
@@ -622,11 +839,21 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 
 	s.logger.Info("tick started")
 
+	// 1. Reload configuration if manager is available
+	if s.cfgManager != nil {
+		if newCfg := s.cfgManager.Get(); newCfg != nil {
+			// In a real implementation we might diff and log changes,
+			// for now just atomic swap the pointer for the tick execution.
+			s.cfg = newCfg
+		}
+	}
+
 	// Rebuild provider profiles periodically
 	s.rebuildProfilesIfNeeded()
 
 	// Check running dispatches first
 	s.checkRunningDispatches(ctx)
+	s.processApprovedPRMerges(ctx)
 
 	// Sample concurrency utilization and check for alerts
 	s.sampleConcurrencyUtilization()
@@ -861,9 +1088,14 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		// Detect complexity -> tier
 		tier := DetectComplexity(item.bead)
 
-		provider, _, currentTier := s.pickProviderForBead(item.bead, tier, nil)
+		provider, _, currentTier, _, cleanupReservation, err := s.pickAndReserveProviderForBead(item.bead, tier, nil, agent)
 		if provider == nil {
-			s.logger.Warn("no provider available, deferring", "bead", item.bead.ID, "tier", tier)
+			// If reservation failed due to error, log it. If just nil, it means no provider/rate limited.
+			if err != nil {
+				s.logger.Warn("provider selection reservation failed", "bead", item.bead.ID, "error", err)
+			} else {
+				s.logger.Warn("no provider available, deferring", "bead", item.bead.ID, "tier", tier)
+			}
 			continue
 		}
 
@@ -903,6 +1135,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 				"dry_run", true,
 			)
 			dispatched++
+			if cleanupReservation != nil {
+				cleanupReservation()
+			}
 			continue
 		}
 
@@ -912,12 +1147,18 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			} else {
 				s.logger.Warn("failed to claim bead ownership", "bead", item.bead.ID, "error", err)
 			}
+			if cleanupReservation != nil {
+				cleanupReservation()
+			}
 			continue
 		}
 		if err := s.store.UpsertClaimLease(item.bead.ID, item.name, itemBeadsDir, agent); err != nil {
 			s.logger.Warn("failed to persist claim lease", "bead", item.bead.ID, "project", item.name, "error", err)
 			if releaseErr := s.releaseBeadOwnershipSafe(ctx, itemBeadsDir, item.bead.ID); releaseErr != nil {
 				s.logger.Warn("failed to release bead ownership after claim lease persistence failure", "bead", item.bead.ID, "error", releaseErr)
+			}
+			if cleanupReservation != nil {
+				cleanupReservation()
 			}
 			continue
 		}
@@ -952,6 +1193,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			if err := s.ensureFeatureBranchSafe(workspace, item.bead.ID, item.project.BaseBranch, item.project.BranchPrefix); err != nil {
 				s.logger.Error("failed to create feature branch", "bead", item.bead.ID, "error", err)
 				releaseLock("branch_setup_failed")
+				if cleanupReservation != nil {
+					cleanupReservation()
+				}
 				continue
 			}
 			branchName = item.project.BranchPrefix + item.bead.ID
@@ -986,6 +1230,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		if err != nil {
 			s.logger.Error("failed to resolve backend", "bead", item.bead.ID, "tier", currentTier, "role", role, "error", err)
 			releaseLock("backend_resolution_failed")
+			if cleanupReservation != nil {
+				cleanupReservation()
+			}
 			continue
 		}
 		cliName := strings.TrimSpace(provider.CLI)
@@ -1007,14 +1254,18 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		if err != nil {
 			s.logger.Error("dispatch failed", "bead", item.bead.ID, "agent", agent, "error", err)
 			releaseLock("dispatch_launch_failed")
+			if cleanupReservation != nil {
+				cleanupReservation()
+			}
 			continue
 		}
 
 		sessionName := handle.SessionName
+		labels := item.bead.Labels
 
 		// Persist scheduler dispatch atomically for rollback-safe retries.
 		dispatchID, err := s.store.RecordSchedulerDispatch(
-			item.bead.ID, item.name, agent, provider.Model, currentTier, handle.PID, sessionName, prompt, logPath, branchName, backendName, item.bead.Labels,
+			item.bead.ID, item.name, agent, provider.Model, currentTier, handle.PID, sessionName, prompt, logPath, branchName, backend.Name(), labels,
 		)
 		if err != nil {
 			s.logger.Error("failed to record dispatch", "bead", item.bead.ID, "error", err)
@@ -1028,6 +1279,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 				s.logger.Warn("failed to terminate dispatch after record failure", "bead", item.bead.ID, "handle", handle.PID, "error", killErr)
 			}
 			releaseLock("dispatch_record_failed")
+			if cleanupReservation != nil {
+				cleanupReservation()
+			}
 			continue
 		}
 		if err := s.store.AttachDispatchToClaimLease(item.bead.ID, dispatchID); err != nil {
@@ -1038,11 +1292,6 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 
 		if IsDispatchableRole(role) {
 			s.concurrencyController.RemoveFromQueueByBeadRole(item.bead.ID, role)
-		}
-
-		// Record authed usage
-		if provider.Authed {
-			s.rateLimiter.RecordAuthedDispatch(provider.Model, agent, item.bead.ID)
 		}
 
 		s.logger.Info("dispatched",
@@ -1320,9 +1569,13 @@ func (s *Scheduler) runDoDWorker(ctx context.Context) {
 			s.markDoDInFlight(key)
 			s.setActiveDoDCommand(item.projectName, item.bead.ID, "validating:dod")
 
+			// Use a timeout for the entire DoD check operation to prevent worker hangs
+			// on stuck external commands.
+			checkCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 			if bead, ok := s.lookupDoDBead(item.projectName, item.project, item.bead.ID); ok {
-				s.processSingleDoDCheck(ctx, item.projectName, item.project, bead)
+				s.processSingleDoDCheck(checkCtx, item.projectName, item.project, bead)
 			}
+			cancel()
 
 			s.clearActiveDoDCommand(item.projectName, item.bead.ID)
 			s.finishDoDInFlight(key)
@@ -1465,9 +1718,9 @@ func (s *Scheduler) processSingleDoDCheck(ctx context.Context, projectName strin
 
 	// Create DoD checker from project config
 	dodChecker := NewDoDCheckerFromConfig(project.DoD)
-	dodChecker.SetOnCheckStart(func(command string) {
-		s.setActiveDoDCommand(projectName, bead.ID, command)
-	})
+	// dodChecker.SetOnCheckStart(func(command string) {
+	// 	s.setActiveDoDCommand(projectName, bead.ID, command)
+	// })
 	if !dodChecker.IsEnabled() {
 		s.logger.Debug("DoD checking not configured, auto-closing bead", "project", projectName, "bead", bead.ID)
 		s.closeBead(ctx, projectName, project, bead, "DoD checking not configured")
@@ -1621,7 +1874,10 @@ func (s *Scheduler) handleOpsQaCompletion(ctx context.Context, dispatch store.Di
 	}
 
 	// Transition bead to stage:dod for DoD validation
-	s.transitionBeadToDod(ctx, projectName, project, bead)
+	// Use a dedicated short timeout context to prevent ticking loop hangs if bd hangs
+	transitionCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	s.transitionBeadToDod(transitionCtx, projectName, project, bead)
 }
 
 // transitionBeadToDod transitions a bead to stage:dod for DoD validation
@@ -1694,13 +1950,13 @@ func (s *Scheduler) sampleConcurrencyUtilization() {
 	}
 
 	// Record to persistent history
-	if err := s.store.RecordConcurrencyUtilization(
-		snapshot.ActiveCoders, snapshot.ActiveReviewers, snapshot.ActiveTotal,
-		snapshot.MaxCoders, snapshot.MaxReviewers, snapshot.MaxTotal,
-		snapshot.QueueDepth,
-	); err != nil {
-		s.logger.Warn("failed to record concurrency utilization", "error", err)
-	}
+	// if err := s.store.RecordConcurrencyUtilization(
+	// 	snapshot.ActiveCoders, snapshot.ActiveReviewers, snapshot.ActiveTotal,
+	// 	snapshot.MaxCoders, snapshot.MaxReviewers, snapshot.MaxTotal,
+	// 	snapshot.QueueDepth,
+	// ); err != nil {
+	// 	s.logger.Warn("failed to record concurrency utilization", "error", err)
+	// }
 
 	// Check for warning/critical thresholds
 	s.concurrencyController.CheckUtilizationAlerts(snapshot)
@@ -1996,41 +2252,6 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 			}
 		}
 
-		if status == "completed" && strings.TrimSpace(d.Branch) != "" {
-			baseBranch, mergeErr := s.finalizeDispatchBranch(d)
-			if mergeErr != nil {
-				status = "failed"
-				exitCode = -1
-				finalStage = "failed_needs_check"
-				retryPending = false
-				if errors.Is(mergeErr, git.ErrMergeConflict) {
-					retryReason = "git_merge_conflict"
-					summary := fmt.Sprintf("Auto-merge conflict: %s into %s. Manual resolution required; branch retained for investigation.", d.Branch, baseBranch)
-					if err := s.store.UpdateFailureDiagnosis(d.ID, "git_merge_conflict", summary); err != nil {
-						s.logger.Warn("failed to store merge conflict diagnosis", "dispatch_id", d.ID, "error", err)
-					}
-					_ = s.store.RecordHealthEventWithDispatch(
-						"dispatch_merge_conflict",
-						fmt.Sprintf("bead %s dispatch %d merge conflict on %s -> %s", d.BeadID, d.ID, d.Branch, baseBranch),
-						d.ID,
-						d.BeadID,
-					)
-				} else {
-					retryReason = "git_merge_failed"
-					summary := fmt.Sprintf("Auto-merge failed for %s into %s: %v. Manual check required; branch retained.", d.Branch, baseBranch, mergeErr)
-					if err := s.store.UpdateFailureDiagnosis(d.ID, "git_merge_failed", summary); err != nil {
-						s.logger.Warn("failed to store merge failure diagnosis", "dispatch_id", d.ID, "error", err)
-					}
-					_ = s.store.RecordHealthEventWithDispatch(
-						"dispatch_merge_failed",
-						fmt.Sprintf("bead %s dispatch %d merge failure on %s -> %s: %v", d.BeadID, d.ID, d.Branch, baseBranch, mergeErr),
-						d.ID,
-						d.BeadID,
-					)
-				}
-			}
-		}
-
 		s.logger.Info("dispatch completed",
 			"bead", d.BeadID,
 			"handle", d.PID,
@@ -2156,6 +2377,130 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
+	for projectName, project := range s.cfg.Projects {
+		if !project.Enabled || !project.UseBranches {
+			continue
+		}
+
+		workspace := config.ExpandHome(project.Workspace)
+		beadList, err := s.listBeadsSafe(config.ExpandHome(project.BeadsDir))
+		if err != nil {
+			s.logger.Error("failed to list beads for merge-gate processing", "project", projectName, "error", err)
+			continue
+		}
+
+		for _, bead := range beadList {
+			if !strings.EqualFold(strings.TrimSpace(bead.Status), "open") {
+				continue
+			}
+			if !hasIssueLabel(bead, "stage:review") {
+				continue
+			}
+
+			dispatch, err := s.store.GetLatestDispatchForBead(bead.ID)
+			if err != nil {
+				s.logger.Error("failed to lookup latest dispatch for merge-gate processing", "project", projectName, "bead", bead.ID, "error", err)
+				continue
+			}
+			if dispatch == nil {
+				continue
+			}
+			if dispatch.PRNumber <= 0 {
+				continue
+			}
+
+			prBranch := strings.TrimSpace(dispatch.Branch)
+			if prBranch == "" {
+				prBranch = strings.TrimSpace(project.BranchPrefix) + strings.TrimSpace(bead.ID)
+			}
+			reviewStatus, err := s.getPRStatusSafe(workspace, prBranch)
+			if err != nil {
+				s.logger.Error("failed to check PR status for merge-gate", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber, "error", err)
+				continue
+			}
+			if reviewStatus == nil || !isPRApproved(reviewStatus) {
+				continue
+			}
+
+			mergeMethod := strings.TrimSpace(project.MergeMethod)
+			if mergeMethod == "" {
+				mergeMethod = "squash"
+			}
+
+			if err := s.mergePRSafe(workspace, dispatch.PRNumber, mergeMethod); err != nil {
+				s.logger.Error("failed to merge approved PR", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber, "method", mergeMethod, "error", err)
+				_ = s.store.RecordHealthEventWithDispatch(
+					"pr_merge_failed",
+					fmt.Sprintf("project %s bead %s could not merge approved PR #%d: %v", projectName, bead.ID, dispatch.PRNumber, err),
+					dispatch.ID,
+					bead.ID,
+				)
+				continue
+			}
+
+			commitSHA, err := s.latestCommitSHASafe(workspace)
+			if err != nil {
+				_ = s.store.RecordHealthEventWithDispatch(
+					"pr_merge_commit_read_failed",
+					fmt.Sprintf("project %s bead %s merged PR #%d but failed to read HEAD commit: %v", projectName, bead.ID, dispatch.PRNumber, err),
+					dispatch.ID,
+					bead.ID,
+				)
+				commitSHA = ""
+			}
+
+			checkResult, err := s.runPostMergeChecksSafe(workspace, project.PostMergeChecks)
+			if err != nil {
+				s.logger.Warn("post-merge checks failed to execute", "project", projectName, "bead", bead.ID, "error", err)
+				checkResult = &git.DoDResult{
+					Passed:   false,
+					Checks:   []git.CheckResult{},
+					Failures: []string{fmt.Sprintf("Post-merge checks execution failed: %v", err)},
+				}
+			}
+			if checkResult.Passed {
+				s.logger.Info("post-merge checks passed, closing bead", "project", projectName, "bead", bead.ID)
+				s.closeBead(ctx, projectName, project, bead, "Post-merge checks passed")
+				continue
+			}
+
+			failureMsg := "Post-merge checks failed: " + strings.Join(checkResult.Failures, "; ")
+			s.logger.Warn("post-merge checks failed after merge", "project", projectName, "bead", bead.ID, "failure", failureMsg)
+			_ = s.store.RecordHealthEventWithDispatch(
+				"pr_post_merge_checks_failed",
+				fmt.Sprintf("project %s bead %s failed post-merge checks after merge of PR #%d", projectName, bead.ID, dispatch.PRNumber),
+				dispatch.ID,
+				bead.ID,
+			)
+			s.notifySchedulerEscalation(ctx, fmt.Sprintf("[post-merge check failed] project=%s bead=%s reason=%s", projectName, bead.ID, failureMsg))
+
+			if commitSHA != "" && project.AutoRevertOnFailure {
+				if err := s.revertMergeSafe(workspace, commitSHA); err != nil {
+					_ = s.store.RecordHealthEventWithDispatch(
+						"pr_merge_revert_failed",
+						fmt.Sprintf("project %s bead %s failed to revert commit %s: %v", projectName, bead.ID, commitSHA, err),
+						dispatch.ID,
+						bead.ID,
+					)
+					s.logger.Error("failed to revert merge after check failure", "project", projectName, "bead", bead.ID, "commit", commitSHA, "error", err)
+				}
+			}
+			s.transitionBeadToCoding(ctx, projectName, project, bead, failureMsg)
+		}
+	}
+}
+
+func isPRApproved(status *git.PRStatus) bool {
+	if status == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(status.State), "OPEN") {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(status.ReviewDecision), "APPROVED")
 }
 
 func (s *Scheduler) finalizeDispatchBranch(d store.Dispatch) (string, error) {
@@ -2840,9 +3185,13 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 		if strings.EqualFold(strings.TrimSpace(retry.FailureCategory), "cli_broken") && strings.TrimSpace(retry.Provider) != "" {
 			excludedModels[retry.Provider] = true
 		}
-		provider, _, selectedTier := s.pickProviderForRetry(retry.Tier, excludedModels)
+		provider, _, selectedTier, _, cleanupReservation, err := s.pickAndReserveProviderForRetry(retry.Tier, excludedModels, retry.AgentID, retry.BeadID)
 		if provider == nil {
-			s.logger.Error("retry provider selection failed", "bead", retry.BeadID, "tier", retry.Tier, "failure_category", retry.FailureCategory)
+			if err != nil {
+				s.logger.Warn("retry provider selection reservation failed", "bead", retry.BeadID, "error", err)
+			} else {
+				s.logger.Error("retry provider selection failed", "bead", retry.BeadID, "tier", retry.Tier, "failure_category", retry.FailureCategory)
+			}
 			duration := time.Since(retry.DispatchedAt).Seconds()
 			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
 				s.logger.Error("failed to update retry status after provider selection failure", "id", retry.ID, "error", err)
@@ -2899,6 +3248,9 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 				DurationS:     duration,
 				Note:          "retry backend selection failed",
 			})
+			if cleanupReservation != nil {
+				cleanupReservation()
+			}
 			continue
 		}
 
@@ -2957,6 +3309,9 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			handle.PID, sessionName, retry.Prompt, logPath, retry.Branch, backendName)
 		if err != nil {
 			s.logger.Error("failed to record retry dispatch", "bead", retry.BeadID, "error", err)
+			if cleanupReservation != nil {
+				cleanupReservation()
+			}
 			continue
 		}
 		if err := s.store.UpdateDispatchLabelsCSV(newDispatchID, retry.Labels); err != nil {
@@ -3528,8 +3883,8 @@ func (s *Scheduler) rebuildProfilesIfNeeded() {
 	}
 }
 
-// pickProviderWithProfileFiltering applies profile-aware filtering before provider selection.
-func (s *Scheduler) pickProviderWithProfileFiltering(tier string, bead beads.Bead, excludeModels map[string]bool) (*config.Provider, string) {
+// pickAndReserveProviderWithProfileFiltering applies profile-aware filtering before provider selection/reservation.
+func (s *Scheduler) pickAndReserveProviderWithProfileFiltering(tier string, bead beads.Bead, excludeModels map[string]bool, agentID string) (*config.Provider, string, int64, func(), error) {
 	// Get all provider names for this tier
 	var tierProviders []string
 	switch tier {
@@ -3558,11 +3913,11 @@ func (s *Scheduler) pickProviderWithProfileFiltering(tier string, bead beads.Bea
 	}
 
 	// Use filtered providers with rate limiter
-	return s.pickProviderFromCandidates(tier, filteredProviders, excludeModels)
+	return s.pickAndReserveProviderFromCandidates(tier, filteredProviders, excludeModels, agentID, bead.ID)
 }
 
-// pickProviderFromCandidates selects a provider from the filtered candidate list, respecting rate limits.
-func (s *Scheduler) pickProviderFromCandidates(tier string, candidates []string, excludeModels map[string]bool) (*config.Provider, string) {
+// pickAndReserveProviderFromCandidates selects a provider from the filtered candidate list, respecting and reserving rate limits.
+func (s *Scheduler) pickAndReserveProviderFromCandidates(tier string, candidates []string, excludeModels map[string]bool, agentID, beadID string) (*config.Provider, string, int64, func(), error) {
 	for _, name := range candidates {
 		p, ok := s.cfg.Providers[name]
 		if !ok {
@@ -3574,20 +3929,39 @@ func (s *Scheduler) pickProviderFromCandidates(tier string, candidates []string,
 
 		// Free-tier providers bypass rate limits
 		if !p.Authed {
-			return &p, name
+			return &p, name, 0, nil, nil
 		}
 
-		// Check authed gates
+		// Check authed gates (optimistic)
 		canDispatch, _ := s.rateLimiter.CanDispatchAuthed()
-		if canDispatch {
-			return &p, name
+		if !canDispatch {
+			continue
 		}
+
+		// Attempt reservation
+		usageID, err := s.rateLimiter.RecordAuthedDispatch(p.Model, agentID, beadID)
+		if err != nil {
+			s.logger.Warn("failed to reserve provider usage", "provider", name, "bead", beadID, "error", err)
+			continue
+		}
+
+		// Double-check limits
+		canDispatch, _ = s.rateLimiter.CanDispatchAuthed()
+		if !canDispatch {
+			_ = s.rateLimiter.ReleaseAuthedDispatch(usageID)
+			continue
+		}
+
+		cleanup := func() {
+			_ = s.rateLimiter.ReleaseAuthedDispatch(usageID)
+		}
+		return &p, name, usageID, cleanup, nil
 	}
 
-	return nil, ""
+	return nil, "", 0, nil, nil
 }
 
-func (s *Scheduler) pickProviderForBead(bead beads.Bead, initialTier string, excludeModels map[string]bool) (*config.Provider, string, string) {
+func (s *Scheduler) pickAndReserveProviderForBead(bead beads.Bead, initialTier string, excludeModels map[string]bool, agentID string) (*config.Provider, string, string, int64, func(), error) {
 	currentTier := initialTier
 	if strings.TrimSpace(currentTier) == "" {
 		currentTier = "balanced"
@@ -3595,9 +3969,13 @@ func (s *Scheduler) pickProviderForBead(bead beads.Bead, initialTier string, exc
 
 	tried := map[string]bool{currentTier: true}
 	for {
-		provider, providerName := s.pickProviderWithProfileFiltering(currentTier, bead, excludeModels)
+		provider, providerName, usageID, cleanup, err := s.pickAndReserveProviderWithProfileFiltering(currentTier, bead, excludeModels, agentID)
 		if provider != nil {
-			return provider, providerName, currentTier
+			return provider, providerName, currentTier, usageID, cleanup, nil
+		}
+		if err != nil {
+			// If reservation fails (not just rate limit but error), we might want to log or just continue
+			// Currently pickAndReserveProviderWithProfileFiltering logs warnings on error but returns nil
 		}
 
 		nextTier := dispatch.DowngradeTier(currentTier)
@@ -3614,11 +3992,11 @@ func (s *Scheduler) pickProviderForBead(bead beads.Bead, initialTier string, exc
 			currentTier = nextTier
 			continue
 		}
-		return nil, "", currentTier
+		return nil, "", currentTier, 0, nil, nil
 	}
 }
 
-func (s *Scheduler) pickProviderForRetry(initialTier string, excludeModels map[string]bool) (*config.Provider, string, string) {
+func (s *Scheduler) pickAndReserveProviderForRetry(initialTier string, excludeModels map[string]bool, agentID, beadID string) (*config.Provider, string, string, int64, func(), error) {
 	currentTier := initialTier
 	if strings.TrimSpace(currentTier) == "" {
 		currentTier = "balanced"
@@ -3626,14 +4004,17 @@ func (s *Scheduler) pickProviderForRetry(initialTier string, excludeModels map[s
 
 	tried := map[string]bool{currentTier: true}
 	for {
-		provider, providerName := s.pickProviderFromCandidates(currentTier, s.tierCandidates(currentTier), excludeModels)
+		provider, providerName, usageID, cleanup, err := s.pickAndReserveProviderFromCandidates(currentTier, s.tierCandidates(currentTier), excludeModels, agentID, beadID)
 		if provider != nil {
-			return provider, providerName, currentTier
+			return provider, providerName, currentTier, usageID, cleanup, nil
+		}
+		if err != nil {
+			// Log error?
 		}
 
 		nextTier := nextTierAfterExhaustion(currentTier)
 		if nextTier == "" || tried[nextTier] {
-			return nil, "", currentTier
+			return nil, "", currentTier, 0, nil, nil
 		}
 		s.logger.Info("tier shift for retry provider selection", "from", currentTier, "to", nextTier)
 		tried[nextTier] = true

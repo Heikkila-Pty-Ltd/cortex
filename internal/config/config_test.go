@@ -127,6 +127,78 @@ func TestLoadValidConfig(t *testing.T) {
 	}
 }
 
+func TestLoadProjectMergeDefaults(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.merge-defaults]
+enabled = true
+beads_dir = "/tmp/merge-defaults/.beads"
+workspace = "/tmp/merge-defaults"
+priority = 1
+`
+	path := writeTestConfig(t, cfg)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	project := loaded.Projects["merge-defaults"]
+	if project.MergeMethod != "squash" {
+		t.Errorf("merge_method = %q, want squash", project.MergeMethod)
+	}
+	if len(project.PostMergeChecks) != 0 {
+		t.Errorf("post_merge_checks = %v, want empty", project.PostMergeChecks)
+	}
+	if project.AutoRevertOnFailure {
+		t.Error("auto_revert_on_failure = true, want false")
+	}
+}
+
+func TestLoadProjectMergeConfigInvalidMergeMethod(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.merge-invalid]
+enabled = true
+beads_dir = "/tmp/merge-invalid/.beads"
+workspace = "/tmp/merge-invalid"
+priority = 1
+merge_method = "invalid"
+`
+	path := writeTestConfig(t, cfg)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected invalid merge_method to fail")
+	}
+}
+
+func TestLoadProjectMergeConfigCustom(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.merge-custom]
+enabled = true
+beads_dir = "/tmp/merge-custom/.beads"
+workspace = "/tmp/merge-custom"
+priority = 1
+merge_method = "rebase"
+post_merge_checks = ["go test ./...", "go vet ./..."]
+auto_revert_on_failure = true
+`
+	path := writeTestConfig(t, cfg)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	project := loaded.Projects["merge-custom"]
+	if project.MergeMethod != "rebase" {
+		t.Errorf("merge_method = %q, want rebase", project.MergeMethod)
+	}
+	if len(project.PostMergeChecks) != 2 || project.PostMergeChecks[0] != "go test ./..." || project.PostMergeChecks[1] != "go vet ./..." {
+		t.Errorf("post_merge_checks = %v, want [go test ./... go vet ./...]", project.PostMergeChecks)
+	}
+	if !project.AutoRevertOnFailure {
+		t.Error("auto_revert_on_failure = false, want true")
+	}
+}
+
 func TestLoadNoEnabledProject(t *testing.T) {
 	cfg := `
 [general]
@@ -759,7 +831,8 @@ func TestLoadDispatchOpenClawBackendValid(t *testing.T) {
 	cfg := validConfig + `
 
 [dispatch.routing]
-fast_backend = "headless_cli"
+fast_backend = "openclaw"
+balanced_backend = "openclaw"
 comms_backend = "openclaw"
 `
 	path := writeTestConfig(t, cfg)
@@ -874,8 +947,11 @@ cmd = "aider"
 prompt_mode = "arg"
 model_flag = "--model"
 
+providers.cerebras.cli = "codex"
+
 [dispatch.routing]
 fast_backend = "headless_cli"
+balanced_backend = "openclaw"
 `
 	path := writeTestConfig(t, cfg)
 	config, err := Load(path)

@@ -81,6 +81,10 @@ type Project struct {
 	BaseBranch   string `toml:"base_branch"`   // branch to create features from (default "main")
 	BranchPrefix string `toml:"branch_prefix"` // prefix for feature branches (default "feat/")
 	UseBranches  bool   `toml:"use_branches"`  // enable branch workflow (default false)
+	MergeMethod  string `toml:"merge_method"`  // squash, merge, rebase
+
+	PostMergeChecks     []string `toml:"post_merge_checks"`      // checks run after PR merge
+	AutoRevertOnFailure bool     `toml:"auto_revert_on_failure"` // auto-revert merge when post-merge checks fail
 
 	// Sprint planning configuration (optional for backward compatibility)
 	SprintPlanningDay  string `toml:"sprint_planning_day"`  // day of week for sprint planning (e.g., "Monday")
@@ -235,6 +239,15 @@ type DispatchCostControl struct {
 	PerBeadStageAttemptLimit    int      `toml:"per_bead_stage_attempt_limit"`
 	StageAttemptWindow          Duration `toml:"stage_attempt_window"`
 	StageCooldown               Duration `toml:"stage_cooldown"`
+
+	// Escalation pause controls for system-level churn/token waste.
+	PauseOnChurn      bool     `toml:"pause_on_churn"`
+	ChurnPauseWindow  Duration `toml:"churn_pause_window"`
+	ChurnPauseFailure int      `toml:"churn_pause_failure_threshold"`
+	ChurnPauseTotal   int      `toml:"churn_pause_total_threshold"`
+
+	PauseOnTokenWastage bool     `toml:"pause_on_token_waste"`
+	TokenWasteWindow    Duration `toml:"token_waste_window"`
 }
 
 type Chief struct {
@@ -274,6 +287,7 @@ func cloneProjects(in map[string]Project) map[string]Project {
 	out := make(map[string]Project, len(in))
 	for key, project := range in {
 		project.DoD.Checks = cloneStringSlice(project.DoD.Checks)
+		project.PostMergeChecks = cloneStringSlice(project.PostMergeChecks)
 		out[key] = project
 	}
 	return out
@@ -495,6 +509,18 @@ func applyDefaults(cfg *Config) {
 	if cfg.Dispatch.CostControl.StageCooldown.Duration == 0 {
 		cfg.Dispatch.CostControl.StageCooldown.Duration = 45 * time.Minute
 	}
+	if cfg.Dispatch.CostControl.ChurnPauseWindow.Duration == 0 {
+		cfg.Dispatch.CostControl.ChurnPauseWindow.Duration = 60 * time.Minute
+	}
+	if cfg.Dispatch.CostControl.ChurnPauseFailure == 0 {
+		cfg.Dispatch.CostControl.ChurnPauseFailure = 12
+	}
+	if cfg.Dispatch.CostControl.ChurnPauseTotal == 0 {
+		cfg.Dispatch.CostControl.ChurnPauseTotal = 24
+	}
+	if cfg.Dispatch.CostControl.TokenWasteWindow.Duration == 0 {
+		cfg.Dispatch.CostControl.TokenWasteWindow.Duration = 24 * time.Hour
+	}
 
 	// Dispatch log retention
 	if cfg.Dispatch.LogRetentionDays == 0 {
@@ -540,6 +566,9 @@ func applyDefaults(cfg *Config) {
 		}
 		if project.BranchPrefix == "" {
 			project.BranchPrefix = "feat/"
+		}
+		if strings.TrimSpace(project.MergeMethod) == "" {
+			project.MergeMethod = "squash"
 		}
 
 		// Sprint planning defaults (optional - no defaults applied to maintain backward compatibility)
@@ -629,6 +658,9 @@ func validate(cfg *Config) error {
 		// Validate DoD configuration when provided
 		if err := validateDoDConfig(projectName, p.DoD); err != nil {
 			return fmt.Errorf("project %q DoD config: %w", projectName, err)
+		}
+		if err := validateProjectMergeConfig(projectName, p); err != nil {
+			return fmt.Errorf("project %q merge config: %w", projectName, err)
 		}
 	}
 	if !hasEnabled {
@@ -1007,7 +1039,41 @@ func validateDoDConfig(projectName string, dod DoDConfig) error {
 	return nil
 }
 
+func validateProjectMergeConfig(projectName string, project Project) error {
+	method := strings.ToLower(strings.TrimSpace(project.MergeMethod))
+	if method == "" {
+		return nil
+	}
+
+	switch method {
+	case "squash", "merge", "rebase":
+		return nil
+	default:
+		return fmt.Errorf("invalid merge_method %q for project %q: must be one of squash, merge, rebase", method, projectName)
+	}
+}
+
 func validateDispatchCostControlConfig(cc DispatchCostControl) error {
+	if cc.PauseOnChurn {
+		if cc.ChurnPauseWindow.Duration <= 0 {
+			return fmt.Errorf("churn_pause_window must be > 0 when pause_on_churn is enabled")
+		}
+		if cc.ChurnPauseFailure <= 0 {
+			return fmt.Errorf("churn_pause_failure_threshold must be > 0 when pause_on_churn is enabled")
+		}
+		if cc.ChurnPauseTotal <= 0 {
+			return fmt.Errorf("churn_pause_total_threshold must be > 0 when pause_on_churn is enabled")
+		}
+	}
+	if cc.ChurnPauseFailure < 0 {
+		return fmt.Errorf("churn_pause_failure_threshold cannot be negative")
+	}
+	if cc.ChurnPauseTotal < 0 {
+		return fmt.Errorf("churn_pause_total_threshold cannot be negative")
+	}
+	if cc.ChurnPauseWindow.Duration < 0 {
+		return fmt.Errorf("churn_pause_window cannot be negative")
+	}
 	if cc.RetryEscalationAttempt < 0 {
 		return fmt.Errorf("retry_escalation_attempt cannot be negative")
 	}
@@ -1031,6 +1097,15 @@ func validateDispatchCostControlConfig(cc DispatchCostControl) error {
 	}
 	if cc.PerBeadStageAttemptLimit > 0 && cc.StageCooldown.Duration < 0 {
 		return fmt.Errorf("stage_cooldown cannot be negative")
+	}
+	if cc.TokenWasteWindow.Duration < 0 {
+		return fmt.Errorf("token_waste_window cannot be negative")
+	}
+	if cc.PauseOnTokenWastage && cc.DailyCostCapUSD <= 0 {
+		return fmt.Errorf("pause_on_token_waste requires daily_cost_cap_usd > 0")
+	}
+	if cc.PauseOnTokenWastage && cc.TokenWasteWindow.Duration == 0 {
+		return fmt.Errorf("token_waste_window must be > 0 when pause_on_token_waste is enabled")
 	}
 	return nil
 }
