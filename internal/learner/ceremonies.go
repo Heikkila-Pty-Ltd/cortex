@@ -219,12 +219,12 @@ func (sc *SprintCeremony) createCeremonyBead(projectName, ceremonyType, title st
 	}
 }
 
-// dispatchCeremony dispatches a ceremony using the premium tier and scrum master agent
+// dispatchCeremony dispatches a ceremony using purpose-based tier routing and scrum master agent
 func (sc *SprintCeremony) dispatchCeremony(ctx context.Context, bead beads.Bead, projectName, prompt, ceremonyType string) (int64, error) {
-	// Use premium tier for analytical reasoning as required
-	provider, tier := sc.selectPremiumProvider()
+	purpose := ceremonyPurpose(ceremonyType)
+	provider, tier := dispatch.SelectProviderForPurpose(sc.cfg, purpose)
 	if provider == "" {
-		return 0, fmt.Errorf("no premium provider available for ceremony")
+		return 0, fmt.Errorf("no provider available for ceremony purpose %q", purpose)
 	}
 
 	// Use project-specific scrum master agent for Matrix routing
@@ -248,11 +248,11 @@ func (sc *SprintCeremony) dispatchCeremony(ctx context.Context, bead beads.Bead,
 		agentID,
 		provider,
 		tier,
-		-1,        // PID will be set by dispatcher
-		"",        // session name will be set by dispatcher
+		-1, // PID will be set by dispatcher
+		"", // session name will be set by dispatcher
 		prompt,
-		"",        // log path will be set by dispatcher
-		"",        // branch (not used for ceremonies)
+		"",         // log path will be set by dispatcher
+		"",         // branch (not used for ceremonies)
 		"openclaw", // backend - use openclaw for Matrix output routing
 	)
 	if err != nil {
@@ -277,27 +277,15 @@ func (sc *SprintCeremony) dispatchCeremony(ctx context.Context, bead beads.Bead,
 	return dispatchID, nil
 }
 
-// selectPremiumProvider selects the best available premium tier provider
-func (sc *SprintCeremony) selectPremiumProvider() (string, string) {
-	// Prefer premium tier providers for analytical reasoning
-	if len(sc.cfg.Tiers.Premium) > 0 {
-		for _, providerName := range sc.cfg.Tiers.Premium {
-			if provider, exists := sc.cfg.Providers[providerName]; exists {
-				return provider.Model, "premium"
-			}
-		}
+func ceremonyPurpose(ceremonyType string) string {
+	switch strings.ToLower(strings.TrimSpace(ceremonyType)) {
+	case "review":
+		return dispatch.ScrumPurposeReview
+	case "retrospective":
+		return dispatch.ScrumPurposeReporting
+	default:
+		return dispatch.ScrumPurposeReporting
 	}
-
-	// Fallback to balanced tier if no premium available
-	if len(sc.cfg.Tiers.Balanced) > 0 {
-		for _, providerName := range sc.cfg.Tiers.Balanced {
-			if provider, exists := sc.cfg.Providers[providerName]; exists {
-				return provider.Model, "balanced"
-			}
-		}
-	}
-
-	return "", ""
 }
 
 // buildReviewPrompt creates the prompt for sprint review ceremonies
@@ -410,7 +398,7 @@ You are the **Scrum Master** conducting a sprint retrospective for project %s.
 - Provide specific, actionable recommendations
 - Consider both technical and process improvements
 
-Execute the sprint retrospective analysis and generate improvement recommendations now.`, 
+Execute the sprint retrospective analysis and generate improvement recommendations now.`,
 		projectName, projectName, performanceData, sc.formatRetroContext(retroReport), projectName)
 
 	return prompt, nil
@@ -420,7 +408,7 @@ Execute the sprint retrospective analysis and generate improvement recommendatio
 func (sc *SprintCeremony) getCompletedWork(ctx context.Context, projectName, beadsDir string) (string, error) {
 	// Get completed dispatches from the last sprint period (7 days)
 	cutoff := time.Now().Add(-7 * 24 * time.Hour).UTC().Format(time.DateTime)
-	
+
 	completedDispatches, err := sc.store.GetCompletedDispatchesSince(projectName, cutoff)
 	if err != nil {
 		return "", fmt.Errorf("failed to get completed dispatches: %w", err)
@@ -435,7 +423,7 @@ func (sc *SprintCeremony) getCompletedWork(ctx context.Context, projectName, bea
 
 	for _, dispatch := range completedDispatches {
 		duration := fmt.Sprintf("%.1fs", dispatch.DurationS)
-		workSummary.WriteString(fmt.Sprintf("- **%s** (%s) - completed in %s using %s\n", 
+		workSummary.WriteString(fmt.Sprintf("- **%s** (%s) - completed in %s using %s\n",
 			dispatch.BeadID, dispatch.AgentID, duration, dispatch.Provider))
 	}
 
@@ -446,14 +434,14 @@ func (sc *SprintCeremony) getCompletedWork(ctx context.Context, projectName, bea
 func (sc *SprintCeremony) gatherPerformanceData(ctx context.Context, projectName string) string {
 	// Get dispatch performance for the project over the last sprint
 	cutoff := time.Now().Add(-7 * 24 * time.Hour).UTC().Format(time.DateTime)
-	
+
 	var dataBuilder strings.Builder
 	dataBuilder.WriteString("## Sprint Performance Data\n\n")
 
 	// Get summary statistics
 	var totalDispatches, completedDispatches, failedDispatches int
 	var avgDuration *float64
-	
+
 	err := sc.store.DB().QueryRow(`
 		SELECT COUNT(*),
 			COALESCE(SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END), 0),
@@ -462,7 +450,7 @@ func (sc *SprintCeremony) gatherPerformanceData(ctx context.Context, projectName
 		FROM dispatches 
 		WHERE project = ? AND dispatched_at >= ?
 	`, projectName, cutoff).Scan(&totalDispatches, &completedDispatches, &failedDispatches, &avgDuration)
-	
+
 	if err != nil {
 		dataBuilder.WriteString(fmt.Sprintf("Error gathering performance data: %v\n", err))
 		return dataBuilder.String()
@@ -479,7 +467,7 @@ func (sc *SprintCeremony) gatherPerformanceData(ctx context.Context, projectName
 	}
 
 	dataBuilder.WriteString(fmt.Sprintf("- **Total Dispatches**: %d\n", totalDispatches))
-	dataBuilder.WriteString(fmt.Sprintf("- **Success Rate**: %.1f%% (%d completed, %d failed)\n", 
+	dataBuilder.WriteString(fmt.Sprintf("- **Success Rate**: %.1f%% (%d completed, %d failed)\n",
 		successRate, completedDispatches, failedDispatches))
 	dataBuilder.WriteString(fmt.Sprintf("- **Average Duration**: %.1fs\n\n", duration))
 
@@ -498,7 +486,7 @@ func (sc *SprintCeremony) formatRetroContext(report *RetroReport) string {
 	context.WriteString(fmt.Sprintf("- Total Dispatches: %d\n", report.TotalDispatches))
 	context.WriteString(fmt.Sprintf("- Completed: %d, Failed: %d\n", report.Completed, report.Failed))
 	context.WriteString(fmt.Sprintf("- Average Duration: %.1fs\n", report.AvgDuration))
-	
+
 	if len(report.Recommendations) > 0 {
 		context.WriteString("\n### Previous Recommendations:\n")
 		for _, rec := range report.Recommendations {
@@ -526,9 +514,9 @@ func (sc *SprintCeremony) processCeremonyResults(ctx context.Context, result *Ce
 
 	// Record ceremony completion event for monitoring
 	eventType := "sprint_ceremony_completed"
-	details := fmt.Sprintf("ceremony %s completed successfully with %d characters of output", 
+	details := fmt.Sprintf("ceremony %s completed successfully with %d characters of output",
 		result.CeremonyID, len(result.Output))
-	
+
 	if err := sc.store.RecordHealthEventWithDispatch(eventType, details, result.DispatchID, result.CeremonyID); err != nil {
 		sc.logger.Warn("failed to record ceremony completion event", "error", err)
 	}

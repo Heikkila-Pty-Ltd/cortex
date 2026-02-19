@@ -296,17 +296,8 @@ func (c *Chief) createCeremonyBead(title string, ceremonySlug string) beads.Bead
 
 // dispatchChiefSM dispatches the Chief SM for a ceremony
 func (c *Chief) dispatchChiefSM(ctx context.Context, bead beads.Bead, promptTemplate string) (int64, error) {
-	// Use premium tier provider for Chief SM (as specified in requirements)
-	provider := ""
-	if len(c.cfg.Tiers.Premium) > 0 {
-		provider = c.cfg.Tiers.Premium[0]
-	}
-	if provider == "" {
-		// Fallback to balanced tier
-		if len(c.cfg.Tiers.Balanced) > 0 {
-			provider = c.cfg.Tiers.Balanced[0]
-		}
-	}
+	purpose := chiefPurpose(promptTemplate)
+	provider, tier := dispatch.SelectProviderForPurpose(c.cfg, purpose)
 	if provider == "" {
 		return 0, fmt.Errorf("no available providers for Chief SM dispatch")
 	}
@@ -329,9 +320,9 @@ func (c *Chief) dispatchChiefSM(ctx context.Context, bead beads.Bead, promptTemp
 		"cortex", // project name
 		agentID,
 		provider,
-		"premium", // tier
-		-1,        // handle (will be set by dispatcher)
-		"",        // session name (will be set by dispatcher)
+		tier,
+		-1, // handle (will be set by dispatcher)
+		"", // session name (will be set by dispatcher)
 		prompt,
 		"",     // log path (will be set by dispatcher)
 		"",     // branch (not used for ceremonies)
@@ -351,9 +342,21 @@ func (c *Chief) dispatchChiefSM(ctx context.Context, bead beads.Bead, promptTemp
 	c.logger.Info("ceremony dispatch successful",
 		"dispatch_id", dispatchID,
 		"handle", handle,
-		"provider", provider)
+		"provider", provider,
+		"tier", tier)
 
 	return dispatchID, nil
+}
+
+func chiefPurpose(promptTemplate string) string {
+	switch strings.TrimSpace(promptTemplate) {
+	case "sprint_planning_multi":
+		return dispatch.ScrumPurposePlanning
+	case "overall_retrospective":
+		return dispatch.ScrumPurposeReporting
+	default:
+		return dispatch.ScrumPurposeReview
+	}
 }
 
 // buildCeremonyPrompt constructs the prompt for ceremony dispatches
@@ -478,7 +481,7 @@ You are the **Chief Scrum Master** conducting a unified sprint planning across a
 
 ## Context
 - **Timing**: Sprint start, before per-project scrum master planning  
-- **Priority**: Use premium/Opus tier reasoning for strategic decisions
+- **Priority**: Use premium-tier reasoning for strategic decisions
 - **Available Tools**: Use Chief SM allocator functions to record decisions
 
 Execute strategic allocation and unified planning now.`
@@ -515,7 +518,7 @@ You are the **Chief Scrum Master** conducting a unified sprint planning across a
 
 ## Context
 - **Timing**: Sprint start, before per-project scrum master planning
-- **Priority**: Use premium/Opus tier reasoning for strategic decisions
+- **Priority**: Use premium-tier reasoning for strategic decisions
 - **Output**: Unified sprint plan with capacity allocations and dependency prioritization
 
 Execute the full ceremony workflow now.`

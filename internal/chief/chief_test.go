@@ -312,6 +312,18 @@ func TestParseRetrospectiveActionItems(t *testing.T) {
 	}
 }
 
+func TestChiefPurposeMapping(t *testing.T) {
+	if got := chiefPurpose("sprint_planning_multi"); got != "planning" {
+		t.Fatalf("chiefPurpose(planning)=%q want planning", got)
+	}
+	if got := chiefPurpose("overall_retrospective"); got != "reporting" {
+		t.Fatalf("chiefPurpose(overall_retrospective)=%q want reporting", got)
+	}
+	if got := chiefPurpose("anything-else"); got != "review" {
+		t.Fatalf("chiefPurpose(default)=%q want review", got)
+	}
+}
+
 // Helper function for substring checking
 func containsSubstring(str, substr string) bool {
 	return len(str) >= len(substr) && findSubstring(str, substr) >= 0
