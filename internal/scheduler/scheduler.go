@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -54,7 +53,6 @@ type Scheduler struct {
 	paused                  bool
 	quarantine              map[string]time.Time
 	churnBlock              map[string]time.Time
-	stageCooldown           map[string]time.Time
 	epicBreakup             map[string]time.Time
 	claimAnomaly            map[string]time.Time
 	dispatchBlockAnomaly    map[string]time.Time
@@ -72,8 +70,6 @@ type Scheduler struct {
 	ensureFeatureBranch     func(string, string, string, string) error
 	getPRStatus             func(string, string) (*git.PRStatus, error)
 	createPR                func(string, string, string, string, string) (string, int, error)
-	setIssueLabels          func(context.Context, config.Project, string, []string) error
-	appendIssueNotes        func(context.Context, config.Project, string, string) error
 
 	// Provider performance profiling
 	profiles           map[string]learner.ProviderProfile
@@ -152,49 +148,10 @@ const (
 	sprintPlanningDedup   = 24 * time.Hour
 )
 
-var (
-	readyAcceptanceTestPattern = regexp.MustCompile(`(?i)test|unit test|integration test|e2e`)
-	readyAcceptanceDoDPattern  = regexp.MustCompile(`(?i)dod|definition of done`)
-)
-
 func bdCommandContext(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "bd", args...)
 	cmd.Env = append(os.Environ(), "BEADS_NO_DAEMON=1")
 	return cmd
-}
-
-func projectRootFromBeadsDir(beadsDir string) string {
-	trimmed := strings.TrimSpace(beadsDir)
-	root := strings.TrimSuffix(trimmed, "/.beads")
-	if root == "" {
-		return "."
-	}
-	return root
-}
-
-func defaultSetIssueLabels(ctx context.Context, project config.Project, beadID string, labels []string) error {
-	labelValue := strings.Join(labels, ",")
-	cmd := bdCommandContext(ctx, "update", beadID, "--set-labels", labelValue)
-	cmd.Dir = projectRootFromBeadsDir(project.BeadsDir)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("bd update %s --set-labels %s failed: %w (output: %s)", beadID, labelValue, err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-func defaultAppendIssueNotes(ctx context.Context, project config.Project, beadID, note string) error {
-	note = strings.TrimSpace(note)
-	if note == "" {
-		return nil
-	}
-	cmd := bdCommandContext(ctx, "update", beadID, "--append-notes", note)
-	cmd.Dir = projectRootFromBeadsDir(project.BeadsDir)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("bd update %s --append-notes failed: %w (output: %s)", beadID, err, strings.TrimSpace(string(out)))
-	}
-	return nil
 }
 
 // New creates a new Scheduler with all dependencies.
@@ -219,7 +176,6 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 		dryRun:                    dryRun,
 		quarantine:                make(map[string]time.Time),
 		churnBlock:                make(map[string]time.Time),
-		stageCooldown:             make(map[string]time.Time),
 		epicBreakup:               make(map[string]time.Time),
 		claimAnomaly:              make(map[string]time.Time),
 		dispatchBlockAnomaly:      make(map[string]time.Time),
@@ -239,8 +195,6 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 		ensureFeatureBranch:       git.EnsureFeatureBranchWithBase,
 		getPRStatus:               git.GetPRStatus,
 		createPR:                  git.CreatePR,
-		setIssueLabels:            defaultSetIssueLabels,
-		appendIssueNotes:          defaultAppendIssueNotes,
 	}
 
 	// Initialize concurrency controller for admission control
@@ -379,20 +333,6 @@ func (s *Scheduler) createPRSafe(workspace, branch, baseBranch, title, body stri
 	return git.CreatePR(workspace, branch, baseBranch, title, body)
 }
 
-func (s *Scheduler) setIssueLabelsSafe(ctx context.Context, project config.Project, beadID string, labels []string) error {
-	if s.setIssueLabels != nil {
-		return s.setIssueLabels(ctx, project, beadID, labels)
-	}
-	return defaultSetIssueLabels(ctx, project, beadID, labels)
-}
-
-func (s *Scheduler) appendIssueNotesSafe(ctx context.Context, project config.Project, beadID, note string) error {
-	if s.appendIssueNotes != nil {
-		return s.appendIssueNotes(ctx, project, beadID, note)
-	}
-	return defaultAppendIssueNotes(ctx, project, beadID, note)
-}
-
 func workflowStageForBead(bead beads.Bead) string {
 	bestStage := ""
 	bestOrder := -1
@@ -503,67 +443,12 @@ func requiresStructuredBeadBeforeDispatch(role string) bool {
 	}
 }
 
-func validateStageReadyGate(bead beads.Bead) []string {
-	acceptance := strings.TrimSpace(bead.Acceptance)
-	design := strings.TrimSpace(bead.Design)
-	failures := make([]string, 0, 5)
-
-	if acceptance == "" {
-		failures = append(failures, "missing_acceptance_criteria")
-	}
-	if !readyAcceptanceTestPattern.MatchString(acceptance) {
-		failures = append(failures, "missing_test_requirement_in_acceptance")
-	}
-	if !readyAcceptanceDoDPattern.MatchString(acceptance) {
-		failures = append(failures, "missing_dod_requirement_in_acceptance")
-	}
-	if bead.EstimateMinutes <= 0 {
-		failures = append(failures, "missing_estimated_minutes")
-	}
-	if design == "" {
-		failures = append(failures, "missing_design_notes")
-	}
-
-	return failures
-}
-
-func planningLabels(labels []string) []string {
-	out := make([]string, 0, len(labels)+1)
-	seen := map[string]struct{}{}
-
-	add := func(label string) {
-		key := strings.TrimSpace(label)
-		if key == "" {
-			return
-		}
-		k := strings.ToLower(key)
-		if _, ok := seen[k]; ok {
-			return
-		}
-		seen[k] = struct{}{}
-		out = append(out, key)
-	}
-
-	add("stage:planning")
-	for _, label := range labels {
-		l := strings.TrimSpace(label)
-		if strings.HasPrefix(strings.ToLower(l), "stage:") {
-			continue
-		}
-		add(l)
-	}
-	return out
-}
-
 func (s *Scheduler) validateBeadStructureForDispatch(project config.Project, bead beads.Bead, role string) []string {
 	if !requiresStructuredBeadBeforeDispatch(role) {
 		return nil
 	}
 
 	failures := make([]string, 0, 2)
-	if hasIssueLabel(bead, "stage:ready") {
-		failures = append(failures, validateStageReadyGate(bead)...)
-	}
 	if project.DoD.RequireEstimate && bead.EstimateMinutes <= 0 {
 		failures = append(failures, "missing estimate (required before assignment)")
 	}
@@ -571,59 +456,6 @@ func (s *Scheduler) validateBeadStructureForDispatch(project config.Project, bea
 		failures = append(failures, "missing acceptance criteria (required before assignment)")
 	}
 	return failures
-}
-
-func (s *Scheduler) enforceReadyGate(ctx context.Context, projectName string, project config.Project, bead beads.Bead, failures []string) {
-	if len(failures) == 0 {
-		return
-	}
-	reason := strings.Join(failures, ",")
-	labels := planningLabels(bead.Labels)
-
-	if err := s.setIssueLabelsSafe(ctx, project, bead.ID, labels); err != nil {
-		s.logger.Error("failed to auto-revert invalid stage:ready bead",
-			"project", projectName,
-			"bead", bead.ID,
-			"error", err,
-			"failures", reason,
-		)
-		_ = s.store.RecordHealthEventWithDispatch(
-			"stage_ready_gate_revert_failed",
-			fmt.Sprintf("project %s bead %s stage:ready gate check failed and auto-revert failed: %s (%v)", projectName, bead.ID, reason, err),
-			0,
-			bead.ID,
-		)
-		return
-	}
-
-	note := fmt.Sprintf("Auto-reverted by scheduler from stage:ready to stage:planning due to ready gate violations: %s. Add acceptance criteria with test and DoD requirements, estimate (>0), and design notes before moving back to stage:ready.", reason)
-	if err := s.appendIssueNotesSafe(ctx, project, bead.ID, note); err != nil {
-		s.logger.Warn("failed to append stage:ready gate note",
-			"project", projectName,
-			"bead", bead.ID,
-			"error", err,
-		)
-	}
-
-	s.logger.Warn("auto-reverted invalid stage:ready bead to stage:planning",
-		"project", projectName,
-		"bead", bead.ID,
-		"failures", reason,
-	)
-	_ = s.store.RecordHealthEventWithDispatch(
-		"stage_ready_gate_reverted",
-		fmt.Sprintf("project %s bead %s auto-reverted to stage:planning due to stage:ready gate violations: %s", projectName, bead.ID, reason),
-		0,
-		bead.ID,
-	)
-	s.reportBeadLifecycle(ctx, beadLifecycleEvent{
-		Project:       projectName,
-		BeadID:        bead.ID,
-		Event:         "bead_stage_transition",
-		WorkflowStage: "stage:planning",
-		Status:        "open",
-		Note:          "auto-reverted from stage:ready: " + reason,
-	})
 }
 
 func (s *Scheduler) reportDispatchBlockedByStructure(ctx context.Context, projectName string, bead beads.Bead, role string, failures []string) {
@@ -919,10 +751,6 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 
 	// Dispatch up to maxPerTick
 	dispatched := 0
-	forceSparkTier, forceSparkReason := s.shouldForceSparkTierNow()
-	if forceSparkTier {
-		s.logCostControlNoticeOnce("force_spark_tick:"+forceSparkReason, "cost control forcing spark-only dispatch tier", "reason", forceSparkReason)
-	}
 	for _, item := range allReady {
 		select {
 		case <-ctx.Done():
@@ -942,12 +770,6 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		if s.isNightMode() && !isNightEligibleIssueType(item.bead.Type) {
 			s.logger.Debug("night mode skipping non bug/task bead", "bead", item.bead.ID, "type", item.bead.Type)
 			continue
-		}
-		if hasIssueLabel(item.bead, "stage:ready") {
-			if failures := validateStageReadyGate(item.bead); len(failures) > 0 {
-				s.enforceReadyGate(ctx, item.name, item.project, item.bead, failures)
-				continue
-			}
 		}
 
 		// Skip if already dispatched
@@ -976,10 +798,6 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 
 		if failures := s.validateBeadStructureForDispatch(item.project, item.bead, role); len(failures) > 0 {
 			s.reportDispatchBlockedByStructure(ctx, item.name, item.bead, role, failures)
-			continue
-		}
-		if blocked, reason := s.checkDispatchCostControlBlock(item.bead, role, stage); blocked {
-			s.reportCostControlBlock(ctx, item.name, item.bead.ID, role, stage, item.bead.Status, reason, 0)
 			continue
 		}
 
@@ -1040,11 +858,12 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			}
 		}
 
-		// Resolve tier policy with optional Spark-first cost controls.
-		initialTier, allowTierUpgrade := s.dispatchTierPolicy(item.bead, role, stage, forceSparkTier)
-		provider, _, currentTier := s.pickProviderForBead(item.bead, initialTier, nil, allowTierUpgrade)
+		// Detect complexity -> tier
+		tier := DetectComplexity(item.bead)
+
+		provider, _, currentTier := s.pickProviderForBead(item.bead, tier, nil)
 		if provider == nil {
-			s.logger.Warn("no provider available, deferring", "bead", item.bead.ID, "tier", initialTier, "allow_upgrade", allowTierUpgrade)
+			s.logger.Warn("no provider available, deferring", "bead", item.bead.ID, "tier", tier)
 			continue
 		}
 
@@ -2895,10 +2714,6 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 	}
 
 	s.logger.Debug("processing pending retries", "count", len(retries))
-	forceSparkTier, forceSparkReason := s.shouldForceSparkTierNow()
-	if forceSparkTier {
-		s.logCostControlNoticeOnce("force_spark_retry:"+forceSparkReason, "cost control forcing spark-only retry tier", "reason", forceSparkReason)
-	}
 
 	for _, retry := range retries {
 		if err := s.store.HeartbeatClaimLease(retry.BeadID); err != nil {
@@ -3021,20 +2836,13 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 		}
 
 		retryRole := roleFromAgentID(retry.Project, retry.AgentID)
-		retryStage := workflowStageFromLabelsCSV(retry.Labels)
-		if blocked, reason := s.checkRetryCostControlBlock(retry, retryRole, retryStage); blocked {
-			s.reportCostControlBlock(ctx, retry.Project, retry.BeadID, retryRole, retryStage, "open", "retry blocked: "+reason, retry.ID)
-			continue
-		}
-
 		excludedModels := map[string]bool{}
 		if strings.EqualFold(strings.TrimSpace(retry.FailureCategory), "cli_broken") && strings.TrimSpace(retry.Provider) != "" {
 			excludedModels[retry.Provider] = true
 		}
-		retryTier, allowRetryUpgrade := s.retryTierPolicy(retry, forceSparkTier)
-		provider, _, selectedTier := s.pickProviderForRetry(retryTier, excludedModels, allowRetryUpgrade)
+		provider, _, selectedTier := s.pickProviderForRetry(retry.Tier, excludedModels)
 		if provider == nil {
-			s.logger.Error("retry provider selection failed", "bead", retry.BeadID, "tier", retryTier, "failure_category", retry.FailureCategory, "allow_upgrade", allowRetryUpgrade)
+			s.logger.Error("retry provider selection failed", "bead", retry.BeadID, "tier", retry.Tier, "failure_category", retry.FailureCategory)
 			duration := time.Since(retry.DispatchedAt).Seconds()
 			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
 				s.logger.Error("failed to update retry status after provider selection failure", "id", retry.ID, "error", err)
@@ -3779,7 +3587,7 @@ func (s *Scheduler) pickProviderFromCandidates(tier string, candidates []string,
 	return nil, ""
 }
 
-func (s *Scheduler) pickProviderForBead(bead beads.Bead, initialTier string, excludeModels map[string]bool, allowUpgrade bool) (*config.Provider, string, string) {
+func (s *Scheduler) pickProviderForBead(bead beads.Bead, initialTier string, excludeModels map[string]bool) (*config.Provider, string, string) {
 	currentTier := initialTier
 	if strings.TrimSpace(currentTier) == "" {
 		currentTier = "balanced"
@@ -3799,20 +3607,18 @@ func (s *Scheduler) pickProviderForBead(bead beads.Bead, initialTier string, exc
 			currentTier = nextTier
 			continue
 		}
-		if allowUpgrade {
-			nextTier = dispatch.UpgradeTier(currentTier)
-			if nextTier != "" && !tried[nextTier] {
-				s.logger.Info("tier upgrade for provider selection", "bead", bead.ID, "from", currentTier, "to", nextTier)
-				tried[nextTier] = true
-				currentTier = nextTier
-				continue
-			}
+		nextTier = dispatch.UpgradeTier(currentTier)
+		if nextTier != "" && !tried[nextTier] {
+			s.logger.Info("tier upgrade for provider selection", "bead", bead.ID, "from", currentTier, "to", nextTier)
+			tried[nextTier] = true
+			currentTier = nextTier
+			continue
 		}
 		return nil, "", currentTier
 	}
 }
 
-func (s *Scheduler) pickProviderForRetry(initialTier string, excludeModels map[string]bool, allowUpgrade bool) (*config.Provider, string, string) {
+func (s *Scheduler) pickProviderForRetry(initialTier string, excludeModels map[string]bool) (*config.Provider, string, string) {
 	currentTier := initialTier
 	if strings.TrimSpace(currentTier) == "" {
 		currentTier = "balanced"
@@ -3826,9 +3632,6 @@ func (s *Scheduler) pickProviderForRetry(initialTier string, excludeModels map[s
 		}
 
 		nextTier := nextTierAfterExhaustion(currentTier)
-		if !allowUpgrade && currentTier == "fast" {
-			nextTier = ""
-		}
 		if nextTier == "" || tried[nextTier] {
 			return nil, "", currentTier
 		}

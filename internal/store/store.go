@@ -123,19 +123,6 @@ type ClaimLease struct {
 	HeartbeatAt time.Time
 }
 
-// OverflowQueueItem is a persisted overflow queue entry used by concurrency control.
-type OverflowQueueItem struct {
-	ID         int64
-	BeadID     string
-	Project    string
-	Role       string
-	AgentID    string
-	Priority   int
-	Attempts   int
-	Reason     string
-	EnqueuedAt time.Time
-}
-
 const schema = `
 CREATE TABLE IF NOT EXISTS dispatches (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -237,31 +224,6 @@ CREATE TABLE IF NOT EXISTS claim_leases (
 	heartbeat_at DATETIME NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS overflow_queue (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	bead_id TEXT NOT NULL,
-	project TEXT NOT NULL,
-	role TEXT NOT NULL,
-	agent_id TEXT NOT NULL DEFAULT '',
-	priority INTEGER NOT NULL DEFAULT 0,
-	attempts INTEGER NOT NULL DEFAULT 0,
-	reason TEXT NOT NULL DEFAULT '',
-	enqueued_at DATETIME NOT NULL DEFAULT (datetime('now')),
-	UNIQUE(bead_id, role)
-);
-
-CREATE TABLE IF NOT EXISTS concurrency_utilization (
-	id INTEGER PRIMARY KEY AUTOINCREMENT,
-	recorded_at DATETIME NOT NULL DEFAULT (datetime('now')),
-	active_coders INTEGER NOT NULL DEFAULT 0,
-	active_reviewers INTEGER NOT NULL DEFAULT 0,
-	active_total INTEGER NOT NULL DEFAULT 0,
-	max_coders INTEGER NOT NULL DEFAULT 0,
-	max_reviewers INTEGER NOT NULL DEFAULT 0,
-	max_total INTEGER NOT NULL DEFAULT 0,
-	queue_depth INTEGER NOT NULL DEFAULT 0
-);
-
 CREATE TABLE IF NOT EXISTS sprint_boundaries (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	sprint_number INTEGER NOT NULL UNIQUE,
@@ -285,8 +247,6 @@ CREATE INDEX IF NOT EXISTS idx_dispatches_status ON dispatches(status);
 CREATE INDEX IF NOT EXISTS idx_dispatches_bead ON dispatches(bead_id);
 CREATE INDEX IF NOT EXISTS idx_claim_leases_project ON claim_leases(project);
 CREATE INDEX IF NOT EXISTS idx_claim_leases_heartbeat ON claim_leases(heartbeat_at);
-CREATE INDEX IF NOT EXISTS idx_overflow_queue_priority ON overflow_queue(priority, enqueued_at);
-CREATE INDEX IF NOT EXISTS idx_concurrency_utilization_recorded_at ON concurrency_utilization(recorded_at);
 CREATE INDEX IF NOT EXISTS idx_sprint_boundaries_start ON sprint_boundaries(sprint_start);
 CREATE INDEX IF NOT EXISTS idx_sprint_boundaries_end ON sprint_boundaries(sprint_end);
 CREATE INDEX IF NOT EXISTS idx_execution_plan_gate_active ON execution_plan_gate(active_plan_id);
@@ -1464,206 +1424,6 @@ func (s *Store) GetTotalCost(project string) (float64, error) {
 		return 0, fmt.Errorf("store: get total cost: %w", err)
 	}
 	return totalCost, nil
-}
-
-// GetTotalCostSince returns total cost in USD over the specified rolling window.
-// If project is empty, aggregates across all projects.
-func (s *Store) GetTotalCostSince(project string, window time.Duration) (float64, error) {
-	if window <= 0 {
-		return s.GetTotalCost(project)
-	}
-
-	cutoff := time.Now().Add(-window).UTC().Format(time.DateTime)
-	var (
-		query string
-		args  []any
-	)
-	if strings.TrimSpace(project) == "" {
-		query = `SELECT COALESCE(SUM(cost_usd), 0) FROM dispatches WHERE dispatched_at >= ?`
-		args = []any{cutoff}
-	} else {
-		query = `SELECT COALESCE(SUM(cost_usd), 0) FROM dispatches WHERE project = ? AND dispatched_at >= ?`
-		args = []any{project, cutoff}
-	}
-
-	var totalCost float64
-	if err := s.db.QueryRow(query, args...).Scan(&totalCost); err != nil {
-		return 0, fmt.Errorf("store: get total cost since: %w", err)
-	}
-	return totalCost, nil
-}
-
-// GetBeadTotalCost returns the total recorded cost in USD for a bead across all dispatches.
-func (s *Store) GetBeadTotalCost(beadID string) (float64, error) {
-	var totalCost float64
-	if err := s.db.QueryRow(
-		`SELECT COALESCE(SUM(cost_usd), 0) FROM dispatches WHERE bead_id = ?`,
-		beadID,
-	).Scan(&totalCost); err != nil {
-		return 0, fmt.Errorf("store: get bead total cost: %w", err)
-	}
-	return totalCost, nil
-}
-
-// CountRecentDispatchAttemptsForBead counts recent dispatch attempts for a bead in a stage/role.
-// A dispatch matches when either:
-// - labels include the supplied stage label, or
-// - agent_id suffix matches the supplied role (e.g. "-coder").
-func (s *Store) CountRecentDispatchAttemptsForBead(beadID, stageLabel, role string, window time.Duration) (int, error) {
-	if strings.TrimSpace(beadID) == "" {
-		return 0, nil
-	}
-	if window <= 0 {
-		window = time.Hour
-	}
-
-	cutoff := time.Now().Add(-window).UTC().Format(time.DateTime)
-	rows, err := s.db.Query(`
-		SELECT labels, agent_id
-		FROM dispatches
-		WHERE bead_id = ?
-		  AND dispatched_at >= ?
-		  AND status IN ('running', 'completed', 'failed', 'cancelled', 'interrupted', 'pending_retry', 'retried')
-	`, beadID, cutoff)
-	if err != nil {
-		return 0, fmt.Errorf("store: count recent dispatch attempts for bead: %w", err)
-	}
-	defer rows.Close()
-
-	trimmedStage := strings.TrimSpace(stageLabel)
-	trimmedRole := strings.TrimSpace(role)
-	roleSuffix := ""
-	if trimmedRole != "" {
-		roleSuffix = "-" + trimmedRole
-	}
-
-	count := 0
-	for rows.Next() {
-		var labelsCSV, agentID string
-		if err := rows.Scan(&labelsCSV, &agentID); err != nil {
-			return 0, fmt.Errorf("store: scan recent dispatch attempts for bead: %w", err)
-		}
-
-		stageMatch := false
-		if trimmedStage != "" {
-			labels := decodeDispatchLabels(labelsCSV)
-			for _, label := range labels {
-				if label == trimmedStage {
-					stageMatch = true
-					break
-				}
-			}
-		}
-
-		roleMatch := roleSuffix != "" && strings.HasSuffix(strings.TrimSpace(agentID), roleSuffix)
-		if stageMatch || roleMatch {
-			count++
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("store: iterate recent dispatch attempts for bead: %w", err)
-	}
-
-	return count, nil
-}
-
-// EnqueueOverflowItem persists a queue item used by scheduler concurrency overflow handling.
-func (s *Store) EnqueueOverflowItem(beadID, project, role, agentID string, priority int, reason string) (int64, error) {
-	res, err := s.db.Exec(`
-		INSERT INTO overflow_queue (bead_id, project, role, agent_id, priority, reason)
-		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT(bead_id, role) DO UPDATE SET
-			project = excluded.project,
-			agent_id = excluded.agent_id,
-			priority = excluded.priority,
-			reason = excluded.reason
-	`, beadID, project, role, agentID, priority, reason)
-	if err != nil {
-		return 0, fmt.Errorf("store: enqueue overflow item: %w", err)
-	}
-
-	id, err := res.LastInsertId()
-	if err == nil && id > 0 {
-		return id, nil
-	}
-
-	var existingID int64
-	if err := s.db.QueryRow(`SELECT id FROM overflow_queue WHERE bead_id = ? AND role = ?`, beadID, role).Scan(&existingID); err != nil {
-		return 0, fmt.Errorf("store: lookup overflow item id: %w", err)
-	}
-	return existingID, nil
-}
-
-// RemoveOverflowItem removes persisted overflow queue entries for a bead.
-func (s *Store) RemoveOverflowItem(beadID string) (int64, error) {
-	res, err := s.db.Exec(`DELETE FROM overflow_queue WHERE bead_id = ?`, beadID)
-	if err != nil {
-		return 0, fmt.Errorf("store: remove overflow item: %w", err)
-	}
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("store: remove overflow item rows affected: %w", err)
-	}
-	return affected, nil
-}
-
-// ListOverflowQueue returns persisted overflow queue entries ordered for dispatch fairness.
-func (s *Store) ListOverflowQueue() ([]OverflowQueueItem, error) {
-	rows, err := s.db.Query(`
-		SELECT id, bead_id, project, role, agent_id, priority, attempts, reason, enqueued_at
-		FROM overflow_queue
-		ORDER BY priority ASC, enqueued_at ASC, bead_id ASC
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("store: list overflow queue: %w", err)
-	}
-	defer rows.Close()
-
-	items := make([]OverflowQueueItem, 0)
-	for rows.Next() {
-		var item OverflowQueueItem
-		if err := rows.Scan(
-			&item.ID,
-			&item.BeadID,
-			&item.Project,
-			&item.Role,
-			&item.AgentID,
-			&item.Priority,
-			&item.Attempts,
-			&item.Reason,
-			&item.EnqueuedAt,
-		); err != nil {
-			return nil, fmt.Errorf("store: scan overflow queue item: %w", err)
-		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate overflow queue: %w", err)
-	}
-	return items, nil
-}
-
-// CountOverflowQueue returns the number of persisted overflow queue entries.
-func (s *Store) CountOverflowQueue() (int, error) {
-	var count int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM overflow_queue`).Scan(&count); err != nil {
-		return 0, fmt.Errorf("store: count overflow queue: %w", err)
-	}
-	return count, nil
-}
-
-// RecordConcurrencyUtilization persists a concurrency utilization sample.
-func (s *Store) RecordConcurrencyUtilization(activeCoders, activeReviewers, activeTotal, maxCoders, maxReviewers, maxTotal, queueDepth int) error {
-	_, err := s.db.Exec(`
-		INSERT INTO concurrency_utilization (
-			active_coders, active_reviewers, active_total,
-			max_coders, max_reviewers, max_total, queue_depth
-		) VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, activeCoders, activeReviewers, activeTotal, maxCoders, maxReviewers, maxTotal, queueDepth)
-	if err != nil {
-		return fmt.Errorf("store: record concurrency utilization: %w", err)
-	}
-	return nil
 }
 
 // InterruptRunningDispatches marks all running dispatches as interrupted.
