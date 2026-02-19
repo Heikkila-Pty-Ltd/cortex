@@ -16,10 +16,7 @@ func TestHeadlessBackend_DispatchEchoHelloWorld(t *testing.T) {
 		map[string]config.CLIConfig{
 			"test": {
 				Cmd: "sh",
-				Args: []string{
-					"-c",
-					"cat; echo hello world",
-				},
+				Args: []string{"-c", "echo hello world"},
 			},
 		},
 		"",
@@ -72,8 +69,8 @@ func TestHeadlessBackend_DispatchEchoHelloWorld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CaptureOutput failed: %v", err)
 	}
-	if !strings.Contains(output, "hello world") {
-		t.Fatalf("expected hello world output, got %q", output)
+	if strings.TrimSpace(output) != "hello world" {
+		t.Fatalf("expected output %q, got %q", "hello world", output)
 	}
 
 	if err := backend.Cleanup(handle); err != nil {
