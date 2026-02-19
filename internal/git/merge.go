@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+var supportedMergeMethods = map[string]string{
+	"squash": "--squash",
+	"merge":  "--merge",
+	"rebase": "--rebase",
+}
+
 // DoDResult contains the overall result of running DoD checks.
 type DoDResult struct {
 	Passed   bool          // true if all checks passed
@@ -26,48 +32,70 @@ type CheckResult struct {
 // MergePR merges an approved PR using gh CLI.
 // method must be one of: squash, merge, rebase.
 func MergePR(workspace string, prNumber int, method string) error {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return fmt.Errorf("workspace is required")
+	}
+
 	method = strings.ToLower(strings.TrimSpace(method))
+	if method == "" {
+		return fmt.Errorf("merge method is required (supported methods: squash, merge, rebase)")
+	}
+
+	mergeFlag, ok := supportedMergeMethods[method]
+	if !ok {
+		return fmt.Errorf("unsupported merge method %q (supported methods: squash, merge, rebase)", method)
+	}
+
 	if prNumber <= 0 {
 		return fmt.Errorf("invalid PR number: %d", prNumber)
 	}
 
-	var mergeFlag string
-	switch method {
-	case "", "squash":
-		mergeFlag = "--squash"
-	case "merge":
-		mergeFlag = "--merge"
-	case "rebase":
-		mergeFlag = "--rebase"
-	default:
-		return fmt.Errorf("unsupported merge method %q", method)
-	}
-
 	cmd := exec.Command("gh", "pr", "merge", fmt.Sprintf("%d", prNumber), mergeFlag)
 	cmd.Dir = workspace
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to merge PR #%d: %w (%s)", prNumber, err, strings.TrimSpace(string(out)))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		output := strings.TrimSpace(string(out))
+		if output != "" {
+			return fmt.Errorf("failed to merge PR #%d using %q in %s: %w (%s)", prNumber, method, workspace, err, output)
+		}
+		return fmt.Errorf("failed to merge PR #%d using %q in %s: %w", prNumber, method, workspace, err)
 	}
 	return nil
 }
 
 // RevertMerge reverts the given merge commit and pushes the change.
 func RevertMerge(workspace string, commitSHA string) error {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" {
+		return fmt.Errorf("workspace is required")
+	}
+
 	commitSHA = strings.TrimSpace(commitSHA)
 	if commitSHA == "" {
-		return fmt.Errorf("empty commit SHA")
+		return fmt.Errorf("commit SHA is required")
 	}
 
 	revertCmd := exec.Command("git", "revert", commitSHA, "--no-edit")
 	revertCmd.Dir = workspace
-	if out, err := revertCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to revert %s: %w (%s)", commitSHA, err, strings.TrimSpace(string(out)))
+	out, err := revertCmd.CombinedOutput()
+	if err != nil {
+		output := strings.TrimSpace(string(out))
+		if output != "" {
+			return fmt.Errorf("failed to revert commit %s in %s: %w (%s)", commitSHA, workspace, err, output)
+		}
+		return fmt.Errorf("failed to revert commit %s in %s: %w", commitSHA, workspace, err)
 	}
 
 	pushCmd := exec.Command("git", "push")
 	pushCmd.Dir = workspace
-	if out, err := pushCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to push revert of %s: %w (%s)", commitSHA, err, strings.TrimSpace(string(out)))
+	out, err = pushCmd.CombinedOutput()
+	if err != nil {
+		output := strings.TrimSpace(string(out))
+		if output != "" {
+			return fmt.Errorf("failed to push revert of commit %s from %s: %w (%s)", commitSHA, workspace, err, output)
+		}
+		return fmt.Errorf("failed to push revert of commit %s from %s: %w", commitSHA, workspace, err)
 	}
 	return nil
 }
@@ -119,7 +147,7 @@ func runSinglePostMergeCheck(workspace, command string) *CheckResult {
 			Duration: 0,
 		}
 	}
-	cmd := exec.Command(parts[0], parts[1:]...)
+	cmd := exec.Command("sh", "-c", command)
 	cmd.Dir = workspace
 
 	output, err := cmd.CombinedOutput()
