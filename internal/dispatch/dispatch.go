@@ -59,13 +59,13 @@ if [ ! -f "$msg_file" ] || [ ! -f "$agent_file" ] || [ ! -f "$thinking_file" ] |
   exit 1
 fi
 
-session_id="ctx-$$-$(date +%s)"
+	session_id="ctx-$$-$(date +%%s)"
 err_file=$(mktemp)
 prompt_inline_limit=%d
 inline_message=1
 
 prompt_bytes="$(wc -c < "$msg_file" 2>/dev/null || echo 0)"
-if [ "$prompt_bytes" -gt "$prompt_inline_limit" ]; then
+if [ "$prompt_bytes" -ge "$prompt_inline_limit" ]; then
   inline_message=0
 fi
 

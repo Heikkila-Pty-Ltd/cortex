@@ -65,7 +65,7 @@ func TestProviderUsageCounting(t *testing.T) {
 	s := tempStore(t)
 
 	for i := 0; i < 5; i++ {
-		if err := s.RecordProviderUsage("claude", "agent-1", "bead-1"); err != nil {
+		if _, err := s.RecordProviderUsage("claude", "agent-1", "bead-1"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -296,7 +296,7 @@ func TestConcurrentAccess(t *testing.T) {
 	done := make(chan bool, 10)
 	for i := 0; i < 10; i++ {
 		go func(n int) {
-			s.RecordProviderUsage("provider", "agent", "bead")
+			_, _ = s.RecordProviderUsage("provider", "agent", "bead")
 			done <- true
 		}(i)
 	}
@@ -505,6 +505,179 @@ func TestGetPendingRetryDispatches(t *testing.T) {
 	}
 }
 
+func TestGetPendingRetryDispatchesRespectsNextRetryAt(t *testing.T) {
+	s := tempStore(t)
+
+	id, err := s.RecordDispatch("bead-next", "proj", "agent-1", "cerebras", "fast", 100, "", "test prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(id, "failed", 1, 45.5); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.MarkDispatchPendingRetry(id, "fast", time.Now().Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	retries, err := s.GetPendingRetryDispatches()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retries) != 0 {
+		t.Fatalf("expected 0 pending retries before next_retry_at, got %d", len(retries))
+	}
+
+	_, err = s.DB().Exec(`UPDATE dispatches SET next_retry_at = datetime('now', '-1 minute') WHERE id = ?`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	retries, err = s.GetPendingRetryDispatches()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retries) != 1 {
+		t.Fatalf("expected 1 pending retry after next_retry_at passes, got %d", len(retries))
+	}
+	if retries[0].NextRetryAt.Time.After(time.Now()) {
+		t.Fatal("expected next_retry_at to be in the past after manual update")
+	}
+}
+
+func TestOverflowQueuePersistence(t *testing.T) {
+	s := tempStore(t)
+
+	id1, err := s.EnqueueOverflowItem("bead-a", "proj", "coder", "agent-a", 1, "role_limit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id1 == 0 {
+		t.Fatal("expected non-zero overflow row id")
+	}
+
+	id2, err := s.EnqueueOverflowItem("bead-a", "proj", "coder", "agent-a", 2, "global_limit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id1 != id2 {
+		t.Fatalf("expected deduped overflow insert to return same id, got %d and %d", id1, id2)
+	}
+
+	count, err := s.CountOverflowQueue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 queued item, got %d", count)
+	}
+
+	items, err := s.ListOverflowQueue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 queued item, got %d", len(items))
+	}
+	item := items[0]
+	if item.BeadID != "bead-a" || item.Role != "coder" || item.AgentID != "agent-a" || item.Priority != 1 || item.Project != "proj" {
+		t.Fatalf("unexpected queue item: %+v", item)
+	}
+	if item.Reason != "role_limit" {
+		t.Fatalf("expected original reason 'role_limit', got %q", item.Reason)
+	}
+
+	removed, err := s.RemoveOverflowItem("bead-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("expected 1 removed row, got %d", removed)
+	}
+
+	count, err = s.CountOverflowQueue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 queued items after removal, got %d", count)
+	}
+}
+
+func TestCountDispatchesSinceAndCostWindow(t *testing.T) {
+	s := tempStore(t)
+
+	oldTime := time.Now().Add(-2 * time.Hour)
+	cutoff := time.Now().Add(-1 * time.Hour)
+
+	oldID, err := s.RecordDispatch("bead-old", "proj-a", "agent-1", "cerebras", "fast", 100, "", "old prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recentID, err := s.RecordDispatch("bead-recent", "proj-a", "agent-1", "cerebras", "fast", 101, "", "recent prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherID, err := s.RecordDispatch("bead-other", "proj-b", "agent-1", "cerebras", "fast", 102, "", "other prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetDispatchTime(oldID, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDispatchTime(recentID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDispatchTime(otherID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.UpdateDispatchStatus(oldID, "failed", 1, 1.0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(recentID, "failed", 1, 1.0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(otherID, "completed", 0, 1.0); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.RecordDispatchCost(oldID, 100, 100, 0.1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordDispatchCost(recentID, 100, 100, 0.2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordDispatchCost(otherID, 100, 100, 0.3); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := s.CountDispatchesSince(cutoff, []string{"failed", "completed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 dispatches since cutoff, got %d", count)
+	}
+
+	cost, err := s.GetTotalCostSince("", cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cost != 0.5 {
+		t.Fatalf("expected windowed cost 0.5, got %.3f", cost)
+	}
+
+	costProjA, err := s.GetTotalCostSince("proj-a", cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if costProjA != 0.2 {
+		t.Fatalf("expected proj-a windowed cost 0.2, got %.3f", costProjA)
+	}
+}
+
 func TestMarkDispatchPendingRetryUpdatesStageAndCompletion(t *testing.T) {
 	s := tempStore(t)
 
@@ -515,7 +688,7 @@ func TestMarkDispatchPendingRetryUpdatesStageAndCompletion(t *testing.T) {
 	if err := s.UpdateDispatchStatus(id, "failed", 1, 12.3); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.MarkDispatchPendingRetry(id, "balanced"); err != nil {
+	if err := s.MarkDispatchPendingRetry(id, "balanced", time.Now().Add(5*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -534,6 +707,12 @@ func TestMarkDispatchPendingRetryUpdatesStageAndCompletion(t *testing.T) {
 	}
 	if !d.CompletedAt.Valid {
 		t.Fatal("expected completed_at to be set")
+	}
+	if !d.NextRetryAt.Valid {
+		t.Fatal("expected next_retry_at to be set")
+	}
+	if d.NextRetryAt.Time.Sub(time.Now()) <= 0 {
+		t.Fatal("expected next_retry_at in the future")
 	}
 }
 
@@ -922,7 +1101,7 @@ func TestInterruptRunningDispatches(t *testing.T) {
 	var d Dispatch
 	err = s.db.QueryRow(`SELECT `+dispatchCols+` FROM dispatches WHERE id = ?`, id2).Scan(
 		&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName,
-		&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.Stage, &d.Labels, &d.PRURL, &d.PRNumber, &d.ExitCode, &d.DurationS, &d.Retries, &d.EscalatedFromTier,
+		&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.NextRetryAt, &d.Status, &d.Stage, &d.Labels, &d.PRURL, &d.PRNumber, &d.ExitCode, &d.DurationS, &d.Retries, &d.EscalatedFromTier,
 		&d.FailureCategory, &d.FailureSummary, &d.LogPath, &d.Branch, &d.Backend,
 		&d.InputTokens, &d.OutputTokens, &d.CostUSD,
 	)
@@ -1168,7 +1347,7 @@ func TestProviderStatsExcludeNonTerminalDispatches(t *testing.T) {
 	if err := s.UpdateDispatchStatus(id4, "failed", 1, 2.0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.MarkDispatchPendingRetry(id4, "balanced"); err != nil {
+	if err := s.MarkDispatchPendingRetry(id4, "balanced", time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/antigravity-dev/cortex/internal/config"
 	"github.com/antigravity-dev/cortex/internal/dispatch"
 	"github.com/antigravity-dev/cortex/internal/store"
 	tmuxstate "github.com/antigravity-dev/cortex/internal/tmux"
@@ -31,7 +32,7 @@ var (
 )
 
 // CheckStuckDispatches finds and handles dispatches that have been running too long.
-func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterface, timeout time.Duration, maxRetries int, logger *slog.Logger) []StuckAction {
+func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterface, timeout time.Duration, cfg *config.Config, logger *slog.Logger) []StuckAction {
 	stuck, err := s.GetStuckDispatches(timeout)
 	if err != nil {
 		logger.Error("failed to get stuck dispatches", "error", err)
@@ -98,19 +99,25 @@ func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterfac
 		duration := time.Since(d.DispatchedAt).Seconds()
 
 		// Check retries
-		if d.Retries < maxRetries {
-			// Escalate tier for retry
-			newTier := escalateTier(d.Tier)
+		retryPolicy := resolveRetryPolicy(cfg, d.Project, d.Tier)
+		nextDelay, newTier, shouldRetry := retryPolicy.NextRetry(d.Retries, d.Tier)
+		if shouldRetry {
+			var nextRetryAt time.Time
+			if nextDelay > 0 {
+				nextRetryAt = time.Now().Add(nextDelay)
+			}
 
 			logger.Info("queueing retry with escalated tier",
 				"bead", d.BeadID,
 				"from_tier", d.Tier,
 				"to_tier", newTier,
 				"retry", d.Retries+1,
+				"next_retry_at", nextRetryAt,
+				"delay", nextDelay,
 			)
 
 			// Mark as pending_retry with escalated tier
-			if err := s.MarkDispatchPendingRetry(d.ID, newTier); err != nil {
+			if err := s.MarkDispatchPendingRetry(d.ID, newTier, nextRetryAt); err != nil {
 				logger.Error("failed to mark dispatch for retry", "dispatch_id", d.ID, "error", err)
 			} else {
 				if err := s.UpdateDispatchStage(d.ID, "failed"); err != nil {
@@ -125,35 +132,39 @@ func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterfac
 				NewTier: newTier,
 				Retries: d.Retries + 1,
 			})
-		} else {
-			logger.Error("max retries exceeded", "bead", d.BeadID, "retries", d.Retries)
-			_ = s.RecordHealthEventWithDispatch("max_retries", fmt.Sprintf("bead %s failed after %d retries", d.BeadID, d.Retries), d.ID, d.BeadID)
-
-			// Mark as permanently failed
-			s.UpdateDispatchStatus(d.ID, "failed", -1, duration)
-			if err := s.UpdateDispatchStage(d.ID, "failed"); err != nil {
-				logger.Warn("failed to update failed dispatch stage", "dispatch_id", d.ID, "stage", "failed", "error", err)
-			}
-
-			actions = append(actions, StuckAction{
-				BeadID:  d.BeadID,
-				Action:  "failed_permanently",
-				Retries: d.Retries,
-			})
+			continue
 		}
+
+		logger.Error("max retries exceeded", "bead", d.BeadID, "retries", d.Retries)
+		_ = s.RecordHealthEventWithDispatch("max_retries", fmt.Sprintf("bead %s failed after %d retries", d.BeadID, d.Retries), d.ID, d.BeadID)
+
+		// Mark as permanently failed
+		s.UpdateDispatchStatus(d.ID, "failed", -1, duration)
+		if err := s.UpdateDispatchStage(d.ID, "failed"); err != nil {
+			logger.Warn("failed to update failed dispatch stage", "dispatch_id", d.ID, "stage", "failed", "error", err)
+		}
+
+		actions = append(actions, StuckAction{
+			BeadID:  d.BeadID,
+			Action:  "failed_permanently",
+			Retries: d.Retries,
+		})
 	}
 
 	return actions
 }
 
-// escalateTier returns the next higher tier for retry escalation.
-func escalateTier(tier string) string {
-	switch tier {
-	case "fast":
-		return "balanced"
-	case "balanced":
-		return "premium"
-	default:
-		return "premium"
+func resolveRetryPolicy(cfg *config.Config, project string, currentTier string) dispatch.RetryPolicy {
+	if cfg == nil {
+		return dispatch.DefaultPolicy()
+	}
+
+	policy := cfg.RetryPolicyFor(project, currentTier)
+	return dispatch.RetryPolicy{
+		MaxRetries:    policy.MaxRetries,
+		InitialDelay:  policy.InitialDelay.Duration,
+		BackoffFactor: policy.BackoffFactor,
+		MaxDelay:      policy.MaxDelay.Duration,
+		EscalateAfter: policy.EscalateAfter,
 	}
 }

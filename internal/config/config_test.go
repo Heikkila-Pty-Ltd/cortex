@@ -148,8 +148,8 @@ priority = 1
 	if len(project.PostMergeChecks) != 0 {
 		t.Errorf("post_merge_checks = %v, want empty", project.PostMergeChecks)
 	}
-	if project.AutoRevertOnFailure {
-		t.Error("auto_revert_on_failure = true, want false")
+	if !project.AutoRevertOnFailure {
+		t.Error("auto_revert_on_failure = false, want true")
 	}
 }
 
@@ -196,6 +196,28 @@ auto_revert_on_failure = true
 	}
 	if !project.AutoRevertOnFailure {
 		t.Error("auto_revert_on_failure = false, want true")
+	}
+}
+
+func TestLoadProjectMergeConfigExplicitAutoRevertSetting(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.merge-explicit-false]
+enabled = true
+beads_dir = "/tmp/merge-explicit-false/.beads"
+workspace = "/tmp/merge-explicit-false"
+priority = 1
+auto_revert_on_failure = false
+`
+	path := writeTestConfig(t, cfg)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	project := loaded.Projects["merge-explicit-false"]
+	if project.AutoRevertOnFailure {
+		t.Error("auto_revert_on_failure = true, want false")
 	}
 }
 
@@ -1731,5 +1753,59 @@ func TestLoadExpandsHomeInStateDBPath(t *testing.T) {
 	want := filepath.Join(tempHome, ".local/share/cortex/cortex.db")
 	if loaded.General.StateDB != want {
 		t.Fatalf("state_db = %q, want %q", loaded.General.StateDB, want)
+	}
+}
+
+func TestRetryPolicyForMergesGeneralTierAndProjectOverrides(t *testing.T) {
+	cfg := &Config{
+		General: General{
+			RetryPolicy: RetryPolicy{
+				MaxRetries:    1,
+				InitialDelay:  Duration{Duration: time.Minute},
+				BackoffFactor: 2.0,
+				MaxDelay:      Duration{Duration: 10 * time.Minute},
+				EscalateAfter: 2,
+			},
+			RetryTiers: map[string]RetryPolicy{
+				"fast": {
+					MaxRetries:    3,
+					InitialDelay:  Duration{Duration: 2 * time.Minute},
+					EscalateAfter: 1,
+				},
+			},
+		},
+		Projects: map[string]Project{
+			"proj": {
+				RetryPolicy: RetryPolicy{
+					MaxDelay: Duration{Duration: 20 * time.Minute},
+					EscalateAfter: 5,
+				},
+			},
+		},
+	}
+
+	policy := cfg.RetryPolicyFor("proj", "fast")
+	if policy.MaxRetries != 3 {
+		t.Fatalf("expected max_retries 3 from tier override, got %d", policy.MaxRetries)
+	}
+	if policy.InitialDelay.Duration != 2*time.Minute {
+		t.Fatalf("expected initial_delay 2m from tier override, got %v", policy.InitialDelay.Duration)
+	}
+	if policy.EscalateAfter != 5 {
+		t.Fatalf("expected escalate_after 5 from project override, got %d", policy.EscalateAfter)
+	}
+	if policy.MaxDelay.Duration != 20*time.Minute {
+		t.Fatalf("expected max_delay 20m from project override, got %v", policy.MaxDelay.Duration)
+	}
+}
+
+func TestRetryPolicyForNilConfig(t *testing.T) {
+	var cfg *Config
+	policy := cfg.RetryPolicyFor("unknown", "fast")
+	if policy.MaxRetries <= 0 {
+		t.Fatalf("expected default max_retries > 0, got %d", policy.MaxRetries)
+	}
+	if policy.EscalateAfter != 2 {
+		t.Fatalf("expected default escalate_after 2, got %d", policy.EscalateAfter)
 	}
 }
