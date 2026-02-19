@@ -7,7 +7,7 @@ max_concurrent_coders = 1
 max_concurrent_reviewers = 1
 max_concurrent_total = 2
 stuck_timeout = "30m"
-max_retries = 2
+max_retries = 6
 log_level = "info"
 state_db = "~/.local/share/cortex/cortex.db"
 
@@ -33,25 +33,21 @@ beads_dir = "~/projects/hg-website/.beads"
 workspace = "~/projects/hg-website"
 priority = 1
 
+[projects.hunter-galloway]
+enabled = true
+beads_dir = "/home/ubuntu/.openclaw/workspace-main/.beads"
+workspace = "/home/ubuntu/obsidian-vault"
+priority = 1
+matrix_room = "!adJhqAxLcYqQuYraGf:vmi3041112.contaboserver.net"
+
+[projects.hunter-galloway.dod]
+require_estimate = true
+require_acceptance = true
+
 [rate_limits]
 window_5h_cap = 150
 weekly_cap = 2000
 weekly_headroom_pct = 70
-
-[providers.openai-pro]
-tier = "balanced"
-authed = true
-model = "o4-mini"
-
-[providers.google-pro]
-tier = "premium"
-authed = true
-model = "gemini-2.5-pro"
-
-[providers.kimi]
-tier = "premium"
-authed = true
-model = "kimi-k2"
 
 [providers.codex-spark]
 tier = "fast"
@@ -59,31 +55,9 @@ authed = true
 model = "gpt-5.3-codex-spark"
 cli = "codex"
 
-[providers.codex]
-tier = "balanced"
-authed = true
-model = "gpt-5.3-codex-spark"
-cli = "codex"
-
-[providers.codex-max]
-tier = "premium"
-authed = true
-model = "gpt-5.3-codex-spark"
-cli = "codex"
-
-[providers.cerebras]
-tier = "fast"
-authed = false
-model = "llama-4-scout"
-
-[providers.groq]
-tier = "fast"
-authed = false
-model = "llama-4-scout"
-
 [tiers]
-# Spark-only to conserve Pro/Max usage
-fast = ["codex-spark", "cerebras", "groq"]
+# Spark-only routing
+fast = ["codex-spark"]
 balanced = ["codex-spark"]
 premium = ["codex-spark"]
 
@@ -134,12 +108,13 @@ retry_backend = "headless_cli"
 enabled = true
 spark_first = true
 retry_escalation_attempt = 2
+# Hard stop after repeated failures per stage to prevent endless loops overnight.
+per_bead_stage_attempt_limit = 5
+stage_attempt_window = "6h"
+stage_cooldown = "1h"
 complexity_escalation_minutes = 180
 risky_review_labels = ["risk:high", "security", "migration", "breaking-change", "database"]
 force_spark_at_weekly_usage_pct = 65
-per_bead_stage_attempt_limit = 2
-stage_attempt_window = "6h"
-stage_cooldown = "45m"
 
 [dispatch.timeouts]
 fast = "15m"

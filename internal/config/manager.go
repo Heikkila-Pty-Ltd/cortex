@@ -28,10 +28,9 @@ func NewRWMutexManager(initial *Config) *RWMutexManager {
 	return NewManager(initial)
 }
 
-// Get returns the current config pointer under a shared lock.
+// Get returns a cloned config snapshot under a shared lock.
 //
-// Callers must treat the returned config as read-only; callers that mutate
-// fields must clone before mutation to avoid races between concurrent consumers.
+// Returning a clone prevents shared mutable state from leaking across readers.
 func (m *RWMutexManager) Get() *Config {
 	if m == nil {
 		return nil
@@ -39,7 +38,7 @@ func (m *RWMutexManager) Get() *Config {
 
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.cfg
+	return m.cfg.Clone()
 }
 
 // Set updates the current config pointer under an exclusive lock.

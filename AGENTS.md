@@ -21,10 +21,10 @@ scripts/test-safe.sh ./internal/learner/...  # Locked + timeout + JSON go test
 
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
-   ```bash
-   # Use locked test wrapper to avoid cross-agent test contention
-   scripts/test-safe.sh ./...
-   ```
+  ```bash
+  # Use locked test wrapper to avoid cross-agent test contention
+  TEST_SAFE_LOCK_WAIT_SEC=600 scripts/test-safe.sh ./...
+  ```
 3. **Update issue status** - Close finished work, update in-progress items
 4. **PUSH TO REMOTE** - This is MANDATORY:
    ```bash
@@ -106,9 +106,14 @@ Use `scripts/test-safe.sh` instead of raw `go test` in shared workspaces.
 - Uses bounded `go test -timeout` (default `10m`)
 - Emits `go test -json` for machine-readable logs
 - Optional env overrides:
-  - `TEST_SAFE_LOCK_WAIT_SEC=300`
+  - `TEST_SAFE_LOCK_WAIT_SEC` (default: `600`)
   - `TEST_SAFE_GO_TEST_TIMEOUT=15m`
   - `TEST_SAFE_JSON_OUT=.tmp/test-$(date +%s).jsonl`
+
+If lock contention blocks a run, wait for the owning process to finish, then retry. Use a longer lock window on shared machines instead of rerunning immediately:
+```bash
+TEST_SAFE_LOCK_WAIT_SEC=600 scripts/test-safe.sh ./internal/learner ./internal/coordination
+```
 
 ### Best Practices
 
