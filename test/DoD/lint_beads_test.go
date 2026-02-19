@@ -99,6 +99,30 @@ func TestLintBeadsStageReadyGate(t *testing.T) {
 		}
 	})
 
+	t.Run("fails when stage:ready is missing design notes even if AC+test+DoD and estimate are present", func(t *testing.T) {
+		output, err := runLintBeadsFromJSON(t, `[
+  {
+    "id": "cortex-vn0-ready-missing-design",
+    "status": "open",
+    "issue_type": "task",
+    "title": "ready without design",
+    "acceptance_criteria": "Add unit tests and DoD verification steps.",
+    "estimated_minutes": 15,
+    "design": "",
+    "labels": ["stage:ready"]
+  }
+]`, `[]`)
+		if err == nil {
+			t.Fatalf("expected stage:ready design gate failure, got pass output=%s", output)
+		}
+		if !strings.Contains(output, "missing_design_notes") {
+			t.Fatalf("expected missing_design_notes, got: %s", output)
+		}
+		if !strings.Contains(output, "stage:ready gate violations") {
+			t.Fatalf("expected stage:ready gate violation summary, got %q", output)
+		}
+	})
+
 	t.Run("fails when stage:ready is missing design and structure requirements", func(t *testing.T) {
 		output, err := runLintBeadsFromJSON(t, `[
   {

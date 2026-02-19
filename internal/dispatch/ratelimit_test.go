@@ -53,7 +53,9 @@ func TestCanDispatchAuthed_5hCapReached(t *testing.T) {
 	rl := NewRateLimiter(s, config.RateLimits{Window5hCap: 3, WeeklyCap: 200, WeeklyHeadroomPct: 80})
 
 	for i := 0; i < 3; i++ {
-		s.RecordProviderUsage("claude", "agent", "bead")
+		if _, err := s.RecordProviderUsage("claude", "agent", "bead"); err != nil {
+			t.Fatalf("record provider usage: %v", err)
+		}
 	}
 
 	ok, _ := rl.CanDispatchAuthed()
@@ -67,7 +69,9 @@ func TestCanDispatchAuthed_WeeklyCapReached(t *testing.T) {
 	rl := NewRateLimiter(s, config.RateLimits{Window5hCap: 100, WeeklyCap: 5, WeeklyHeadroomPct: 80})
 
 	for i := 0; i < 5; i++ {
-		s.RecordProviderUsage("claude", "agent", "bead")
+		if _, err := s.RecordProviderUsage("claude", "agent", "bead"); err != nil {
+			t.Fatalf("record provider usage: %v", err)
+		}
 	}
 
 	ok, _ := rl.CanDispatchAuthed()
@@ -82,7 +86,9 @@ func TestHeadroomWarning(t *testing.T) {
 
 	// 8 out of 10 = 80% -> should trigger
 	for i := 0; i < 8; i++ {
-		s.RecordProviderUsage("claude", "agent", "bead")
+		if _, err := s.RecordProviderUsage("claude", "agent", "bead"); err != nil {
+			t.Fatalf("record provider usage: %v", err)
+		}
 	}
 
 	if !rl.IsInHeadroomWarning() {

@@ -59,6 +59,7 @@ type Scheduler struct {
 	epicBreakup             map[string]time.Time
 	claimAnomaly            map[string]time.Time
 	dispatchBlockAnomaly    map[string]time.Time
+	mergeGateRateLimitUntil map[string]time.Time
 	lifecycleRateLimitUntil map[string]time.Time
 	lifecycleRateLimitLog   map[string]time.Time
 	gatewayCircuitUntil     time.Time
@@ -156,6 +157,9 @@ const (
 	dodQueueCapacity      = 128
 	tickWatchdogThreshold = 90 * time.Second
 	sprintPlanningDedup   = 24 * time.Hour
+	mergeGateRateLimit    = 20 * time.Second
+	mergeGateMaxPerTick   = 1
+	mergeGateCooldownKey  = "merge-gate"
 )
 
 var (
@@ -208,6 +212,7 @@ func NewWithConfigManager(cfgManager config.ConfigManager, s *store.Store, rl *d
 		epicBreakup:               make(map[string]time.Time),
 		claimAnomaly:              make(map[string]time.Time),
 		dispatchBlockAnomaly:      make(map[string]time.Time),
+		mergeGateRateLimitUntil:  make(map[string]time.Time),
 		lifecycleRateLimitUntil:   make(map[string]time.Time),
 		lifecycleRateLimitLog:     make(map[string]time.Time),
 		utilizationSampleInterval: 1 * time.Minute,
@@ -392,6 +397,25 @@ func (s *Scheduler) latestCommitSHASafe(workspace string) (string, error) {
 		return s.latestCommitSHA(workspace)
 	}
 	return git.LatestCommitSHA(workspace)
+}
+
+func (s *Scheduler) getMergeGateRateLimitUntil() (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mergeGateRateLimitUntil == nil {
+		return time.Time{}, false
+	}
+	until, ok := s.mergeGateRateLimitUntil[mergeGateCooldownKey]
+	return until, ok
+}
+
+func (s *Scheduler) setMergeGateRateLimitUntil(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mergeGateRateLimitUntil == nil {
+		s.mergeGateRateLimitUntil = make(map[string]time.Time)
+	}
+	s.mergeGateRateLimitUntil[mergeGateCooldownKey] = now.Add(mergeGateRateLimit)
 }
 
 func workflowStageForBead(bead beads.Bead) string {
@@ -2276,24 +2300,38 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 						}
 					}
 				}
-				if err := s.store.MarkDispatchPendingRetry(d.ID, nextTier); err != nil {
-					s.logger.Warn("failed to queue gateway retry; leaving dispatch failed", "dispatch_id", d.ID, "bead", d.BeadID, "error", err)
+				policy := resolveRetryPolicy(s.cfg, d.Project, nextTier)
+				delay, nextAttemptTier, shouldRetry := policy.NextRetry(d.Retries, nextTier)
+				if !shouldRetry {
+					s.logger.Warn("max retries exceeded, marking failed after transient completion failure",
+						"bead", d.BeadID,
+						"retries", d.Retries,
+						"max_retries", policy.MaxRetries)
 					finalStage = "failed_needs_check"
 				} else {
-					status = "pending_retry"
-					finalStage = "pending_retry"
-					eventType := "dispatch_retry_queued_gateway"
-					details := fmt.Sprintf("bead %s dispatch %d queued for retry due to transient gateway closure", d.BeadID, d.ID)
-					if retryReason == "cli_broken" {
-						eventType = "dispatch_retry_queued_cli_fallback"
-						details = fmt.Sprintf("bead %s dispatch %d queued for CLI fallback retry in tier %s", d.BeadID, d.ID, nextTier)
+					var nextRetryAt time.Time
+					if delay > 0 {
+						nextRetryAt = s.now().Add(delay)
 					}
-					_ = s.store.RecordHealthEventWithDispatch(
-						eventType,
-						details,
-						d.ID,
-						d.BeadID,
-					)
+					if err := s.store.MarkDispatchPendingRetry(d.ID, nextAttemptTier, nextRetryAt); err != nil {
+						s.logger.Warn("failed to queue gateway retry; leaving dispatch failed", "dispatch_id", d.ID, "bead", d.BeadID, "error", err)
+						finalStage = "failed_needs_check"
+					} else {
+						status = "pending_retry"
+						finalStage = "pending_retry"
+						eventType := "dispatch_retry_queued_gateway"
+						details := fmt.Sprintf("bead %s dispatch %d queued for retry due to transient gateway closure", d.BeadID, d.ID)
+						if retryReason == "cli_broken" {
+							eventType = "dispatch_retry_queued_cli_fallback"
+							details = fmt.Sprintf("bead %s dispatch %d queued for CLI fallback retry in tier %s", d.BeadID, d.ID, nextAttemptTier)
+						}
+						_ = s.store.RecordHealthEventWithDispatch(
+							eventType,
+							details,
+							d.ID,
+							d.BeadID,
+						)
+					}
 				}
 			}
 
@@ -2380,6 +2418,19 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 }
 
 func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
+	now := time.Now
+	if s.now != nil {
+		now = s.now
+	}
+	nowTime := now()
+
+	if until, ok := s.getMergeGateRateLimitUntil(); ok && nowTime.Before(until) {
+		s.logger.Info("merge-gate rate limit active, skipping merge processing", "until", until)
+		return
+	}
+
+	mergesThisTick := 0
+
 	for projectName, project := range s.cfg.Projects {
 		if !project.Enabled || !project.UseBranches {
 			continue
@@ -2393,6 +2444,10 @@ func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
 		}
 
 		for _, bead := range beadList {
+			if mergesThisTick >= mergeGateMaxPerTick {
+				s.logger.Info("merge-gate per-tick max reached, deferring remaining merges", "project", projectName, "max", mergeGateMaxPerTick)
+				return
+			}
 			if !strings.EqualFold(strings.TrimSpace(bead.Status), "open") {
 				continue
 			}
@@ -2422,8 +2477,10 @@ func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
 				continue
 			}
 			if reviewStatus == nil || !isPRApproved(reviewStatus) {
+				s.logger.Info("PR not approved for merge", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber)
 				continue
 			}
+			s.logger.Info("merge gate approved PR detected", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber)
 
 			mergeMethod := strings.TrimSpace(project.MergeMethod)
 			if mergeMethod == "" {
@@ -2431,15 +2488,32 @@ func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
 			}
 
 			if err := s.mergePRSafe(workspace, dispatch.PRNumber, mergeMethod); err != nil {
-				s.logger.Error("failed to merge approved PR", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber, "method", mergeMethod, "error", err)
-				_ = s.store.RecordHealthEventWithDispatch(
-					"pr_merge_failed",
-					fmt.Sprintf("project %s bead %s could not merge approved PR #%d: %v", projectName, bead.ID, dispatch.PRNumber, err),
-					dispatch.ID,
-					bead.ID,
-				)
+				mergesThisTick++
+				s.setMergeGateRateLimitUntil(nowTime)
+				if isMergeConflictError(err) {
+					s.logger.Warn("merge conflict prevented PR merge", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber, "method", mergeMethod, "error", err)
+					_ = s.store.RecordHealthEventWithDispatch(
+						"pr_merge_conflict",
+						fmt.Sprintf("project %s bead %s failed merge PR #%d due conflict: %v", projectName, bead.ID, dispatch.PRNumber, err),
+						dispatch.ID,
+						bead.ID,
+					)
+				} else {
+					s.logger.Error("failed to merge approved PR", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber, "method", mergeMethod, "error", err)
+					_ = s.store.RecordHealthEventWithDispatch(
+						"pr_merge_failed",
+						fmt.Sprintf("project %s bead %s could not merge approved PR #%d: %v", projectName, bead.ID, dispatch.PRNumber, err),
+						dispatch.ID,
+						bead.ID,
+					)
+				}
+				notify := fmt.Sprintf("[merge failed] project=%s bead=%s pr=%d error=%v", projectName, bead.ID, dispatch.PRNumber, err)
+				s.notifySchedulerEscalation(ctx, notify)
 				continue
 			}
+
+			mergesThisTick++
+			s.setMergeGateRateLimitUntil(nowTime)
 
 			commitSHA, err := s.latestCommitSHASafe(workspace)
 			if err != nil {
@@ -2478,7 +2552,10 @@ func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
 			s.notifySchedulerEscalation(ctx, fmt.Sprintf("[post-merge check failed] project=%s bead=%s reason=%s", projectName, bead.ID, failureMsg))
 
 			if commitSHA != "" && project.AutoRevertOnFailure {
+				s.logger.Warn("auto-reverting merge after post-merge check failure", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber, "commit", commitSHA)
+				s.notifySchedulerEscalation(ctx, fmt.Sprintf("[auto-revert] project=%s bead=%s pr=%d", projectName, bead.ID, dispatch.PRNumber))
 				if err := s.revertMergeSafe(workspace, commitSHA); err != nil {
+					s.notifySchedulerEscalation(ctx, fmt.Sprintf("[auto-revert failed] project=%s bead=%s pr=%d commit=%s reason=%v", projectName, bead.ID, dispatch.PRNumber, commitSHA, err))
 					_ = s.store.RecordHealthEventWithDispatch(
 						"pr_merge_revert_failed",
 						fmt.Sprintf("project %s bead %s failed to revert commit %s: %v", projectName, bead.ID, commitSHA, err),
@@ -2486,7 +2563,12 @@ func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
 						bead.ID,
 					)
 					s.logger.Error("failed to revert merge after check failure", "project", projectName, "bead", bead.ID, "commit", commitSHA, "error", err)
+				} else {
+					s.notifySchedulerEscalation(ctx, fmt.Sprintf("[auto-revert complete] project=%s bead=%s commit=%s", projectName, bead.ID, commitSHA))
 				}
+			} else if project.AutoRevertOnFailure {
+				s.logger.Warn("post-merge check failure without commit SHA for auto-revert", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber)
+				s.notifySchedulerEscalation(ctx, fmt.Sprintf("[auto-revert skipped] project=%s bead=%s missing commit sha", projectName, bead.ID))
 			}
 			s.transitionBeadToCoding(ctx, projectName, project, bead, failureMsg)
 		}
@@ -2501,6 +2583,29 @@ func isPRApproved(status *git.PRStatus) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(status.ReviewDecision), "APPROVED")
+}
+
+func isMergeConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if errMsg == "" {
+		return false
+	}
+	conflictMarkers := []string{
+		"merge conflict",
+		"conflict",
+		"automatic merge failed",
+		"could not apply",
+		"failed to merge",
+	}
+	for _, marker := range conflictMarkers {
+		if strings.Contains(errMsg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Scheduler) finalizeDispatchBranch(d store.Dispatch) (string, error) {
@@ -3065,21 +3170,13 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			s.logger.Debug("failed to heartbeat claim lease for pending retry", "bead", retry.BeadID, "dispatch_id", retry.ID, "error", err)
 		}
 
-		// Check if enough time has passed for retry using backoff logic
-		if !dispatch.ShouldRetry(retry.CompletedAt.Time, retry.Retries,
-			s.cfg.General.RetryBackoffBase.Duration, s.cfg.General.RetryMaxDelay.Duration) {
-			s.logger.Debug("retry backoff not elapsed",
-				"bead", retry.BeadID,
-				"retries", retry.Retries,
-				"next_retry_in", dispatch.BackoffDelay(retry.Retries,
-					s.cfg.General.RetryBackoffBase.Duration, s.cfg.General.RetryMaxDelay.Duration)-time.Since(retry.CompletedAt.Time))
-			continue
-		}
+		policy := resolveRetryPolicy(s.cfg, retry.Project, retry.Tier)
+		_, _, shouldRetry := policy.NextRetry(retry.Retries, retry.Tier)
 
 		// Check if we've exceeded max retries
-		if retry.Retries >= s.cfg.General.MaxRetries {
+		if !shouldRetry {
 			s.logger.Warn("max retries exceeded, marking as failed",
-				"bead", retry.BeadID, "retries", retry.Retries, "max_retries", s.cfg.General.MaxRetries)
+				"bead", retry.BeadID, "retries", retry.Retries, "max_retries", policy.MaxRetries)
 
 			// Update status to failed permanently
 			duration := time.Since(retry.DispatchedAt).Seconds()
@@ -3380,7 +3477,7 @@ func (s *Scheduler) runHealthChecks() {
 		s.store,
 		s.dispatcher,
 		s.cfg.General.StuckTimeout.Duration,
-		s.cfg.General.MaxRetries,
+		s.cfg,
 		s.logger.With("scope", "stuck"),
 	)
 	if len(actions) > 0 {
@@ -3391,6 +3488,21 @@ func (s *Scheduler) runHealthChecks() {
 	killed := health.CleanZombies(s.store, s.dispatcher, s.logger.With("scope", "zombie"))
 	if killed > 0 {
 		s.logger.Info("zombie cleanup complete", "killed", killed)
+	}
+}
+
+func resolveRetryPolicy(cfg *config.Config, project string, tier string) dispatch.RetryPolicy {
+	if cfg == nil {
+		return dispatch.DefaultPolicy()
+	}
+
+	policy := cfg.RetryPolicyFor(project, tier)
+	return dispatch.RetryPolicy{
+		MaxRetries:    policy.MaxRetries,
+		InitialDelay:  policy.InitialDelay.Duration,
+		BackoffFactor: policy.BackoffFactor,
+		MaxDelay:      policy.MaxDelay.Duration,
+		EscalateAfter: policy.EscalateAfter,
 	}
 }
 

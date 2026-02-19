@@ -21,8 +21,18 @@ func BuildCommand(provider, model, prompt string, flags []string) ([]string, err
 	if provider == "" {
 		return nil, fmt.Errorf("command builder: provider command is required")
 	}
+	if strings.ContainsRune(provider, '\x00') {
+		return nil, fmt.Errorf("command builder: provider command contains NUL byte")
+	}
 
 	model = strings.TrimSpace(model)
+	if strings.ContainsRune(model, '\x00') {
+		return nil, fmt.Errorf("command builder: model contains NUL byte")
+	}
+
+	if strings.ContainsRune(prompt, '\x00') {
+		return nil, fmt.Errorf("command builder: prompt contains NUL byte")
+	}
 	if len(flags) == 0 {
 		return []string{provider}, nil
 	}
@@ -35,12 +45,17 @@ func BuildCommand(provider, model, prompt string, flags []string) ([]string, err
 		if strings.TrimSpace(raw) == "" {
 			return nil, fmt.Errorf("command builder: empty flag at index %d", i)
 		}
+		if strings.ContainsRune(raw, '\x00') {
+			return nil, fmt.Errorf("command builder: flag at index %d contains NUL byte", i)
+		}
 
 		if err := validatePlaceholders(raw); err != nil {
 			return nil, fmt.Errorf("command builder: %w", err)
 		}
 
-		arg := strings.ReplaceAll(raw, "{prompt}", prompt)
+		arg := raw
+		arg = strings.ReplaceAll(arg, "{prompt}", prompt)
+		arg = strings.ReplaceAll(arg, "{prompt_file}", prompt)
 		if strings.Contains(raw, "{model}") {
 			if model == "" {
 				return nil, fmt.Errorf("command builder: model is required by flag %q", raw)

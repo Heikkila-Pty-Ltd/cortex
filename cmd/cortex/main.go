@@ -59,10 +59,15 @@ func main() {
 		return
 	}
 
-	// Load config
-	cfg, err := config.Load(*configPath)
+	// Load config via manager for refreshable runtime snapshots.
+	cfgManager, err := config.LoadManager(*configPath)
 	if err != nil {
 		logger.Error("failed to load config", "error", err)
+		os.Exit(1)
+	}
+	cfg := cfgManager.Get()
+	if cfg == nil {
+		logger.Error("failed to load config snapshot", "config", *configPath)
 		os.Exit(1)
 	}
 	if projectName := strings.TrimSpace(*normalizeBeadsProject); projectName != "" {
@@ -160,7 +165,7 @@ func main() {
 
 	logger.Info("dispatcher created", "type", d.GetHandleType())
 
-	sched := scheduler.New(cfg, st, rl, d, logger.With("component", "scheduler"), *dryRun)
+	sched := scheduler.NewWithConfigManager(cfgManager, st, rl, d, logger.With("component", "scheduler"), *dryRun)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

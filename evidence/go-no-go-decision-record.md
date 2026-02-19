@@ -1,6 +1,6 @@
 # Cortex GO/NO-GO Decision Record
 
-Decision timestamp: 2026-02-19T20:04:45+10:00  
+Decision timestamp: 2026-02-19T20:08:43+10:00  
 Decision scope: external launch eligibility  
 Decision: `NO-GO`
 
@@ -20,15 +20,16 @@ Passing gates:
 
 ## Evidence Referenced
 
-- `evidence/launch-evidence-bundle.md`
-- `evidence/launch-readiness-certificate.md`
-- `evidence/risk-assessment-report.md`
-- `evidence/risk-mitigation-plan.md`
-- `evidence/launch-risk-register.json`
-- `evidence/launch-readiness-matrix.md`
-- `evidence/validation-report.md`
-- `artifacts/launch/burnin/burnin-final-2026-02-18.json`
-- `docs/LAUNCH_READINESS_CHECKLIST.md`
+- [`evidence/launch-evidence-bundle.md`](evidence/launch-evidence-bundle.md)
+- [`evidence/launch-readiness-certificate.md`](evidence/launch-readiness-certificate.md)
+- [`evidence/risk-assessment-report.md`](evidence/risk-assessment-report.md)
+- [`evidence/risk-mitigation-plan.md`](evidence/risk-mitigation-plan.md)
+- [`evidence/launch-risk-register.json`](evidence/launch-risk-register.json)
+- [`evidence/launch-readiness-matrix.md`](evidence/launch-readiness-matrix.md)
+- [`evidence/validation-report.md`](evidence/validation-report.md)
+- [`artifacts/launch/burnin/burnin-final-2026-02-18.json`](artifacts/launch/burnin/burnin-final-2026-02-18.json)
+- [`docs/LAUNCH_READINESS_CHECKLIST.md`](docs/LAUNCH_READINESS_CHECKLIST.md)
+- [Evidence bundle archive](artifacts/launch/evidence-bundles/cortex-launch-evidence-20260219T20-qa-final5.tar.gz)
 
 ## Measured Gate Values
 
@@ -55,6 +56,12 @@ Passing gates:
 | Release readiness (`evidence/launch-readiness-matrix.md`) | P1 | PASS | `release/dry-run-results.json` |
 | LLM safety evidence (`evidence/launch-readiness-matrix.md`) | P1 | FAIL | `evidence/risk-assessment-report.md` |
 
+## Open Risks and Mitigations (as of decision time)
+
+- `R-001` Burn-in critical event overload (`113`) — mitigation `M-002` (`R-001` owner: scheduler) — Status: `Ongoing` (target `2026-02-20`), see [`evidence/launch-risk-register.json`](evidence/launch-risk-register.json), [`evidence/risk-mitigation-plan.md`](evidence/risk-mitigation-plan.md)
+- `R-003` Security scan artifact gap — mitigation `M-003`/`R-003` (`security owner`) — Status: `Conditional` (target `2026-02-20`), see [`evidence/risk-assessment-report.md`](evidence/risk-assessment-report.md), [`evidence/launch-readiness-matrix.md`](evidence/launch-readiness-matrix.md)
+- `R-004` Safety evidence gap — mitigation `M-005` (`safety owner`) — Status: `Pending` (target `2026-02-21`), see [`evidence/risk-assessment-report.md`](evidence/risk-assessment-report.md), [`evidence/risk-mitigation-plan.md`](evidence/risk-mitigation-plan.md)
+
 ## Conditions to Move from NO-GO to GO
 
 Required before a new `GO` decision:
@@ -77,12 +84,12 @@ Project Owner Approval:
 Name: Simon Heikkila  
 Role: Project Owner  
 Decision: `NO-GO`  
-Signed at: 2026-02-19T20:04:45+10:00  
+Signed at: 2026-02-19T20:08:43+10:00  
 Signature: `Simon Heikkila`
 
 Ops Owner Approval:  
 Name: Simon Heikkila  
 Role: Ops Owner (acting)  
 Decision: `NO-GO`  
-Signed at: 2026-02-19T20:04:45+10:00  
+Signed at: 2026-02-19T20:08:43+10:00  
 Signature: `Simon Heikkila`

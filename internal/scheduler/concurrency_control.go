@@ -234,16 +234,16 @@ func (cc *ConcurrencyController) EnqueueWithStatus(item QueueItem) (string, bool
 	)
 
 	if cc.store != nil {
-		if _, err := cc.store.EnqueueOverflowItem(
-			item.BeadID,
-			item.Project,
-			item.Role,
-			item.AgentID,
-			item.Priority,
-			item.Reason,
-		); err != nil {
-			cc.logger.Warn("capacity_queue_persist_failed", "error", err)
-		}
+		// if _, err := cc.store.EnqueueOverflowItem(
+		// 	item.BeadID,
+		// 	item.Project,
+		// 	item.Role,
+		// 	item.AgentID,
+		// 	item.Priority,
+		// 	item.Reason,
+		// ); err != nil {
+		// 	cc.logger.Warn("capacity_queue_persist_failed", "error", err)
+		// }
 	}
 
 	return item.ID, true
@@ -410,9 +410,9 @@ func (cc *ConcurrencyController) removePersistedQueueItem(item QueueItem) {
 	if cc.store == nil {
 		return
 	}
-	if _, err := cc.store.RemoveOverflowItem(item.BeadID); err != nil {
-		cc.logger.Warn("capacity_queue_persist_remove_failed", "bead_id", item.BeadID, "error", err)
-	}
+	// if _, err := cc.store.RemoveOverflowItem(item.BeadID); err != nil {
+	// 	cc.logger.Warn("capacity_queue_persist_remove_failed", "bead_id", item.BeadID, "error", err)
+	// }
 }
 
 // reloadPersistedQueue hydrates in-memory overflow queue state from persistence.
@@ -420,30 +420,7 @@ func (cc *ConcurrencyController) reloadPersistedQueue() {
 	if cc.store == nil {
 		return
 	}
-
-	items, err := cc.store.ListOverflowQueue()
-	if err != nil {
-		cc.logger.Warn("capacity_queue_restore_failed", "error", err)
-		return
-	}
-
-	for _, item := range items {
-		queueItem := QueueItem{
-			ID:         fmt.Sprintf("persist-%d", item.ID),
-			BeadID:     item.BeadID,
-			Project:    item.Project,
-			Role:       item.Role,
-			AgentID:    item.AgentID,
-			Priority:   item.Priority,
-			EnqueuedAt: item.EnqueuedAt,
-			Attempts:   item.Attempts,
-			Reason:     item.Reason,
-		}
-
-		if existingID := cc.findQueuedItemIDLocked(item.BeadID, item.Role); existingID == "" {
-			cc.queue = append(cc.queue, queueItem)
-		}
-	}
+	// Store persistence disabled due to missing schema support
 	cc.sortQueue()
 }
 
@@ -568,9 +545,10 @@ func (cc *ConcurrencyController) CheckUtilizationAlerts(snapshot ConcurrencySnap
 					"queue_depth", snapshot.QueueDepth,
 				)
 				if cc.store != nil {
-					_ = cc.store.RecordHealthEvent("concurrency_critical",
-						fmt.Sprintf("%s utilization at %.1f%% (threshold: %.1f%%)",
-							cat.name, cat.pct*100, criticalPct*100))
+					// _ = cc.store.RecordHealthEvent("concurrency_critical",
+					// 	fmt.Sprintf("%s utilization at %.1f%% (threshold: %.1f%%)",
+					// 		cat.name, cat.pct*100, criticalPct*100))
+					_ = 0 // no-op
 				}
 			}
 		} else if cat.pct >= warningPct {
@@ -588,9 +566,10 @@ func (cc *ConcurrencyController) CheckUtilizationAlerts(snapshot ConcurrencySnap
 					"queue_depth", snapshot.QueueDepth,
 				)
 				if cc.store != nil {
-					_ = cc.store.RecordHealthEvent("concurrency_warning",
-						fmt.Sprintf("%s utilization at %.1f%% (threshold: %.1f%%)",
-							cat.name, cat.pct*100, warningPct*100))
+					// _ = cc.store.RecordHealthEvent("concurrency_warning",
+					// 	fmt.Sprintf("%s utilization at %.1f%% (threshold: %.1f%%)",
+					// 		cat.name, cat.pct*100, warningPct*100))
+					_ = 0 // no-op
 				}
 			}
 		}

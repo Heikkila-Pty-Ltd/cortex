@@ -28,6 +28,7 @@ type Dispatch struct {
 	Prompt            string
 	DispatchedAt      time.Time
 	CompletedAt       sql.NullTime
+	NextRetryAt       sql.NullTime
 	Status            string // running, completed, failed
 	Stage             string // dispatched, running, completed, failed, failed_needs_check, cancelled, pending_retry
 	Labels            string
@@ -45,6 +46,19 @@ type Dispatch struct {
 	InputTokens       int
 	OutputTokens      int
 	CostUSD           float64
+}
+
+// OverflowQueueItem represents a persisted concurrency overflow queue item.
+type OverflowQueueItem struct {
+	ID         int64
+	BeadID     string
+	Project    string
+	Role       string
+	AgentID    string
+	Priority   int
+	EnqueuedAt time.Time
+	Attempts   int
+	Reason     string
 }
 
 // HealthEvent represents a recorded health event.
@@ -138,6 +152,7 @@ CREATE TABLE IF NOT EXISTS dispatches (
 	prompt TEXT NOT NULL,
 	dispatched_at DATETIME NOT NULL DEFAULT (datetime('now')),
 	completed_at DATETIME,
+	next_retry_at DATETIME,
 	status TEXT NOT NULL DEFAULT 'running',
 	exit_code INTEGER NOT NULL DEFAULT 0,
 	duration_s REAL NOT NULL DEFAULT 0,
@@ -158,6 +173,18 @@ CREATE TABLE IF NOT EXISTS provider_usage (
 	input_tokens INTEGER NOT NULL DEFAULT 0,
 	output_tokens INTEGER NOT NULL DEFAULT 0,
 	dispatched_at DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS overflow_queue (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	bead_id TEXT NOT NULL,
+	project TEXT NOT NULL,
+	role TEXT NOT NULL,
+	agent_id TEXT NOT NULL,
+	priority INTEGER NOT NULL,
+	reason TEXT NOT NULL DEFAULT '',
+	enqueued_at DATETIME NOT NULL DEFAULT (datetime('now')),
+	attempts INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS health_events (
@@ -245,6 +272,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_bead_stages_project_bead ON bead_stages(pr
 CREATE INDEX IF NOT EXISTS idx_bead_stages_project_stage ON bead_stages(project, current_stage);
 CREATE INDEX IF NOT EXISTS idx_dispatches_status ON dispatches(status);
 CREATE INDEX IF NOT EXISTS idx_dispatches_bead ON dispatches(bead_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_overflow_queue_bead_role ON overflow_queue(bead_id, role);
+CREATE INDEX IF NOT EXISTS idx_overflow_queue_priority_enqueued_at ON overflow_queue(priority, enqueued_at);
 CREATE INDEX IF NOT EXISTS idx_claim_leases_project ON claim_leases(project);
 CREATE INDEX IF NOT EXISTS idx_claim_leases_heartbeat ON claim_leases(heartbeat_at);
 CREATE INDEX IF NOT EXISTS idx_sprint_boundaries_start ON sprint_boundaries(sprint_start);
@@ -438,6 +467,17 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// Add pending retry scheduling timestamp if it doesn't exist.
+	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('dispatches') WHERE name = 'next_retry_at'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check next_retry_at column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE dispatches ADD COLUMN next_retry_at DATETIME`); err != nil {
+			return fmt.Errorf("add next_retry_at column: %w", err)
+		}
+	}
+
 	// Add health event correlation columns if they don't exist
 	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('health_events') WHERE name = 'dispatch_id'`).Scan(&count)
 	if err != nil {
@@ -517,6 +557,26 @@ func migrate(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_execution_plan_gate_active ON execution_plan_gate(active_plan_id)`); err != nil {
 		return fmt.Errorf("create execution_plan_gate active index: %w", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS overflow_queue (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			bead_id TEXT NOT NULL,
+			project TEXT NOT NULL,
+			role TEXT NOT NULL,
+			agent_id TEXT NOT NULL,
+			priority INTEGER NOT NULL,
+			reason TEXT NOT NULL DEFAULT '',
+			enqueued_at DATETIME NOT NULL DEFAULT (datetime('now')),
+			attempts INTEGER NOT NULL DEFAULT 0
+		)`); err != nil {
+		return fmt.Errorf("create overflow_queue table: %w", err)
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_overflow_queue_bead_role ON overflow_queue(bead_id, role)`); err != nil {
+		return fmt.Errorf("create overflow_queue bead+role index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_overflow_queue_priority_enqueued_at ON overflow_queue(priority, enqueued_at)`); err != nil {
+		return fmt.Errorf("create overflow_queue priority index: %w", err)
 	}
 
 	if err := migrateBeadStagesTable(db); err != nil {
@@ -677,9 +737,8 @@ func (s *Store) UpdateDispatchStage(id int64, stage string) error {
 
 // MarkDispatchPendingRetry marks a failed dispatch for retry, increments retries,
 // and updates the tier for the next retry attempt.
-func (s *Store) MarkDispatchPendingRetry(id int64, nextTier string) error {
-	_, err := s.db.Exec(
-		`UPDATE dispatches
+func (s *Store) MarkDispatchPendingRetry(id int64, nextTier string, nextRetryAt time.Time) error {
+	query := `UPDATE dispatches
 		 SET status = 'pending_retry',
 		     stage = 'pending_retry',
 		     completed_at = COALESCE(completed_at, datetime('now')),
@@ -688,9 +747,20 @@ func (s *Store) MarkDispatchPendingRetry(id int64, nextTier string) error {
 		     escalated_from_tier = CASE
 		       WHEN escalated_from_tier = '' THEN tier
 		       ELSE escalated_from_tier
-		     END
-		 WHERE id = ?`,
-		nextTier, id,
+		     END,
+		     next_retry_at = ?
+		 WHERE id = ?`
+
+	var nextRetry interface{}
+	if nextRetryAt.IsZero() {
+		nextRetry = nil
+	} else {
+		nextRetry = nextRetryAt.UTC().Format(time.DateTime)
+	}
+
+	_, err := s.db.Exec(
+		query,
+		nextTier, nextRetry, id,
 	)
 	if err != nil {
 		return fmt.Errorf("store: mark dispatch pending retry: %w", err)
@@ -758,11 +828,62 @@ func (s *Store) CountRecentDispatchesByFailureCategory(category string, window t
 	return count, nil
 }
 
-const dispatchCols = `id, bead_id, project, agent_id, provider, tier, pid, session_name, prompt, dispatched_at, completed_at, status, stage, labels, pr_url, pr_number, exit_code, duration_s, retries, escalated_from_tier, failure_category, failure_summary, log_path, branch, backend, input_tokens, output_tokens, cost_usd`
+const dispatchCols = `id, bead_id, project, agent_id, provider, tier, pid, session_name, prompt, dispatched_at, completed_at, next_retry_at, status, stage, labels, pr_url, pr_number, exit_code, duration_s, retries, escalated_from_tier, failure_category, failure_summary, log_path, branch, backend, input_tokens, output_tokens, cost_usd`
 
 // GetRunningDispatches returns all dispatches with status 'running'.
 func (s *Store) GetRunningDispatches() ([]Dispatch, error) {
 	return s.queryDispatches(`SELECT ` + dispatchCols + ` FROM dispatches WHERE status = 'running'`)
+}
+
+// ProjectDispatchStatusCounts summarizes dispatch counts per project within a time window.
+type ProjectDispatchStatusCounts struct {
+	Project   string
+	Running   int
+	Completed int
+	Failed    int
+}
+
+// GetProjectDispatchStatusCounts returns counts grouped by project for running/completed/failed dispatches.
+func (s *Store) GetProjectDispatchStatusCounts(since time.Time) (map[string]ProjectDispatchStatusCounts, error) {
+	query := `
+		SELECT
+			project,
+			SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_count,
+			SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+			SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count
+		FROM dispatches`
+
+	args := make([]any, 0, 1)
+	if !since.IsZero() {
+		query += ` WHERE dispatched_at >= ?`
+		args = append(args, since.UTC().Format(time.DateTime))
+	}
+	query += ` GROUP BY project`
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: query project dispatch status counts: %w", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[string]ProjectDispatchStatusCounts)
+	for rows.Next() {
+		var project string
+		var running, completed, failed int
+		if err := rows.Scan(&project, &running, &completed, &failed); err != nil {
+			return nil, fmt.Errorf("store: scan project dispatch status counts: %w", err)
+		}
+		counts[project] = ProjectDispatchStatusCounts{
+			Project:   project,
+			Running:   running,
+			Completed: completed,
+			Failed:    failed,
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate project dispatch status counts: %w", err)
+	}
+	return counts, nil
 }
 
 // GetStuckDispatches returns running dispatches older than the given timeout.
@@ -922,7 +1043,83 @@ func (s *Store) GetLatestDispatchByPID(pid int) (*Dispatch, error) {
 
 // GetPendingRetryDispatches returns all dispatches with status "pending_retry", ordered by dispatched_at ASC.
 func (s *Store) GetPendingRetryDispatches() ([]Dispatch, error) {
-	return s.queryDispatches(`SELECT ` + dispatchCols + ` FROM dispatches WHERE status = 'pending_retry' ORDER BY dispatched_at ASC`)
+	return s.queryDispatches(`SELECT ` + dispatchCols + ` FROM dispatches WHERE status = 'pending_retry' AND (next_retry_at IS NULL OR next_retry_at <= datetime('now')) ORDER BY dispatched_at ASC`)
+}
+
+// EnqueueOverflowItem stores a workload in the overflow queue for concurrency throttling.
+// Returns the row id, deduplicating bead/role combinations so each pair is tracked once.
+func (s *Store) EnqueueOverflowItem(beadID, project, role, agentID string, priority int, reason string) (int64, error) {
+	beadID = strings.TrimSpace(beadID)
+	project = strings.TrimSpace(project)
+	role = strings.TrimSpace(role)
+	agentID = strings.TrimSpace(agentID)
+	reason = strings.TrimSpace(reason)
+
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO overflow_queue (bead_id, project, role, agent_id, priority, reason, enqueued_at, attempts)
+		 VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 0)`,
+		beadID, project, role, agentID, priority, reason,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("store: enqueue overflow item: %w", err)
+	}
+
+	var id int64
+	err = s.db.QueryRow(
+		`SELECT id FROM overflow_queue WHERE bead_id = ? AND role = ?`,
+		beadID, role,
+	).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("store: get overflow queue id: %w", err)
+	}
+	return id, nil
+}
+
+// RemoveOverflowItem deletes all persisted queue items for a bead.
+func (s *Store) RemoveOverflowItem(beadID string) (int64, error) {
+	beadID = strings.TrimSpace(beadID)
+	result, err := s.db.Exec(`DELETE FROM overflow_queue WHERE bead_id = ?`, beadID)
+	if err != nil {
+		return 0, fmt.Errorf("store: remove overflow item: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("store: overflow rows affected: %w", err)
+	}
+	return affected, nil
+}
+
+// ListOverflowQueue returns all persisted overflow queue entries.
+func (s *Store) ListOverflowQueue() ([]OverflowQueueItem, error) {
+	rows, err := s.db.Query(
+		`SELECT id, bead_id, project, role, agent_id, priority, enqueued_at, attempts, reason FROM overflow_queue ORDER BY priority ASC, enqueued_at ASC, bead_id ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list overflow queue: %w", err)
+	}
+	defer rows.Close()
+
+	var items []OverflowQueueItem
+	for rows.Next() {
+		var item OverflowQueueItem
+		if err := rows.Scan(&item.ID, &item.BeadID, &item.Project, &item.Role, &item.AgentID, &item.Priority, &item.EnqueuedAt, &item.Attempts, &item.Reason); err != nil {
+			return nil, fmt.Errorf("store: scan overflow queue row: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate overflow queue rows: %w", err)
+	}
+	return items, nil
+}
+
+// CountOverflowQueue returns the number of persisted overflow queue items.
+func (s *Store) CountOverflowQueue() (int, error) {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM overflow_queue`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("store: count overflow queue: %w", err)
+	}
+	return count, nil
 }
 
 // GetRunningDispatchStageCounts returns counts of running dispatches grouped by stage.
@@ -1080,7 +1277,7 @@ func (s *Store) queryDispatches(query string, args ...any) ([]Dispatch, error) {
 		var d Dispatch
 		if err := rows.Scan(
 			&d.ID, &d.BeadID, &d.Project, &d.AgentID, &d.Provider, &d.Tier, &d.PID, &d.SessionName,
-			&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.Status, &d.Stage, &d.Labels, &d.PRURL, &d.PRNumber, &d.ExitCode, &d.DurationS,
+			&d.Prompt, &d.DispatchedAt, &d.CompletedAt, &d.NextRetryAt, &d.Status, &d.Stage, &d.Labels, &d.PRURL, &d.PRNumber, &d.ExitCode, &d.DurationS,
 			&d.Retries, &d.EscalatedFromTier, &d.FailureCategory, &d.FailureSummary, &d.LogPath, &d.Branch, &d.Backend,
 			&d.InputTokens, &d.OutputTokens, &d.CostUSD,
 		); err != nil {
@@ -1139,13 +1336,38 @@ func (s *Store) UpdateFailureDiagnosis(id int64, category, summary string) error
 }
 
 // RecordProviderUsage records an authed provider dispatch for rate limiting.
-func (s *Store) RecordProviderUsage(provider, agentID, beadID string) error {
-	_, err := s.db.Exec(
+func (s *Store) RecordProviderUsage(provider, agentID, beadID string) (int64, error) {
+	res, err := s.db.Exec(
 		`INSERT INTO provider_usage (provider, agent_id, bead_id) VALUES (?, ?, ?)`,
 		provider, agentID, beadID,
 	)
 	if err != nil {
-		return fmt.Errorf("store: record provider usage: %w", err)
+		return 0, fmt.Errorf("store: record provider usage: %w", err)
+	}
+<<<<<<< HEAD
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("store: record provider usage id: %w", err)
+	}
+	return id, nil
+}
+
+// DeleteProviderUsage removes a previously recorded usage row by provider_usage row id.
+func (s *Store) DeleteProviderUsage(id int64) error {
+	if id == 0 {
+		return nil
+	}
+	_, err := s.db.Exec(`DELETE FROM provider_usage WHERE rowid = ?`, id)
+=======
+	return res.LastInsertId()
+}
+
+// DeleteProviderUsage removes a provider usage record (used for rolling back reservations).
+func (s *Store) DeleteProviderUsage(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM provider_usage WHERE id = ?`, id)
+>>>>>>> 5b96a0d4 (feat(cortex): Store enhancements and additional functionality)
+	if err != nil {
+		return fmt.Errorf("store: delete provider usage: %w", err)
 	}
 	return nil
 }
@@ -1424,6 +1646,53 @@ func (s *Store) GetTotalCost(project string) (float64, error) {
 		return 0, fmt.Errorf("store: get total cost: %w", err)
 	}
 	return totalCost, nil
+}
+
+// GetTotalCostSince returns total completed dispatch cost since the provided timestamp.
+// When project is non-empty, totals are scoped to that project.
+func (s *Store) GetTotalCostSince(project string, since time.Time) (float64, error) {
+	query := `SELECT COALESCE(SUM(cost_usd), 0) FROM dispatches WHERE status = 'completed' AND completed_at >= ?`
+	args := []any{since.UTC().Format(time.DateTime)}
+
+	if strings.TrimSpace(project) != "" {
+		query += ` AND project = ?`
+		args = append(args, project)
+	}
+
+	var totalCost float64
+	err := s.db.QueryRow(query, args...).Scan(&totalCost)
+	if err != nil {
+		return 0, fmt.Errorf("store: get total cost since: %w", err)
+	}
+	return totalCost, nil
+}
+
+// CountDispatchesSince counts dispatches since the provided timestamp.
+// If statuses is non-empty, counts only rows whose status matches one of the provided values.
+func (s *Store) CountDispatchesSince(since time.Time, statuses []string) (int, error) {
+	query := `SELECT COUNT(*) FROM dispatches WHERE dispatched_at >= ?`
+	args := []any{since.UTC().Format(time.DateTime)}
+
+	var cleaned []string
+	for _, status := range statuses {
+		if trimmed := strings.TrimSpace(status); trimmed != "" {
+			cleaned = append(cleaned, trimmed)
+		}
+	}
+	if len(cleaned) > 0 {
+		placeholders := strings.Repeat("?,", len(cleaned))
+		query += ` AND status IN (` + strings.TrimSuffix(placeholders, ",") + `)`
+		for _, status := range cleaned {
+			args = append(args, status)
+		}
+	}
+
+	var count int
+	err := s.db.QueryRow(query, args...).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("store: count dispatches since: %w", err)
+	}
+	return count, nil
 }
 
 // InterruptRunningDispatches marks all running dispatches as interrupted.

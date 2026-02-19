@@ -71,6 +71,9 @@ func (r *RateLimiter) ReleaseAuthedDispatch(id int64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if id == 0 {
+		return nil
+	}
 	return r.store.DeleteProviderUsage(id)
 }
 

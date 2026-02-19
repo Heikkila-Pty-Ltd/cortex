@@ -29,6 +29,7 @@ type HealthStatus struct {
 
 // Monitor runs periodic health checks.
 type Monitor struct {
+	cfg                     *config.Config
 	healthCfg                config.Health
 	general                  config.General
 	dispatchCfg              config.Dispatch
@@ -47,6 +48,7 @@ const gatewayCriticalLogInterval = 15 * time.Minute
 // NewMonitor creates a new health monitor.
 func NewMonitor(cfg *config.Config, s *store.Store, dispatcher dispatch.DispatcherInterface, logger *slog.Logger) *Monitor {
 	return &Monitor{
+		cfg:         cfg,
 		healthCfg:   cfg.Health,
 		general:     cfg.General,
 		dispatchCfg: cfg.Dispatch,
@@ -85,7 +87,7 @@ func (m *Monitor) checkDispatchHealth() {
 			m.store,
 			m.dispatcher,
 			m.general.StuckTimeout.Duration,
-			m.general.MaxRetries,
+			m.cfg,
 			m.logger.With("scope", "stuck"),
 		)
 		if len(actions) > 0 {
@@ -491,7 +493,7 @@ func clearStaleLocks() {
 
 func runSystemctl(ctx context.Context, userService bool, args ...string) (string, error) {
 	output, err := runSystemctlOnce(ctx, userService, "", args...)
-	if err == nil || !userService || !isUserBusUnavailableError(output) {
+	if err == nil {
 		return output, err
 	}
 
@@ -499,7 +501,22 @@ func runSystemctl(ctx context.Context, userService bool, args ...string) (string
 	if machineUser == "" {
 		return output, err
 	}
-	return runSystemctlOnce(ctx, userService, machineUser, args...)
+
+	if isUserBusUnavailableError(output) && userService {
+		return runSystemctlOnce(ctx, true, machineUser, args...)
+	}
+	if isUnitNotFoundError(output) && !userService {
+		return runSystemctlOnce(ctx, true, machineUser, args...)
+	}
+	return output, err
+}
+
+func isUnitNotFoundError(output string) bool {
+	text := strings.ToLower(strings.TrimSpace(output))
+	if text == "" {
+		return false
+	}
+	return strings.Contains(text, "could not be found")
 }
 
 func runSystemctlOnce(ctx context.Context, userService bool, machineUser string, args ...string) (string, error) {

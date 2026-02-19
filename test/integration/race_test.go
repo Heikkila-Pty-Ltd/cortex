@@ -209,7 +209,7 @@ func TestRateLimiterConcurrentAccess(t *testing.T) {
 					atomic.AddInt64(&allowedCount, 1)
 					// Record the dispatch
 					beadID := fmt.Sprintf("bead-%d-%d", routineID, j)
-					err := rl.RecordAuthedDispatch("cerebras", "agent-1", beadID)
+					_, err := rl.RecordAuthedDispatch("cerebras", "agent-1", beadID)
 					if err != nil {
 						t.Errorf("RecordAuthedDispatch failed: %v", err)
 						return
