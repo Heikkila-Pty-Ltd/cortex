@@ -1,0 +1,170 @@
+{
+  "collection_timestamp": "2026-02-17T18:43:28Z",
+  "workspace_root": "/home/ubuntu/projects/cortex",
+  "gates": {
+    "security": {
+      "status": "collected",
+      "evidence_count": 11,
+      "evidence_files": [
+        "docs/api-security.md",
+        "internal/dispatch/ratelimit_test.go",
+        "internal/dispatch/ratelimit.go",
+        "internal/scheduler/scheduler.go",
+        "internal/race_test.go",
+        "internal/config/config_test.go",
+        "cmd/cortex/main.go",
+        "tools/rollout-completion.go",
+        "tools/rollout-monitor.go",
+        "tools/monitor-analysis.go",
+        "internal/dispatch/tmux.go"
+      ],
+      "collection_timestamp": "2026-02-17T18:43:28Z"
+    },
+    "reliability": {
+      "status": "collected",
+      "evidence_count": 4,
+      "evidence_files": [
+        "artifacts/launch/burnin/burnin-daily-2026-02-18.md",
+        "artifacts/launch/burnin/burnin-final-2026-02-18.json",
+        "artifacts/launch/burnin/burnin-daily-2026-02-18.json",
+        "artifacts/launch/burnin/burnin-final-2026-02-18.md"
+      ],
+      "collection_timestamp": "2026-02-17T18:43:28Z"
+    },
+    "operations": {
+      "status": "collected",
+      "evidence_count": 1,
+      "evidence_files": [
+        ""
+      ],
+      "collection_timestamp": "2026-02-17T18:43:28Z"
+    },
+    "data": {
+      "status": "collected",
+      "evidence_count": 1,
+      "evidence_files": [
+        ""
+      ],
+      "collection_timestamp": "2026-02-17T18:43:28Z"
+    },
+    "release": {
+      "status": "collected",
+      "evidence_count": 1,
+      "evidence_files": [
+        ""
+      ],
+      "collection_timestamp": "2026-02-17T18:43:28Z"
+    },
+    "safety": {
+      "status": "collected",
+      "evidence_count": 1,
+      "evidence_files": [
+        ""
+      ],
+      "collection_timestamp": "2026-02-17T18:43:28Z"
+    }
+  },
+  "validation_errors": [
+    "Missing security/scan-results.json",
+    "Missing slo/scoring-results.json",
+    "Missing runbooks in artifacts/launch/runbooks",
+    "Missing ops/readiness-checklist.md",
+    "Missing monitoring/setup.md",
+    "Missing data/backup-restore-validation.md",
+    "Missing data/protection-measures.md",
+    "Missing release/process-definition.md",
+    "Missing release/dry-run-results.json",
+    "Missing release/rollback-procedures.md",
+    "Missing safety/llm-operator-trial-results.json",
+    "Missing safety/compliance-documentation.md",
+    "Missing safety/safety-review-results.json"
+  ],
+  "collection_summary": {
+    "total_gates": 6,
+    "total_evidence_files": 19,
+    "total_validation_errors": 13,
+    "collection_complete": true
+  },
+  "evidence_validation": {
+    "": {
+      "accessible": false,
+      "size": 0,
+      "mtime": 0
+    },
+    "artifacts/launch/burnin/burnin-daily-2026-02-18.md": {
+      "accessible": true,
+      "size": 493,
+      "mtime": 1771344211
+    },
+    "artifacts/launch/burnin/burnin-final-2026-02-18.json": {
+      "accessible": true,
+      "size": 973,
+      "mtime": 1771344219
+    },
+    "artifacts/launch/burnin/burnin-daily-2026-02-18.json": {
+      "accessible": true,
+      "size": 695,
+      "mtime": 1771344211
+    },
+    "artifacts/launch/burnin/burnin-final-2026-02-18.md": {
+      "accessible": true,
+      "size": 739,
+      "mtime": 1771344219
+    },
+    "docs/api-security.md": {
+      "accessible": true,
+      "size": 7317,
+      "mtime": 1771345575
+    },
+    "internal/dispatch/ratelimit_test.go": {
+      "accessible": true,
+      "size": 3856,
+      "mtime": 1771303962
+    },
+    "internal/dispatch/ratelimit.go": {
+      "accessible": true,
+      "size": 3201,
+      "mtime": 1771311430
+    },
+    "internal/scheduler/scheduler.go": {
+      "accessible": true,
+      "size": 41400,
+      "mtime": 1771353114
+    },
+    "internal/race_test.go": {
+      "accessible": true,
+      "size": 13216,
+      "mtime": 1771341235
+    },
+    "internal/config/config_test.go": {
+      "accessible": true,
+      "size": 11386,
+      "mtime": 1771347225
+    },
+    "cmd/cortex/main.go": {
+      "accessible": true,
+      "size": 4423,
+      "mtime": 1771351776
+    },
+    "tools/rollout-completion.go": {
+      "accessible": true,
+      "size": 8340,
+      "mtime": 1771335049
+    },
+    "tools/rollout-monitor.go": {
+      "accessible": true,
+      "size": 13356,
+      "mtime": 1771334970
+    },
+    "tools/monitor-analysis.go": {
+      "accessible": true,
+      "size": 9741,
+      "mtime": 1771335098
+    },
+    "internal/dispatch/tmux.go": {
+      "accessible": true,
+      "size": 21742,
+      "mtime": 1771351776
+    }
+  }
+}

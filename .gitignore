@@ -1,15 +1,31 @@
 # bv (beads viewer) local config and caches
 .bv/
 
-# Built binary
+# Built binaries
 /cortex
+*.test
 
 # Lock files
 .beads/.bv.lock
 
 # Local config (do not commit)
 cortex.toml
+cortex-interactive.toml
+cortex.runner.toml
 
 # Local state
 *.db
 .local/
+
+# Runtime data
+.cortex/*.log
+.cortex/*.tsv
+.cortex/*.jsonl
+.evidence/.raw/
+
+# Temporary files
+.tmp/
+
+# OS files
+.DS_Store
+Thumbs.db

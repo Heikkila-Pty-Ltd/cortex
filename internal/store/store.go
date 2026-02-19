@@ -1344,7 +1344,6 @@ func (s *Store) RecordProviderUsage(provider, agentID, beadID string) (int64, er
 	if err != nil {
 		return 0, fmt.Errorf("store: record provider usage: %w", err)
 	}
-<<<<<<< HEAD
 	id, err := res.LastInsertId()
 	if err != nil {
 		return 0, fmt.Errorf("store: record provider usage id: %w", err)
@@ -1358,14 +1357,6 @@ func (s *Store) DeleteProviderUsage(id int64) error {
 		return nil
 	}
 	_, err := s.db.Exec(`DELETE FROM provider_usage WHERE rowid = ?`, id)
-=======
-	return res.LastInsertId()
-}
-
-// DeleteProviderUsage removes a provider usage record (used for rolling back reservations).
-func (s *Store) DeleteProviderUsage(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM provider_usage WHERE id = ?`, id)
->>>>>>> 5b96a0d4 (feat(cortex): Store enhancements and additional functionality)
 	if err != nil {
 		return fmt.Errorf("store: delete provider usage: %w", err)
 	}
