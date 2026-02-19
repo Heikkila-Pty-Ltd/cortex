@@ -1066,7 +1066,6 @@ func TestRunTick_EndToEndScenarios(t *testing.T) {
 		}
 	})
 
-
 	t.Run("agent busy skips dispatch", func(t *testing.T) {
 		lister := NewMockBeadsLister()
 		project := config.Project{Enabled: true, Priority: 1, Workspace: "/tmp/ws7", BeadsDir: "/tmp/p7"}
@@ -1449,6 +1448,38 @@ func TestRunTick_MergeWorkflow(t *testing.T) {
 			t.Fatalf("expected no bd commands for unapproved PR, got %v", got)
 		}
 	})
+
+	t.Run("does not auto-revert on merge conflict", func(t *testing.T) {
+		sched, _, state, bdLogPath, _ := setupRunTickMergeWorkflowScenario(t, []string{"merge-conflict-1"}, false, true, true)
+		sender := &recordingLifecycleMatrixSender{}
+		sched.lifecycleMatrixSender = sender
+		sched.mergePR = func(string, int, string) error {
+			state.mergeCalls++
+			return fmt.Errorf("could not apply 123...: merge conflict")
+		}
+
+		sched.RunTick(context.Background())
+
+		if state.mergeCalls != 1 {
+			t.Fatalf("merge calls = %d, want 1", state.mergeCalls)
+		}
+		if state.revertCalls != 0 {
+			t.Fatalf("revert calls = %d, want 0", state.revertCalls)
+		}
+		if got := readLogLines(t, bdLogPath); len(got) != 0 {
+			t.Fatalf("expected no bd commands on merge conflict, got %v", got)
+		}
+		events, err := sched.store.GetRecentHealthEvents(1)
+		if err != nil {
+			t.Fatalf("GetRecentHealthEvents failed: %v", err)
+		}
+		if !hasMergeHealthEventType(events, "pr_merge_conflict") {
+			t.Fatalf("expected pr_merge_conflict health event, got %+v", events)
+		}
+		if containsAutoRevertNotification(sender.messages) {
+			t.Fatalf("expected no auto-revert notification on merge conflict, got %v", sender.messages)
+		}
+	})
 }
 
 func stringContainsLinePrefix(lines []string, prefix string) bool {
@@ -1472,6 +1503,15 @@ func stringContainsLineContains(lines []string, substr1, substr2 string) bool {
 func containsAutoRevertNotification(messages []string) bool {
 	for _, msg := range messages {
 		if strings.Contains(msg, "[auto-revert") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMergeHealthEventType(events []store.HealthEvent, eventType string) bool {
+	for _, event := range events {
+		if event.EventType == eventType {
 			return true
 		}
 	}

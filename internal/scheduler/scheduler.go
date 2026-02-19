@@ -212,7 +212,7 @@ func NewWithConfigManager(cfgManager config.ConfigManager, s *store.Store, rl *d
 		epicBreakup:               make(map[string]time.Time),
 		claimAnomaly:              make(map[string]time.Time),
 		dispatchBlockAnomaly:      make(map[string]time.Time),
-		mergeGateRateLimitUntil:  make(map[string]time.Time),
+		mergeGateRateLimitUntil:   make(map[string]time.Time),
 		lifecycleRateLimitUntil:   make(map[string]time.Time),
 		lifecycleRateLimitLog:     make(map[string]time.Time),
 		utilizationSampleInterval: 1 * time.Minute,
@@ -2508,6 +2508,9 @@ func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
 					)
 				}
 				notify := fmt.Sprintf("[merge failed] project=%s bead=%s pr=%d error=%v", projectName, bead.ID, dispatch.PRNumber, err)
+				if isMergeConflictError(err) {
+					notify = fmt.Sprintf("[merge conflict] project=%s bead=%s pr=%d error=%v", projectName, bead.ID, dispatch.PRNumber, err)
+				}
 				s.notifySchedulerEscalation(ctx, notify)
 				continue
 			}
