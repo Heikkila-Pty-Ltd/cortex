@@ -540,7 +540,6 @@ func TestGetPendingRetryDispatches(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
 func TestGetPendingRetryDispatchesRespectsNextRetryAt(t *testing.T) {
 	s := tempStore(t)
 
@@ -713,49 +712,6 @@ func TestCountDispatchesSinceAndCostWindow(t *testing.T) {
 	}
 	if costProjA != 0.2 {
 		t.Fatalf("expected proj-a windowed cost 0.2, got %.3f", costProjA)
-=======
-func seedDispatchAtTime(t *testing.T, s *Store, beadID, projectName, status string, dispatchedAt time.Time, durationS float64) {
-	t.Helper()
-
-	id, err := s.RecordDispatch(beadID, projectName, "agent-1", "cerebras", "fast", 123, "", "prompt", "", "", "")
-	if err != nil {
-		t.Fatalf("RecordDispatch failed: %v", err)
-	}
-
-	completedAt := dispatchedAt
-	if status != "running" {
-		completedAt = dispatchedAt.Add(time.Minute)
-	}
-
-	if _, err := s.DB().Exec(`
-		UPDATE dispatches
-		SET status = ?, duration_s = ?, dispatched_at = ?, completed_at = ?
-		WHERE id = ?
-	`, status, durationS, dispatchedAt.UTC().Format(time.DateTime), completedAt.UTC().Format(time.DateTime), id); err != nil {
-		t.Fatalf("seed dispatch: %v", err)
->>>>>>> 5b96a0d4 (feat(cortex): Store enhancements and additional functionality)
-	}
-}
-
-func seedDispatchAtTime(t *testing.T, s *Store, beadID, projectName, status string, dispatchedAt time.Time, durationS float64) {
-	t.Helper()
-
-	id, err := s.RecordDispatch(beadID, projectName, "agent-1", "cerebras", "fast", 123, "", "prompt", "", "", "")
-	if err != nil {
-		t.Fatalf("RecordDispatch failed: %v", err)
-	}
-
-	completedAt := dispatchedAt
-	if status != "running" {
-		completedAt = dispatchedAt.Add(time.Minute)
-	}
-
-	if _, err := s.DB().Exec(`
-		UPDATE dispatches
-		SET status = ?, duration_s = ?, dispatched_at = ?, completed_at = ?
-		WHERE id = ?
-	`, status, durationS, dispatchedAt.UTC().Format(time.DateTime), completedAt.UTC().Format(time.DateTime), id); err != nil {
-		t.Fatalf("seed dispatch: %v", err)
 	}
 }
 
@@ -1813,5 +1769,27 @@ func TestSprintBoundariesRejectInvalidInput(t *testing.T) {
 	}
 	if err := s.RecordSprintBoundary(1, now, now); err == nil {
 		t.Fatal("expected error for sprint end <= sprint start")
+	}
+}
+
+func seedDispatchAtTime(t *testing.T, s *Store, beadID, projectName, status string, dispatchedAt time.Time, durationS float64) {
+	t.Helper()
+
+	id, err := s.RecordDispatch(beadID, projectName, "agent-1", "cerebras", "fast", 123, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatalf("RecordDispatch failed: %v", err)
+	}
+
+	completedAt := dispatchedAt
+	if status != "running" {
+		completedAt = dispatchedAt.Add(time.Minute)
+	}
+
+	if _, err := s.DB().Exec(`
+UPDATE dispatches
+SET status = ?, duration_s = ?, dispatched_at = ?, completed_at = ?
+WHERE id = ?
+`, status, durationS, dispatchedAt.UTC().Format(time.DateTime), completedAt.UTC().Format(time.DateTime), id); err != nil {
+		t.Fatalf("seed dispatch: %v", err)
 	}
 }

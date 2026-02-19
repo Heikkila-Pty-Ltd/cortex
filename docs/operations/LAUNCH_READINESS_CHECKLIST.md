@@ -25,7 +25,7 @@ If any `P0` gate fails, decision is automatically `NO-GO`.
 | Release packaging | P1 | Install/update/versioning/changelog flow works | Tagged release dry run | `FAIL` |
 | LLM operator safety | P1 | LLM guide followed in trial operations with no unsafe actions | Trial logs + bead notes | `PARTIAL` |
 
-## Current Prefill (2026-02-18, AEST)
+## Current Status Snapshot
 
 Snapshot basis:
 
@@ -159,11 +159,11 @@ Automated evidence capture commands:
 
 ```bash
 # Daily burn-in evidence
-cd /home/ubuntu/projects/cortex
+cd /path/to/cortex
 go run tools/burnin-evidence.go --db state/cortex.db --out artifacts/launch/burnin --mode daily --days 1 --date $(date +%F)
 
 # Final 7-day SLO gate report
-cd /home/ubuntu/projects/cortex
+cd /path/to/cortex
 go run tools/burnin-evidence.go --db state/cortex.db --out artifacts/launch/burnin --mode final --days 7 --date $(date +%F)
 ```
 
@@ -177,12 +177,12 @@ Must exist:
 
 - scheduler pause/resume and safe maintenance → [SCHEDULER_PAUSE_RESUME_RUNBOOK.md](SCHEDULER_PAUSE_RESUME_RUNBOOK.md)
 - stuck dispatch triage → [STUCK_DISPATCH_RUNBOOK.md](STUCK_DISPATCH_RUNBOOK.md)  
-- gateway outage/restart response → [artifacts/launch/runbooks/gateway-incident-tabletop-drill-20260218.md](../artifacts/launch/runbooks/gateway-incident-tabletop-drill-20260218.md)
-- rollback to prior known-good config → [artifacts/launch/runbooks/rollback-tabletop-drill-20260218.md](../artifacts/launch/runbooks/rollback-tabletop-drill-20260218.md)
-- backup/restore of SQLite state DB → [artifacts/launch/runbooks/backup-restore-drill-20260218.md](../artifacts/launch/runbooks/backup-restore-drill-20260218.md)
+- gateway outage/restart response → [gateway-incident-triage.md](gateway-incident-triage.md)
+- rollback to prior known-good config → [ROLLBACK_RUNBOOK.md](ROLLBACK_RUNBOOK.md)
+- backup/restore of SQLite state DB → [BACKUP_RESTORE_RUNBOOK.md](BACKUP_RESTORE_RUNBOOK.md)
 
 **Tabletop Drill Evidence:**
-- Scheduler maintenance procedures validated: [scheduler-maintenance-tabletop-drill-20260218.md](../artifacts/launch/runbooks/scheduler-maintenance-tabletop-drill-20260218.md)
+- Scheduler maintenance procedures validated: [maintenance-procedures.md](maintenance-procedures.md)
 
 ### 7) Release Packaging
 

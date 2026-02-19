@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${ROOT:-/home/ubuntu/projects/cortex}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 DB="${DB:-$HOME/.local/share/cortex/cortex.db}"
 API="${API:-http://127.0.0.1:8900}"
 POLL_SEC="${POLL_SEC:-300}"

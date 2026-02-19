@@ -1,6 +1,12 @@
 # bv (beads viewer) local config and caches
 .bv/
 
+# OpenClaw runtime state
+.openclaw/
+
+# IDE
+.claude/
+
 # Built binaries
 /cortex
 *.test
@@ -52,7 +58,13 @@ release/*.jsonl
 release/*.log
 
 # Archive - historical data (large, move to external storage)
-# archive/
+archive/
+
+# Operational artifacts and evidence
+artifacts/
+evidence/
+rollback-config/
+rollback-configs/
 
 # Temporary files
 .tmp/

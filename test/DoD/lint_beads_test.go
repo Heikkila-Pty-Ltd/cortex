@@ -59,7 +59,7 @@ esac
 		t.Fatalf("write bd shim: %v", err)
 	}
 
-	cmd := exec.CommandContext(context.Background(), filepath.Join(repoRoot, "scripts", "lint-beads.sh"))
+	cmd := exec.CommandContext(context.Background(), filepath.Join(repoRoot, "scripts", "dev", "lint-beads.sh"))
 	cmd.Dir = repoRoot
 	cmd.Env = append(os.Environ(), "PATH="+workspace+":"+os.Getenv("PATH"))
 

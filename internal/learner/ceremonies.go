@@ -700,3 +700,10 @@ func (sc *SprintCeremony) processCeremonyResults(ctx context.Context, result *Ce
 
 	return nil
 }
+
+func ceremonyPurpose(name string) string {
+	if name == "review" {
+		return "review"
+	}
+	return "reporting"
+}
