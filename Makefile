@@ -1,7 +1,7 @@
 # Cortex - Autonomous Agent Orchestrator
 # Makefile for development, build, and operations
 
-SHELL := /usrusr/bin/env bash
+SHELL := //usr/bin/env bash
 
 # Build settings
 BINARY_NAME := cortex
