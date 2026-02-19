@@ -16,57 +16,51 @@ enabled = true
 beads_dir = "~/.openclaw/workspace-main/.beads"
 workspace = "~/.openclaw/workspace-main"
 priority = 0
+matrix_room = "!adJhqAxLcYqQuYraGf:vmi3041112.contaboserver.net"
 
 # Rate limits - separate budget from dev
 [rate_limits]
-window_5h_cap = 50
-weekly_cap = 500
+window_5h_cap = 100
+weekly_cap = 1000
 weekly_headroom_pct = 80
 
-# Providers - prefer fast, reliable models for interactive work
-[providers.claude-sonnet]
-tier = "balanced"
-authed = true
-model = "claude-sonnet-4-20250514"
-
-[providers.claude-opus]
-tier = "premium"
-authed = true
-model = "claude-opus-4-5"
-
-[providers.gpt-4o]
-tier = "balanced"
-authed = true
-model = "gpt-4o"
-
+# Providers - must specify cli tool for each
 [providers.codex]
 tier = "fast"
 authed = true
 model = "gpt-5.3-codex"
+cli = "codex"
+
+[providers.codex-balanced]
+tier = "balanced"
+authed = true
+model = "gpt-5.3-codex"
+cli = "codex"
 
 # Tier mappings - which providers for each complexity
 [tiers]
 fast = ["codex"]
-balanced = ["claude-sonnet", "gpt-4o"]
-premium = ["claude-opus"]
+balanced = ["codex-balanced"]
+premium = ["codex-balanced"]
 
 # API on different port to avoid collision with cortex-dev
 [api]
 bind = "127.0.0.1:8901"
 
+# Reporter - notify on completion
+[reporter]
+channel = "matrix"
+agent_id = "main"
+matrix_bot_account = "spritzbot"
+default_room = "!adJhqAxLcYqQuYraGf:vmi3041112.contaboserver.net"
+
 # Health settings - faster detection for interactive
 [health]
 check_interval = "30s"
 stuck_threshold = "10m"
+gateway_user_service = false
 
 # Dispatch configuration
-[dispatch.cli.claude]
-cmd = "claude"
-prompt_mode = "stdin"
-args = ["--print"]
-model_flag = "--model"
-approval_flags = ["--dangerously-skip-permissions"]
-
 [dispatch.cli.codex]
 cmd = "codex"
 prompt_mode = "stdin"
@@ -76,10 +70,10 @@ approval_flags = []
 
 [dispatch.routing]
 fast_backend = "headless_cli"
-balanced_backend = "tmux"
-premium_backend = "tmux"
+balanced_backend = "headless_cli"
+premium_backend = "headless_cli"
 comms_backend = "headless_cli"
-retry_backend = "tmux"
+retry_backend = "headless_cli"
 
 [dispatch.timeouts]
 fast = "10m"

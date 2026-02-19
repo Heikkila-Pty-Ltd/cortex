@@ -194,13 +194,24 @@ func SyncImportCtx(ctx context.Context, beadsDir string) error {
 		return nil
 	}
 
-	// Backward compatibility for older bd versions without --import-only.
-	if strings.Contains(err.Error(), "unknown flag") || strings.Contains(err.Error(), "unknown shorthand flag") {
+	// Fall back to full sync for older bd versions and for parser-limit failures
+	// seen in import-only mode with very large JSONL rows.
+	if shouldFallbackToFullSync(err) {
 		if _, fallbackErr := runBD(ctx, root, "sync"); fallbackErr == nil {
 			return nil
 		}
 	}
 	return fmt.Errorf("syncing beads import state: %w", err)
+}
+
+func shouldFallbackToFullSync(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unknown flag") ||
+		strings.Contains(msg, "unknown shorthand flag") ||
+		strings.Contains(msg, "bufio.scanner: token too long")
 }
 
 // ShowBead runs bd show --json {beadID} and returns the detail.

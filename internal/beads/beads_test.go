@@ -477,3 +477,51 @@ func TestSyncImportCtxFallsBackWithoutImportOnly(t *testing.T) {
 		t.Fatalf("expected fallback sync call, got %q", got)
 	}
 }
+
+func TestSyncImportCtxFallsBackOnScannerTokenTooLong(t *testing.T) {
+	projectDir := t.TempDir()
+	beadsDir := filepath.Join(projectDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+	logPath := filepath.Join(projectDir, "args.log")
+
+	fakeBin := t.TempDir()
+	bdPath := filepath.Join(fakeBin, "bd")
+	script := "#!/bin/sh\n" +
+		"echo \"$@\" >> \"$BD_ARGS_LOG\"\n" +
+		"case \"$*\" in\n" +
+		"  *\"sync --import-only\"*)\n" +
+		"    echo 'Error: importing: error reading JSONL: bufio.Scanner: token too long' >&2\n" +
+		"    exit 1\n" +
+		"    ;;\n" +
+		"  *\"sync\"*)\n" +
+		"    echo 'ok'\n" +
+		"    ;;\n" +
+		"  *)\n" +
+		"    echo 'ok'\n" +
+		"    ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(bdPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake bd: %v", err)
+	}
+
+	t.Setenv("BD_ARGS_LOG", logPath)
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+	if err := SyncImportCtx(context.Background(), beadsDir); err != nil {
+		t.Fatalf("SyncImportCtx token-too-long fallback failed: %v", err)
+	}
+
+	args, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	got := string(args)
+	if !strings.Contains(got, "sync --import-only") {
+		t.Fatalf("expected initial sync with --import-only, got %q", got)
+	}
+	if !strings.Contains(got, "sync\n") && !strings.Contains(got, "sync\r\n") {
+		t.Fatalf("expected fallback sync call, got %q", got)
+	}
+}
