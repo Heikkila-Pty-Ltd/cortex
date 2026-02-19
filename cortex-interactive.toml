@@ -3,7 +3,10 @@
 
 [general]
 tick_interval = "15s"
-max_per_tick = 3
+max_per_tick = 1
+max_concurrent_coders = 1
+max_concurrent_reviewers = 1
+max_concurrent_total = 1
 stuck_timeout = "10m"
 max_retries = 2
 log_level = "info"
@@ -58,7 +61,7 @@ default_room = "!adJhqAxLcYqQuYraGf:vmi3041112.contaboserver.net"
 [health]
 check_interval = "30s"
 stuck_threshold = "10m"
-gateway_user_service = false
+gateway_user_service = true
 
 # Dispatch configuration
 [dispatch.cli.codex]
@@ -79,6 +82,9 @@ retry_backend = "headless_cli"
 fast = "10m"
 balanced = "30m"
 premium = "60m"
+
+[dispatch.git]
+max_concurrent_per_project = 1
 
 [dispatch.tmux]
 history_limit = 50000

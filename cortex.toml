@@ -2,7 +2,10 @@
 
 [general]
 tick_interval = "60s"
-max_per_tick = 5
+max_per_tick = 1
+max_concurrent_coders = 1
+max_concurrent_reviewers = 1
+max_concurrent_total = 1
 stuck_timeout = "30m"
 max_retries = 2
 log_level = "info"
@@ -34,11 +37,6 @@ priority = 1
 window_5h_cap = 150
 weekly_cap = 2000
 weekly_headroom_pct = 70
-
-[providers.claude-max20]
-tier = "balanced"
-authed = true
-model = "claude-sonnet-4-20250514"
 
 [providers.openai-pro]
 tier = "balanced"
@@ -85,12 +83,13 @@ model = "llama-4-scout"
 
 [tiers]
 fast = ["codex-spark", "cerebras", "groq"]
-balanced = ["codex", "claude-max20", "openai-pro"]
+balanced = ["codex", "openai-pro"]
 premium = ["codex-max", "google-pro", "kimi"]
 
 [health]
 check_interval = "2m"
 gateway_unit = "openclaw-gateway.service"
+gateway_user_service = true
 
 [reporter]
 channel = "matrix"
@@ -109,13 +108,6 @@ include_in_digest = true
 [api]
 bind = "127.0.0.1:8900"
 
-[dispatch.cli.claude]
-cmd = "claude"
-prompt_mode = "stdin"
-args = ["--print"]
-model_flag = "--model"
-approval_flags = ["--dangerously-skip-permissions"]
-
 [dispatch.cli.codex]
 cmd = "codex"
 prompt_mode = "stdin"
@@ -132,7 +124,7 @@ approval_flags = []
 
 [dispatch.routing]
 fast_backend = "headless_cli"
-balanced_backend = "tmux"
+balanced_backend = "headless_cli"
 premium_backend = "tmux"
 comms_backend = "headless_cli"
 retry_backend = "tmux"
@@ -146,7 +138,7 @@ premium = "120m"
 branch_prefix = "cortex/"
 branch_cleanup_days = 7
 merge_strategy = "squash"
-max_concurrent_per_project = 3
+max_concurrent_per_project = 1
 
 [dispatch.tmux]
 history_limit = 50000
@@ -155,6 +147,6 @@ session_prefix = "cortex-"
 [chief]
 enabled = true
 matrix_room = "#cortex-coordination"
-model = "claude-sonnet-4-20250514"
+model = "gpt-5.3-codex"
 agent_id = "cortex-chief-scrum"
 require_approved_plan = true
