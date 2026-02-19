@@ -1,7 +1,7 @@
 # Cortex - Autonomous Agent Orchestrator
 # Makefile for development, build, and operations
 
-SHELL := //usr/bin/env bash
+SHELL := /usr/bin/env bash
 
 # Build settings
 BINARY_NAME := cortex
@@ -67,8 +67,13 @@ build: $(SRC_FILES) ## Build cortex binary
 
 build-all: ## Build all binaries (cortex + tools)
 	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BINARY_NAME) ./cmd/cortex/
+	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/burnin-collector ./cmd/burnin-collector/
+	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/burnin-evidence ./cmd/burnin-evidence/
 	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/db-backup ./cmd/db-backup/
 	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/db-restore ./cmd/db-restore/
+	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/monitor-analysis ./cmd/monitor-analysis/
+	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/rollout-completion ./cmd/rollout-completion/
+	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/rollout-monitor ./cmd/rollout-monitor/
 
 install: build ## Build and install cortex to ~/.local/bin
 	mkdir -p ~/.local/bin

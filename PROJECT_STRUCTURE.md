@@ -22,7 +22,6 @@ cortex/
 │   └── templates/           # Report/email templates
 │
 ├── build/                    # Build scripts and outputs
-│   ├── ci/                  # CI/CD configurations
 │   ├── dist/                # Distribution packages
 │   ├── package/             # Packaging (Docker, etc.)
 │   └── scripts/             # Build helper scripts
@@ -122,7 +121,6 @@ Static assets that are embedded or used by the application:
 
 ### `/build`
 Build-related files and outputs:
-- `ci/` - CI/CD pipeline configurations (GitHub Actions, etc.)
 - `dist/` - Built distribution packages
 - `package/` - Packaging configurations (Dockerfiles, etc.)
 - `scripts/` - Build helper scripts
