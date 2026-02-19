@@ -3917,48 +3917,9 @@ func (s *Scheduler) pickAndReserveProviderWithProfileFiltering(tier string, bead
 }
 
 // pickAndReserveProviderFromCandidates selects a provider from the filtered candidate list, respecting and reserving rate limits.
+// This now delegates to RateLimiter to avoid code duplication and ensure consistent behavior.
 func (s *Scheduler) pickAndReserveProviderFromCandidates(tier string, candidates []string, excludeModels map[string]bool, agentID, beadID string) (*config.Provider, string, int64, func(), error) {
-	for _, name := range candidates {
-		p, ok := s.cfg.Providers[name]
-		if !ok {
-			continue
-		}
-		if excludeModels != nil && excludeModels[p.Model] {
-			continue
-		}
-
-		// Free-tier providers bypass rate limits
-		if !p.Authed {
-			return &p, name, 0, nil, nil
-		}
-
-		// Check authed gates (optimistic)
-		canDispatch, _ := s.rateLimiter.CanDispatchAuthed()
-		if !canDispatch {
-			continue
-		}
-
-		// Attempt reservation
-		usageID, err := s.rateLimiter.RecordAuthedDispatch(p.Model, agentID, beadID)
-		if err != nil {
-			s.logger.Warn("failed to reserve provider usage", "provider", name, "bead", beadID, "error", err)
-			continue
-		}
-
-		// Double-check limits
-		canDispatch, _ = s.rateLimiter.CanDispatchAuthed()
-		if !canDispatch {
-			_ = s.rateLimiter.ReleaseAuthedDispatch(usageID)
-			continue
-		}
-
-		cleanup := func() {
-			_ = s.rateLimiter.ReleaseAuthedDispatch(usageID)
-		}
-		return &p, name, usageID, cleanup, nil
-	}
-
-	return nil, "", 0, nil, nil
+	return s.rateLimiter.PickAndReserveProviderFromCandidates(candidates, s.cfg.Providers, excludeModels, agentID, beadID)
 }
 
 func (s *Scheduler) pickAndReserveProviderForBead(bead beads.Bead, initialTier string, excludeModels map[string]bool, agentID string) (*config.Provider, string, string, int64, func(), error) {
