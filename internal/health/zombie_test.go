@@ -73,31 +73,26 @@ func TestCleanZombiePIDsSkipsPIDsNotOwnedByLocalStore(t *testing.T) {
 	logger := newTestLogger()
 
 	origGet := getOpenclawPIDsFn
-	origKill := killProcessFn
 	t.Cleanup(func() {
 		getOpenclawPIDsFn = origGet
-		killProcessFn = origKill
 	})
 
 	getOpenclawPIDsFn = func() ([]int, error) {
 		return []int{424242}, nil
 	}
-	killedPIDs := make([]int, 0)
-	killProcessFn = func(pid int) error {
-		killedPIDs = append(killedPIDs, pid)
-		return nil
-	}
 
-	killed := cleanZombiePIDs(s, logger)
-	if killed != 0 {
-		t.Fatalf("expected no zombie kills for unknown pid, got %d", killed)
+	emitZombiePIDDiagnostics(s, logger)
+
+	events, err := s.GetRecentHealthEvents(1)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(killedPIDs) != 0 {
-		t.Fatalf("expected no kill invocations, got %v", killedPIDs)
+	if len(events) != 0 {
+		t.Fatalf("expected no health events, got %d", len(events))
 	}
 }
 
-func TestCleanZombiePIDsKillsLocallyOwnedRecentPID(t *testing.T) {
+func TestEmitZombiePIDDiagnosticsDoesNotMutateDispatchState(t *testing.T) {
 	s := newTestStore(t)
 	logger := newTestLogger()
 
@@ -110,45 +105,30 @@ func TestCleanZombiePIDsKillsLocallyOwnedRecentPID(t *testing.T) {
 	}
 
 	origGet := getOpenclawPIDsFn
-	origKill := killProcessFn
 	t.Cleanup(func() {
 		getOpenclawPIDsFn = origGet
-		killProcessFn = origKill
 	})
 
 	getOpenclawPIDsFn = func() ([]int, error) {
 		return []int{31337}, nil
 	}
-	killedPIDs := make([]int, 0)
-	killProcessFn = func(pid int) error {
-		killedPIDs = append(killedPIDs, pid)
-		return nil
-	}
 
-	killed := cleanZombiePIDs(s, logger)
-	if killed != 1 {
-		t.Fatalf("expected one zombie kill, got %d", killed)
-	}
-	if len(killedPIDs) != 1 || killedPIDs[0] != 31337 {
-		t.Fatalf("expected kill invocation for pid 31337, got %v", killedPIDs)
-	}
+	emitZombiePIDDiagnostics(s, logger)
 
 	events, err := s.GetRecentHealthEvents(1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, evt := range events {
-		if evt.EventType != "zombie_killed" {
-			continue
-		}
-		if evt.DispatchID == dispatchID && evt.BeadID == "bead-zombie" {
-			found = true
-			break
-		}
+	if len(events) != 0 {
+		t.Fatalf("expected no health events for diagnostics-only PID scan, got %d", len(events))
 	}
-	if !found {
-		t.Fatalf("expected zombie_killed event linked to dispatch %d", dispatchID)
+
+	d, err := s.GetDispatchByID(dispatchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Status != "failed" {
+		t.Fatalf("expected dispatch status to remain failed, got %s", d.Status)
 	}
 }
 

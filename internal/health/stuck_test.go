@@ -10,6 +10,7 @@ import (
 
 	"github.com/antigravity-dev/cortex/internal/dispatch"
 	"github.com/antigravity-dev/cortex/internal/store"
+	tmuxstate "github.com/antigravity-dev/cortex/internal/tmux"
 )
 
 type fakeDispatcher struct {
@@ -105,6 +106,130 @@ func TestCheckStuckDispatches_QueuesPendingRetry(t *testing.T) {
 	}
 }
 
+func TestCheckStuckDispatches_TmuxLiveSession_QueuesRetryAndKillsSession(t *testing.T) {
+	s := newTestStore(t)
+
+	id, err := s.RecordDispatch("bead-live", "proj", "agent", "provider", "fast", 777, "ctx-live-777", "prompt", "", "", "tmux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec(`UPDATE dispatches SET dispatched_at = datetime('now', '-2 hours') WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	origChecker := tmuxLivenessChecker
+	origKillSession := killSessionFn
+	t.Cleanup(func() {
+		tmuxLivenessChecker = origChecker
+		killSessionFn = origKillSession
+	})
+
+	tmuxLivenessChecker = &fakeLivenessChecker{result: tmuxstate.LivenessResult{
+		State:  tmuxstate.LivenessLive,
+		Detail: "session_exists",
+	}}
+
+	killedSession := ""
+	killSessionFn = func(sessionName string) error {
+		killedSession = sessionName
+		return nil
+	}
+
+	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: false}, 30*time.Minute, 2, newTestLogger())
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	if actions[0].Action != "retried" {
+		t.Fatalf("expected retried action, got %s", actions[0].Action)
+	}
+	if killedSession != "ctx-live-777" {
+		t.Fatalf("expected tmux kill for ctx-live-777, got %q", killedSession)
+	}
+}
+
+func TestCheckStuckDispatches_TmuxMissingSession_TransitionsRecovery(t *testing.T) {
+	s := newTestStore(t)
+
+	id, err := s.RecordDispatch("bead-missing", "proj", "agent", "provider", "fast", 778, "ctx-missing-778", "prompt", "", "", "tmux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec(`UPDATE dispatches SET dispatched_at = datetime('now', '-2 hours') WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	origChecker := tmuxLivenessChecker
+	origKillSession := killSessionFn
+	t.Cleanup(func() {
+		tmuxLivenessChecker = origChecker
+		killSessionFn = origKillSession
+	})
+
+	tmuxLivenessChecker = &fakeLivenessChecker{result: tmuxstate.LivenessResult{
+		State:  tmuxstate.LivenessMissing,
+		Detail: "session_missing",
+	}}
+
+	killed := false
+	killSessionFn = func(string) error {
+		killed = true
+		return nil
+	}
+
+	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: true}, 30*time.Minute, 2, newTestLogger())
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	if actions[0].Action != "retried" {
+		t.Fatalf("expected retried action, got %s", actions[0].Action)
+	}
+	if killed {
+		t.Fatal("expected no tmux kill when session is already missing")
+	}
+}
+
+func TestCheckStuckDispatches_TmuxUnknownSession_DoesNotTransition(t *testing.T) {
+	s := newTestStore(t)
+
+	id, err := s.RecordDispatch("bead-unknown", "proj", "agent", "provider", "fast", 779, "ctx-unknown-779", "prompt", "", "", "tmux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec(`UPDATE dispatches SET dispatched_at = datetime('now', '-2 hours') WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	origChecker := tmuxLivenessChecker
+	origKillSession := killSessionFn
+	t.Cleanup(func() {
+		tmuxLivenessChecker = origChecker
+		killSessionFn = origKillSession
+	})
+
+	tmuxLivenessChecker = &fakeLivenessChecker{result: tmuxstate.LivenessResult{
+		State:  tmuxstate.LivenessUnknown,
+		Detail: "tmux_timeout",
+	}}
+
+	killSessionFn = func(string) error {
+		t.Fatal("killSession should not be called when liveness is unknown")
+		return nil
+	}
+
+	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: false}, 30*time.Minute, 2, newTestLogger())
+	if len(actions) != 0 {
+		t.Fatalf("expected no actions for unknown liveness, got %d", len(actions))
+	}
+
+	d, err := s.GetDispatchByID(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Status != "running" {
+		t.Fatalf("expected dispatch to remain running, got %s", d.Status)
+	}
+}
+
 func TestCheckStuckDispatches_FailsPermanentlyAtMaxRetries(t *testing.T) {
 	s := newTestStore(t)
 
@@ -137,4 +262,12 @@ func TestCheckStuckDispatches_FailsPermanentlyAtMaxRetries(t *testing.T) {
 	if d.Stage != "failed" {
 		t.Fatalf("expected stage failed, got %s", d.Stage)
 	}
+}
+
+type fakeLivenessChecker struct {
+	result tmuxstate.LivenessResult
+}
+
+func (f *fakeLivenessChecker) Check(_ context.Context, _ string) tmuxstate.LivenessResult {
+	return f.result
 }

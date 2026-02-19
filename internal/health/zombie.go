@@ -2,6 +2,7 @@ package health
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -11,23 +12,23 @@ import (
 
 	"github.com/antigravity-dev/cortex/internal/dispatch"
 	"github.com/antigravity-dev/cortex/internal/store"
+	tmuxstate "github.com/antigravity-dev/cortex/internal/tmux"
 )
 
 const zombiePIDOwnershipWindow = 24 * time.Hour
 
 var (
 	getOpenclawPIDsFn = getOpenclawPIDs
-	killProcessFn     = dispatch.KillProcess
 )
 
-// CleanZombies finds orphaned openclaw agent processes and kills them.
-// Returns the count of killed processes.
+// CleanZombies cleans dead tmux sessions and emits orphan PID diagnostics.
+// Returns the number of cleaned tmux sessions.
 func CleanZombies(s *store.Store, dispatcher dispatch.DispatcherInterface, logger *slog.Logger) int {
 	_ = dispatcher
 
 	killedSessions := cleanZombieSessions(s, logger)
-	killedPIDs := cleanZombiePIDs(s, logger)
-	killed := killedSessions + killedPIDs
+	emitZombiePIDDiagnostics(s, logger)
+	killed := killedSessions
 
 	if killed > 0 {
 		logger.Info("zombie cleanup complete", "killed", killed)
@@ -36,20 +37,20 @@ func CleanZombies(s *store.Store, dispatcher dispatch.DispatcherInterface, logge
 	return killed
 }
 
-// cleanZombiePIDs cleans orphaned PID-based dispatches.
-func cleanZombiePIDs(s *store.Store, logger *slog.Logger) int {
+// emitZombiePIDDiagnostics logs orphaned PID observations as diagnostics only.
+func emitZombiePIDDiagnostics(s *store.Store, logger *slog.Logger) {
 	// Get all PIDs running openclaw agent
 	allPIDs, err := getOpenclawPIDsFn()
 	if err != nil {
 		logger.Debug("no openclaw processes found", "error", err)
-		return 0
+		return
 	}
 
 	// Get tracked PIDs from store
 	running, err := s.GetRunningDispatches()
 	if err != nil {
 		logger.Error("failed to get running dispatches for zombie check", "error", err)
-		return 0
+		return
 	}
 
 	trackedPIDs := make(map[int]bool, len(running))
@@ -58,7 +59,6 @@ func cleanZombiePIDs(s *store.Store, logger *slog.Logger) int {
 	}
 
 	// Find orphans
-	killed := 0
 	now := time.Now()
 	for _, pid := range allPIDs {
 		if trackedPIDs[pid] {
@@ -75,24 +75,12 @@ func cleanZombiePIDs(s *store.Store, logger *slog.Logger) int {
 			continue
 		}
 
-		logger.Warn("killing zombie openclaw process",
+		logger.Warn("orphaned_openclaw_pid_diagnostic",
 			"pid", pid,
 			"dispatch_id", latest.ID,
 			"bead", latest.BeadID,
 			"status", latest.Status)
-		if err := killProcessFn(pid); err != nil {
-			logger.Error("failed to kill zombie", "pid", pid, "error", err)
-			continue
-		}
-
-		details := fmt.Sprintf("orphaned openclaw pid %d matched dispatch %d bead %s status %s", pid, latest.ID, latest.BeadID, latest.Status)
-		if err := s.RecordHealthEventWithDispatch("zombie_killed", details, latest.ID, latest.BeadID); err != nil {
-			logger.Error("failed to record zombie event", "pid", pid, "error", err)
-		}
-		killed++
 	}
-
-	return killed
 }
 
 func dispatchRecentEnoughForZombieOwnership(d store.Dispatch, now time.Time) bool {
@@ -116,6 +104,25 @@ func cleanZombieSessions(s *store.Store, logger *slog.Logger) int {
 	// For now, clean sessions that have exited
 	killed := 0
 	for _, sessionName := range allSessions {
+		dispatchID := int64(0)
+		d, err := s.GetLatestDispatchBySession(sessionName)
+		if err != nil {
+			logger.Debug("failed to correlate session to dispatch before liveness check", "session", sessionName, "error", err)
+		} else if d != nil {
+			dispatchID = d.ID
+		}
+
+		check := tmuxLivenessChecker.Check(context.Background(), sessionName)
+		logger.Info("tmux_liveness_check",
+			"dispatch_id", dispatchID,
+			"session_id", sessionName,
+			"check_result", check.State,
+			"check_detail", check.Detail,
+		)
+		if check.State != tmuxstate.LivenessLive {
+			continue
+		}
+
 		status, _ := dispatch.SessionStatus(sessionName)
 		if status == "exited" {
 			logger.Warn("cleaning dead tmux session", "session", sessionName)
@@ -124,16 +131,9 @@ func cleanZombieSessions(s *store.Store, logger *slog.Logger) int {
 				continue
 			}
 
-			d, err := s.GetLatestDispatchBySession(sessionName)
-			if err != nil {
-				logger.Debug("failed to correlate dead session to dispatch", "session", sessionName, "error", err)
-			}
-
 			eventType, details := classifyDeadSessionEvent(sessionName, d)
-			dispatchID := int64(0)
 			beadID := ""
 			if d != nil {
-				dispatchID = d.ID
 				beadID = d.BeadID
 			}
 

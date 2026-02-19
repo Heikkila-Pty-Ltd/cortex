@@ -1,6 +1,7 @@
 package health
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/antigravity-dev/cortex/internal/dispatch"
 	"github.com/antigravity-dev/cortex/internal/store"
+	tmuxstate "github.com/antigravity-dev/cortex/internal/tmux"
 )
 
 // StuckAction describes an action taken on a stuck dispatch.
@@ -18,6 +20,15 @@ type StuckAction struct {
 	NewTier string
 	Retries int
 }
+
+type sessionLivenessChecker interface {
+	Check(ctx context.Context, sessionID string) tmuxstate.LivenessResult
+}
+
+var (
+	tmuxLivenessChecker sessionLivenessChecker = tmuxstate.NewSessionChecker(2 * time.Second)
+	killSessionFn                              = dispatch.KillSession
+)
 
 // CheckStuckDispatches finds and handles dispatches that have been running too long.
 func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterface, timeout time.Duration, maxRetries int, logger *slog.Logger) []StuckAction {
@@ -40,8 +51,29 @@ func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterfac
 
 		alive := dispatcher.IsAlive(d.PID)
 		if backendType == "tmux" && strings.TrimSpace(d.SessionName) != "" {
-			sessionStatus, _ := dispatch.SessionStatus(d.SessionName)
-			alive = sessionStatus == "running"
+			check := tmuxLivenessChecker.Check(context.Background(), d.SessionName)
+			logger.Info("tmux_liveness_check",
+				"dispatch_id", d.ID,
+				"session_id", d.SessionName,
+				"check_result", check.State,
+				"check_detail", check.Detail,
+			)
+			switch check.State {
+			case tmuxstate.LivenessLive:
+				alive = true
+			case tmuxstate.LivenessMissing:
+				alive = false
+			default:
+				// Fallback to PID inspection for diagnostics only.
+				logger.Warn("tmux_liveness_unknown",
+					"dispatch_id", d.ID,
+					"session_id", d.SessionName,
+					"check_detail", check.Detail,
+					"pid", d.PID,
+					"pid_alive_diagnostic", dispatcher.IsAlive(d.PID),
+				)
+				continue
+			}
 		}
 
 		// Kill if still alive
@@ -49,7 +81,7 @@ func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterfac
 			logger.Warn("killing stuck dispatch", "bead", d.BeadID, "handle", d.PID, "backend", backendType)
 			var killErr error
 			if backendType == "tmux" && strings.TrimSpace(d.SessionName) != "" {
-				killErr = dispatch.KillSession(d.SessionName)
+				killErr = killSessionFn(d.SessionName)
 			} else {
 				killErr = dispatcher.Kill(d.PID)
 			}
@@ -64,7 +96,7 @@ func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterfac
 
 		// Mark as failed and check retry eligibility
 		duration := time.Since(d.DispatchedAt).Seconds()
-		
+
 		// Check retries
 		if d.Retries < maxRetries {
 			// Escalate tier for retry
@@ -96,7 +128,7 @@ func CheckStuckDispatches(s *store.Store, dispatcher dispatch.DispatcherInterfac
 		} else {
 			logger.Error("max retries exceeded", "bead", d.BeadID, "retries", d.Retries)
 			_ = s.RecordHealthEventWithDispatch("max_retries", fmt.Sprintf("bead %s failed after %d retries", d.BeadID, d.Retries), d.ID, d.BeadID)
-			
+
 			// Mark as permanently failed
 			s.UpdateDispatchStatus(d.ID, "failed", -1, duration)
 			if err := s.UpdateDispatchStage(d.ID, "failed"); err != nil {
