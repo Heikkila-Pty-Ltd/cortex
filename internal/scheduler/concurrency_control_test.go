@@ -256,6 +256,54 @@ func TestEnqueue_DedupeByBeadRole(t *testing.T) {
 	}
 }
 
+func TestEnqueueWithStatus_DedupeByBeadRole(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := dir + "/test.db"
+	s, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer s.Close()
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	cfg := testConcurrencyConfig()
+	cc := NewConcurrencyController(cfg, s, logger)
+
+	item := QueueItem{
+		BeadID:   "dup-bead-status",
+		Project:  "project-a",
+		Role:     RoleCoder,
+		AgentID:  "agent-coder",
+		Priority: 1,
+		Reason:   "global_limit",
+	}
+
+	id1, isNew1 := cc.EnqueueWithStatus(item)
+	id2, isNew2 := cc.EnqueueWithStatus(item)
+
+	if !isNew1 {
+		t.Fatal("first enqueue should report a new queue entry")
+	}
+	if isNew2 {
+		t.Fatal("second enqueue should report deduped queue entry")
+	}
+	if id1 != id2 {
+		t.Fatalf("duplicate enqueue should return same id: got %q and %q", id1, id2)
+	}
+
+	if depth := cc.QueueDepth(); depth != 1 {
+		t.Fatalf("queue depth = %d, want 1", depth)
+	}
+
+	count, err := s.CountOverflowQueue()
+	if err != nil {
+		t.Fatalf("count overflow queue failed: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("persisted overflow queue count = %d, want 1", count)
+	}
+}
+
 func TestRemoveFromQueueByBeadRole(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	cfg := testConcurrencyConfig()

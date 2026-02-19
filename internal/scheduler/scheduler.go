@@ -791,10 +791,9 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		if IsDispatchableRole(role) {
 			admitResult, snapshot := s.concurrencyController.CheckAdmission(role)
 			if admitResult != AdmissionAllowed {
-				s.concurrencyController.LogCapacityDeny(role, item.bead.ID, item.name, admitResult, snapshot)
-
-				// Enqueue for retry when capacity frees
-				s.concurrencyController.Enqueue(QueueItem{
+				// Enqueue for retry when capacity frees. Emit denial telemetry only when this
+				// creates a new overflow entry to avoid per-tick duplicate noise.
+				_, isNewOverflowEntry := s.concurrencyController.EnqueueWithStatus(QueueItem{
 					BeadID:   item.bead.ID,
 					Project:  item.name,
 					Role:     role,
@@ -803,14 +802,18 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 					Reason:   admitResult.String(),
 				})
 
-				// Record health event for significant denials
-				_ = s.store.RecordHealthEventWithDispatch("capacity_deny",
-					fmt.Sprintf("bead %s denied dispatch: %s (coders=%d/%d, reviewers=%d/%d, total=%d/%d)",
-						item.bead.ID, admitResult.String(),
-						snapshot.ActiveCoders, snapshot.MaxCoders,
-						snapshot.ActiveReviewers, snapshot.MaxReviewers,
-						snapshot.ActiveTotal, snapshot.MaxTotal),
-					0, item.bead.ID)
+				if isNewOverflowEntry {
+					s.concurrencyController.LogCapacityDeny(role, item.bead.ID, item.name, admitResult, snapshot)
+
+					// Record health event only on first enqueue for this bead/role pair.
+					_ = s.store.RecordHealthEventWithDispatch("capacity_deny",
+						fmt.Sprintf("bead %s denied dispatch: %s (coders=%d/%d, reviewers=%d/%d, total=%d/%d)",
+							item.bead.ID, admitResult.String(),
+							snapshot.ActiveCoders, snapshot.MaxCoders,
+							snapshot.ActiveReviewers, snapshot.MaxReviewers,
+							snapshot.ActiveTotal, snapshot.MaxTotal),
+						0, item.bead.ID)
+				}
 				continue
 			}
 		}

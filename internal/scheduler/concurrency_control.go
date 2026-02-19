@@ -190,6 +190,13 @@ func (cc *ConcurrencyController) GetSnapshot() (ConcurrencySnapshot, error) {
 
 // Enqueue adds a workload item to the overflow queue.
 func (cc *ConcurrencyController) Enqueue(item QueueItem) string {
+	queueID, _ := cc.EnqueueWithStatus(item)
+	return queueID
+}
+
+// EnqueueWithStatus adds a workload item to the overflow queue and reports whether a new
+// queue entry was created (vs deduplicated against an existing bead/role entry).
+func (cc *ConcurrencyController) EnqueueWithStatus(item QueueItem) (string, bool) {
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
 
@@ -210,7 +217,7 @@ func (cc *ConcurrencyController) Enqueue(item QueueItem) string {
 			"queue_item_id", existingID,
 			"reason", "existing_overflow_entry",
 		)
-		return existingID
+		return existingID, false
 	}
 
 	cc.queue = append(cc.queue, item)
@@ -239,7 +246,7 @@ func (cc *ConcurrencyController) Enqueue(item QueueItem) string {
 		}
 	}
 
-	return item.ID
+	return item.ID, true
 }
 
 // TryDequeue attempts to dequeue items that can now be dispatched.
