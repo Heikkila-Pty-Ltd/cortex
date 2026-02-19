@@ -1,8 +1,8 @@
 {
-  "trial_id": "cortex-c4j.6.3",
+  "trial_id": "cortex-dw4",
   "trial_window_utc": {
-    "start": "2026-02-19T01:00:03Z",
-    "end": "2026-02-19T01:00:08Z"
+    "start": "2026-02-19T01:13:08Z",
+    "end": "2026-02-19T01:14:58Z"
   },
   "operator_id": "codex-gpt5",
   "total_operations": 8,
