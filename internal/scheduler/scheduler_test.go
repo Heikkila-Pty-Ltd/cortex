@@ -14,6 +14,7 @@ import (
 	"github.com/antigravity-dev/cortex/internal/beads"
 	"github.com/antigravity-dev/cortex/internal/config"
 	"github.com/antigravity-dev/cortex/internal/dispatch"
+	"github.com/antigravity-dev/cortex/internal/git"
 	"github.com/antigravity-dev/cortex/internal/store"
 )
 
@@ -1122,6 +1123,69 @@ func TestRunTick_EndToEndScenarios(t *testing.T) {
 		}
 		if dispatches[0].Agent != "test-project-coder" {
 			t.Fatalf("agent = %q, want test-project-coder", dispatches[0].Agent)
+		}
+	})
+
+	t.Run("workflow reviewer dispatch creates PR when branch workflow enabled", func(t *testing.T) {
+		t.Setenv("CORTEX_WORKFLOW_EXECUTION", "enabled")
+
+		lister := NewMockBeadsLister()
+		project := config.Project{
+			Enabled:      true,
+			Priority:     1,
+			Workspace:    "/tmp/ws-workflow-pr",
+			BeadsDir:     "/tmp/p-workflow-pr",
+			UseBranches:  true,
+			BaseBranch:   "main",
+			BranchPrefix: "feat/",
+		}
+		cfg := newRunTickScenarioConfig(5, map[string]config.Project{"test-project": project})
+		cfg.Workflows = map[string]config.WorkflowConfig{
+			"dev": {
+				MatchTypes: []string{"task"},
+				Stages: []config.StageConfig{
+					{Name: "implement", Role: "coder"},
+					{Name: "review", Role: "reviewer"},
+				},
+			},
+		}
+		logBuf := &bytes.Buffer{}
+		sched, st, backend := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+		if err := st.UpsertBeadStage(&store.BeadStage{
+			Project:      "test-project",
+			BeadID:       "wf-pr-1",
+			Workflow:     "dev",
+			CurrentStage: "review",
+			StageIndex:   1,
+			TotalStages:  2,
+		}); err != nil {
+			t.Fatalf("seed bead stage: %v", err)
+		}
+
+		bead := createTestBead("wf-pr-1", "workflow reviewer should trigger pr", "task", "open", 1)
+		bead.Labels = []string{"stage:coding"}
+		lister.SetBeads(project.BeadsDir, []beads.Bead{bead})
+
+		prCreated := false
+		sched.ensureFeatureBranch = func(string, string, string, string) error { return nil }
+		sched.getPRStatus = func(string, string) (*git.PRStatus, error) { return nil, nil }
+		sched.createPR = func(string, string, string, string, string) (string, int, error) {
+			prCreated = true
+			return "https://example.test/pull/123", 123, nil
+		}
+
+		sched.RunTick(context.Background())
+
+		dispatches := backend.Dispatches()
+		if len(dispatches) != 1 {
+			t.Fatalf("dispatch count = %d, want 1", len(dispatches))
+		}
+		if dispatches[0].Agent != "test-project-reviewer" {
+			t.Fatalf("agent = %q, want test-project-reviewer", dispatches[0].Agent)
+		}
+		if !prCreated {
+			t.Fatal("expected PR creation for workflow-driven reviewer dispatch")
 		}
 	})
 }

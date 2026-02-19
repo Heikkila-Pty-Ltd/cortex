@@ -67,6 +67,9 @@ type Scheduler struct {
 	ceremonyScheduler       *CeremonyScheduler
 	completionVerifier      *CompletionVerifier
 	lastCompletionCheck     time.Time
+	ensureFeatureBranch     func(string, string, string, string) error
+	getPRStatus             func(string, string) (*git.PRStatus, error)
+	createPR                func(string, string, string, string, string) (string, int, error)
 
 	// Provider performance profiling
 	profiles           map[string]learner.ProviderProfile
@@ -188,6 +191,9 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 		releaseBeadOwnership:      beads.ReleaseBeadOwnershipCtx,
 		hasLiveSession:            dispatch.HasLiveSession,
 		ensureTeam:                team.EnsureTeam,
+		ensureFeatureBranch:       git.EnsureFeatureBranchWithBase,
+		getPRStatus:               git.GetPRStatus,
+		createPR:                  git.CreatePR,
 	}
 
 	// Initialize concurrency controller for admission control
@@ -303,6 +309,27 @@ func (s *Scheduler) hasLiveSessionSafe(agent string) bool {
 		return s.hasLiveSession(agent)
 	}
 	return dispatch.HasLiveSession(agent)
+}
+
+func (s *Scheduler) ensureFeatureBranchSafe(workspace, beadID, baseBranch, branchPrefix string) error {
+	if s.ensureFeatureBranch != nil {
+		return s.ensureFeatureBranch(workspace, beadID, baseBranch, branchPrefix)
+	}
+	return git.EnsureFeatureBranchWithBase(workspace, beadID, baseBranch, branchPrefix)
+}
+
+func (s *Scheduler) getPRStatusSafe(workspace, branch string) (*git.PRStatus, error) {
+	if s.getPRStatus != nil {
+		return s.getPRStatus(workspace, branch)
+	}
+	return git.GetPRStatus(workspace, branch)
+}
+
+func (s *Scheduler) createPRSafe(workspace, branch, baseBranch, title, body string) (string, int, error) {
+	if s.createPR != nil {
+		return s.createPR(workspace, branch, baseBranch, title, body)
+	}
+	return git.CreatePR(workspace, branch, baseBranch, title, body)
 }
 
 func workflowStageForBead(bead beads.Bead) string {
@@ -909,7 +936,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 
 		// Create feature branch if branch workflow is enabled
 		if item.project.UseBranches {
-			if err := git.EnsureFeatureBranchWithBase(workspace, item.bead.ID, item.project.BaseBranch, item.project.BranchPrefix); err != nil {
+			if err := s.ensureFeatureBranchSafe(workspace, item.bead.ID, item.project.BaseBranch, item.project.BranchPrefix); err != nil {
 				s.logger.Error("failed to create feature branch", "bead", item.bead.ID, "error", err)
 				releaseLock("branch_setup_failed")
 				continue
@@ -917,16 +944,16 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			branchName = item.project.BranchPrefix + item.bead.ID
 			s.logger.Debug("ensured feature branch", "bead", item.bead.ID, "branch", item.project.BranchPrefix+item.bead.ID)
 
-			// If stage is review, ensure PR exists
-			if stage == "stage:review" {
-				status, err := git.GetPRStatus(workspace, branchName)
+			// Ensure a PR exists when the active dispatch role is reviewer.
+			if role == "reviewer" {
+				status, err := s.getPRStatusSafe(workspace, branchName)
 				if err != nil {
 					s.logger.Warn("failed to check PR status", "bead", item.bead.ID, "branch", branchName, "error", err)
 				} else if status == nil {
 					// Create PR
 					title := fmt.Sprintf("feat(%s): %s", item.bead.ID, item.bead.Title)
 					body := fmt.Sprintf("## Task\n- **Title:** %s\n- **Bead:** %s\n\n## Description\n%s\n\n## Acceptance Criteria\n%s\n\n## Bead Link\n- `%s` (view with `bd show %s`)", item.bead.Title, item.bead.ID, item.bead.Description, item.bead.Acceptance, item.bead.ID, item.bead.ID)
-					url, num, err := git.CreatePR(workspace, branchName, item.project.BaseBranch, title, body)
+					url, num, err := s.createPRSafe(workspace, branchName, item.project.BaseBranch, title, body)
 					if err != nil {
 						s.logger.Error("failed to create PR", "bead", item.bead.ID, "branch", branchName, "error", err)
 					} else {
@@ -2748,7 +2775,7 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 		// Create feature branch if needed
 		workspace := config.ExpandHome(project.Workspace)
 		if project.UseBranches {
-			if err := git.EnsureFeatureBranchWithBase(workspace, retry.BeadID, project.BaseBranch, project.BranchPrefix); err != nil {
+			if err := s.ensureFeatureBranchSafe(workspace, retry.BeadID, project.BaseBranch, project.BranchPrefix); err != nil {
 				s.logger.Error("failed to create feature branch for retry", "bead", retry.BeadID, "error", err)
 				continue
 			}
