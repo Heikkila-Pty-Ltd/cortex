@@ -23,6 +23,7 @@ weekly_headroom_pct = 60
 [health]
 check_interval = "1m"
 gateway_unit = "openclaw-gateway.service"
+gateway_user_service = true
 
 [api]
 bind = "127.0.0.1:18900"

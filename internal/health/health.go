@@ -99,7 +99,7 @@ func (m *Monitor) checkDispatchHealth() {
 func (m *Monitor) CheckGateway(ctx context.Context) HealthStatus {
 	status := HealthStatus{GatewayUp: true}
 
-	active, err := isUnitActive(ctx, m.healthCfg.GatewayUnit)
+	active, err := isUnitActive(ctx, m.healthCfg.GatewayUnit, m.healthCfg.GatewayUserService)
 	if err != nil {
 		status.GatewayUp = false
 		m.logger.Error("failed to check gateway status", "error", err)
@@ -117,21 +117,21 @@ func (m *Monitor) CheckGateway(ctx context.Context) HealthStatus {
 	restartSucceeded := false
 	var restartErr error
 
-	if err := restartUnit(ctx, m.healthCfg.GatewayUnit); err != nil {
+	if err := restartUnit(ctx, m.healthCfg.GatewayUnit, m.healthCfg.GatewayUserService); err != nil {
 		restartErr = err
 		m.logger.Error("gateway restart failed, clearing stale locks", "error", err)
 		clearStaleLocks()
 
-		if err := restartUnit(ctx, m.healthCfg.GatewayUnit); err != nil {
+		if err := restartUnit(ctx, m.healthCfg.GatewayUnit, m.healthCfg.GatewayUserService); err != nil {
 			restartErr = err
 			m.logger.Error("gateway restart failed after clearing locks", "error", err)
-		} else if up, checkErr := isUnitActive(ctx, m.healthCfg.GatewayUnit); checkErr != nil {
+		} else if up, checkErr := isUnitActive(ctx, m.healthCfg.GatewayUnit, m.healthCfg.GatewayUserService); checkErr != nil {
 			restartErr = checkErr
 			m.logger.Error("gateway post-restart status check failed", "error", checkErr)
 		} else if up {
 			restartSucceeded = true
 		}
-	} else if up, checkErr := isUnitActive(ctx, m.healthCfg.GatewayUnit); checkErr != nil {
+	} else if up, checkErr := isUnitActive(ctx, m.healthCfg.GatewayUnit, m.healthCfg.GatewayUserService); checkErr != nil {
 		restartErr = checkErr
 		m.logger.Error("gateway post-restart status check failed", "error", checkErr)
 	} else if up {
@@ -398,8 +398,36 @@ func cleanupLogFiles(logDir string, cutoff time.Time) (int, error) {
 	return deleted, err
 }
 
-func isUnitActive(ctx context.Context, unit string) (bool, error) {
-	cmd := exec.CommandContext(ctx, "systemctl", "--user", "is-active", unit)
+func systemctlArgs(userService bool, args ...string) []string {
+	if userService {
+		return append([]string{"--user"}, args...)
+	}
+	return args
+}
+
+func systemctlCmd(ctx context.Context, userService bool, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "systemctl", systemctlArgs(userService, args...)...)
+	if !userService {
+		return cmd
+	}
+
+	uid := os.Getuid()
+	runtimeDir := fmt.Sprintf("/run/user/%d", uid)
+	busAddr := fmt.Sprintf("unix:path=%s/bus", runtimeDir)
+
+	env := os.Environ()
+	if os.Getenv("XDG_RUNTIME_DIR") == "" {
+		env = append(env, "XDG_RUNTIME_DIR="+runtimeDir)
+	}
+	if os.Getenv("DBUS_SESSION_BUS_ADDRESS") == "" {
+		env = append(env, "DBUS_SESSION_BUS_ADDRESS="+busAddr)
+	}
+	cmd.Env = env
+	return cmd
+}
+
+func isUnitActive(ctx context.Context, unit string, userService bool) (bool, error) {
+	cmd := systemctlCmd(ctx, userService, "is-active", unit)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
@@ -417,8 +445,8 @@ func isUnitActive(ctx context.Context, unit string) (bool, error) {
 	return false, nil
 }
 
-func restartUnit(ctx context.Context, unit string) error {
-	return exec.CommandContext(ctx, "systemctl", "--user", "restart", unit).Run()
+func restartUnit(ctx context.Context, unit string, userService bool) error {
+	return systemctlCmd(ctx, userService, "restart", unit).Run()
 }
 
 func clearStaleLocks() {
