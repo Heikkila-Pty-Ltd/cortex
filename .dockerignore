@@ -1,0 +1,45 @@
+# Git
+.git
+.gitignore
+
+# Build artifacts
+build/dist/
+cortex
+*.test
+
+# Documentation
+docs/
+*.md
+
+# Test and CI
+test/
+.tmp/
+.github/
+
+# Local configs (may contain secrets)
+cortex.toml
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Archives and evidence
+archive/
+evidence/
+*.tar.gz
+*.zip
+
+# Runtime data
+state/
+.cortex/
+.beads/
+
+# Release artifacts
+release/

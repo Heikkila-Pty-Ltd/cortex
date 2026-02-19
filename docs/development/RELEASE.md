@@ -185,7 +185,7 @@ Validation commands:
 
 ```bash
 # See full runbook for exact rollback operations.
-sed -n '1,220p' docs/ROLLBACK_RUNBOOK.md
+sed -n '1,220p' docs/runbooks/ROLLBACK_RUNBOOK.md
 ```
 
 ## Quality Gates Summary

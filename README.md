@@ -334,4 +334,4 @@ journalctl --user -u cortex.service -f | jq 'select(.component=="scheduler")'
 -   **Reset**: Delete `cortex.db` to wipe all history (but not your actual code changes).
 
 ## License
-Proprietary / Internal.
+MIT License - see [LICENSE](./LICENSE) file for details.
