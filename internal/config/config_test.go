@@ -148,8 +148,8 @@ priority = 1
 	if len(project.PostMergeChecks) != 0 {
 		t.Errorf("post_merge_checks = %v, want empty", project.PostMergeChecks)
 	}
-	if project.AutoRevertOnFailure {
-		t.Error("auto_revert_on_failure = true, want false")
+	if !project.AutoRevertOnFailure {
+		t.Error("auto_revert_on_failure = false, want true")
 	}
 }
 
@@ -166,6 +166,22 @@ merge_method = "invalid"
 	path := writeTestConfig(t, cfg)
 	if _, err := Load(path); err == nil {
 		t.Fatal("expected invalid merge_method to fail")
+	}
+}
+
+func TestLoadProjectMergeConfigEmptyMergeMethod(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.merge-empty]
+enabled = true
+beads_dir = "/tmp/merge-empty/.beads"
+workspace = "/tmp/merge-empty"
+priority = 1
+merge_method = ""
+`
+	path := writeTestConfig(t, cfg)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected empty merge_method to fail")
 	}
 }
 
@@ -196,6 +212,27 @@ auto_revert_on_failure = true
 	}
 	if !project.AutoRevertOnFailure {
 		t.Error("auto_revert_on_failure = false, want true")
+	}
+}
+
+func TestLoadProjectMergeConfigAutoRevertCanDisable(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.merge-no-revert]
+enabled = true
+beads_dir = "/tmp/merge-no-revert/.beads"
+workspace = "/tmp/merge-no-revert"
+priority = 1
+auto_revert_on_failure = false
+`
+	path := writeTestConfig(t, cfg)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	project := loaded.Projects["merge-no-revert"]
+	if project.AutoRevertOnFailure {
+		t.Error("auto_revert_on_failure = true, want false")
 	}
 }
 

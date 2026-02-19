@@ -81,10 +81,10 @@ type Project struct {
 	BaseBranch   string `toml:"base_branch"`   // branch to create features from (default "main")
 	BranchPrefix string `toml:"branch_prefix"` // prefix for feature branches (default "feat/")
 	UseBranches  bool   `toml:"use_branches"`  // enable branch workflow (default false)
-	MergeMethod  string `toml:"merge_method"`  // squash, merge, rebase
+	MergeMethod  string `toml:"merge_method"`  // squash, merge, rebase (default squash)
 
 	PostMergeChecks     []string `toml:"post_merge_checks"`      // checks run after PR merge
-	AutoRevertOnFailure bool     `toml:"auto_revert_on_failure"` // auto-revert merge when post-merge checks fail
+	AutoRevertOnFailure bool     `toml:"auto_revert_on_failure"` // auto-revert merge when post-merge checks fail (default true)
 
 	// Sprint planning configuration (optional for backward compatibility)
 	SprintPlanningDay  string `toml:"sprint_planning_day"`  // day of week for sprint planning (e.g., "Monday")
@@ -366,11 +366,12 @@ func Load(path string) (*Config, error) {
 	}
 
 	var cfg Config
-	if err := toml.Unmarshal(data, &cfg); err != nil {
+	md, err := toml.Decode(string(data), &cfg)
+	if err != nil {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
 
-	applyDefaults(&cfg)
+	applyDefaults(&cfg, md)
 	normalizePaths(&cfg)
 
 	if err := validate(&cfg); err != nil {
@@ -393,7 +394,7 @@ func LoadManager(path string) (ConfigManager, error) {
 	return NewRWMutexManager(cfg), nil
 }
 
-func applyDefaults(cfg *Config) {
+func applyDefaults(cfg *Config, md toml.MetaData) {
 	if cfg.General.TickInterval.Duration == 0 {
 		cfg.General.TickInterval.Duration = 60 * time.Second
 	}
@@ -567,8 +568,11 @@ func applyDefaults(cfg *Config) {
 		if project.BranchPrefix == "" {
 			project.BranchPrefix = "feat/"
 		}
-		if strings.TrimSpace(project.MergeMethod) == "" {
+		if !md.IsDefined("projects", name, "merge_method") {
 			project.MergeMethod = "squash"
+		}
+		if !md.IsDefined("projects", name, "auto_revert_on_failure") {
+			project.AutoRevertOnFailure = true
 		}
 
 		// Sprint planning defaults (optional - no defaults applied to maintain backward compatibility)
@@ -1041,10 +1045,6 @@ func validateDoDConfig(projectName string, dod DoDConfig) error {
 
 func validateProjectMergeConfig(projectName string, project Project) error {
 	method := strings.ToLower(strings.TrimSpace(project.MergeMethod))
-	if method == "" {
-		return nil
-	}
-
 	switch method {
 	case "squash", "merge", "rebase":
 		return nil
