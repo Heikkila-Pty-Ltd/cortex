@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -98,5 +100,70 @@ model = "claude-sonnet-4-20250514"
 	}
 	if !strings.Contains(got, `model = "gpt-5.3-codex"`) {
 		t.Fatalf("expected default fallback chief model, got:\n%s", got)
+	}
+}
+
+func TestSetTickIntervalInConfigContentUpdatesGeneralTickInterval(t *testing.T) {
+	input := `
+[general]
+tick_interval = "60s"
+max_per_tick = 1
+
+[reporter]
+channel = "matrix"
+`
+
+	got, changed, err := setTickIntervalInConfigContent(input, "2m")
+	if err != nil {
+		t.Fatalf("setTickIntervalInConfigContent returned error: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected config content to change")
+	}
+	if !strings.Contains(got, `tick_interval = "2m"`) {
+		t.Fatalf("expected tick_interval to update to 2m, got:\n%s", got)
+	}
+}
+
+func TestSetTickIntervalInConfigContentNoOpWhenAlreadySet(t *testing.T) {
+	input := `
+[general]
+tick_interval = "2m"
+`
+
+	got, changed, err := setTickIntervalInConfigContent(input, "2m")
+	if err != nil {
+		t.Fatalf("setTickIntervalInConfigContent returned error: %v", err)
+	}
+	if changed {
+		t.Fatalf("expected no changes, got:\n%s", got)
+	}
+	if got != input {
+		t.Fatalf("expected exact original output when unchanged\nwant:\n%s\ngot:\n%s", input, got)
+	}
+}
+
+func TestSetTickIntervalInConfigContentErrorsWhenGeneralTickIntervalMissing(t *testing.T) {
+	input := `
+[general]
+max_per_tick = 1
+`
+
+	_, _, err := setTickIntervalInConfigContent(input, "2m")
+	if err == nil {
+		t.Fatal("expected error when tick_interval is missing")
+	}
+}
+
+func TestSetTickIntervalInConfigFileRejectsInvalidDuration(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cortex.toml")
+	if err := os.WriteFile(path, []byte("[general]\ntick_interval = \"60s\"\n"), 0o644); err != nil {
+		t.Fatalf("write temp config: %v", err)
+	}
+
+	_, err := setTickIntervalInConfigFile(path, "not-a-duration")
+	if err == nil {
+		t.Fatal("expected invalid duration error")
 	}
 }

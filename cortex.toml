@@ -1,7 +1,7 @@
 # Cortex Agent Orchestrator Configuration
 
 [general]
-tick_interval = "60s"
+tick_interval = "2m"
 max_per_tick = 1
 max_concurrent_coders = 1
 max_concurrent_reviewers = 1

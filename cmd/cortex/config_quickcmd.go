@@ -5,13 +5,15 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 var (
-	tableHeaderRe  = regexp.MustCompile(`^\s*\[([^\]]+)\]\s*$`)
-	modelAssignRe  = regexp.MustCompile(`^(\s*model\s*=\s*")([^"]*)(".*)$`)
-	tierAssignRe   = regexp.MustCompile(`^(\s*)(fast|balanced|premium)(\s*=\s*)\[(.*)\](\s*)$`)
-	quotedStringRe = regexp.MustCompile(`"([^"]+)"`)
+	tableHeaderRe       = regexp.MustCompile(`^\s*\[([^\]]+)\]\s*$`)
+	modelAssignRe       = regexp.MustCompile(`^(\s*model\s*=\s*")([^"]*)(".*)$`)
+	tickIntervalAssignRe = regexp.MustCompile(`^(\s*tick_interval\s*=\s*")([^"]*)(".*)$`)
+	tierAssignRe        = regexp.MustCompile(`^(\s*)(fast|balanced|premium)(\s*=\s*)\[(.*)\](\s*)$`)
+	quotedStringRe      = regexp.MustCompile(`"([^"]+)"`)
 )
 
 func disableAnthropicInConfigFile(path string, fallbackModel string) (bool, error) {
@@ -29,6 +31,82 @@ func disableAnthropicInConfigFile(path string, fallbackModel string) (bool, erro
 		return false, fmt.Errorf("write config %s: %w", path, err)
 	}
 	return true, nil
+}
+
+func setTickIntervalInConfigFile(path string, tickInterval string) (bool, error) {
+	interval := strings.TrimSpace(tickInterval)
+	if interval == "" {
+		return false, fmt.Errorf("tick interval is required")
+	}
+	if _, err := time.ParseDuration(interval); err != nil {
+		return false, fmt.Errorf("invalid tick interval %q: %w", interval, err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("read config %s: %w", path, err)
+	}
+
+	updated, changed, err := setTickIntervalInConfigContent(string(raw), interval)
+	if err != nil {
+		return false, fmt.Errorf("update tick interval in %s: %w", path, err)
+	}
+	if !changed {
+		return false, nil
+	}
+
+	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		return false, fmt.Errorf("write config %s: %w", path, err)
+	}
+	return true, nil
+}
+
+func setTickIntervalInConfigContent(input string, tickInterval string) (string, bool, error) {
+	interval := strings.TrimSpace(tickInterval)
+	if interval == "" {
+		return input, false, fmt.Errorf("tick interval is required")
+	}
+	if _, err := time.ParseDuration(interval); err != nil {
+		return input, false, fmt.Errorf("invalid tick interval %q: %w", interval, err)
+	}
+	if strings.TrimSpace(input) == "" {
+		return input, false, fmt.Errorf("config content is empty")
+	}
+
+	lines := strings.Split(input, "\n")
+	currentTable := ""
+	changed := false
+	found := false
+
+	for i, line := range lines {
+		if header, ok := parseTableHeader(line); ok {
+			currentTable = strings.ToLower(strings.TrimSpace(header))
+		}
+		if currentTable != "general" {
+			continue
+		}
+		m := tickIntervalAssignRe.FindStringSubmatch(line)
+		if len(m) != 4 {
+			continue
+		}
+		found = true
+		updated := m[1] + interval + m[3]
+		if updated != line {
+			lines[i] = updated
+			changed = true
+		}
+	}
+
+	if !found {
+		return input, false, fmt.Errorf("[general] tick_interval not found")
+	}
+
+	output := strings.Join(lines, "\n")
+	if strings.HasSuffix(input, "\n") && !strings.HasSuffix(output, "\n") {
+		output += "\n"
+	}
+
+	return output, changed, nil
 }
 
 func disableAnthropicInConfigContent(input string, fallbackModel string) (string, bool) {

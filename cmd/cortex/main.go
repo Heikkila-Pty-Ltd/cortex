@@ -27,6 +27,7 @@ func main() {
 	dev := flag.Bool("dev", false, "use text log format (default is JSON)")
 	dryRun := flag.Bool("dry-run", false, "run tick logic without actually dispatching agents")
 	disableAnthropic := flag.Bool("disable-anthropic", false, "remove Anthropic/Claude providers from config and exit")
+	setTickInterval := flag.String("set-tick-interval", "", "set [general].tick_interval in config (e.g. 2m) and exit")
 	fallbackModel := flag.String("fallback-model", "gpt-5.3-codex", "fallback chief model used with -disable-anthropic")
 	normalizeBeadsProject := flag.String("normalize-beads-project", "", "normalize oversized .beads/issues.jsonl rows for the given project and exit")
 	normalizeBeadsMaxBytes := flag.Int("normalize-beads-max-bytes", 60000, "maximum bytes allowed per issues.jsonl row in -normalize-beads-project mode")
@@ -46,6 +47,15 @@ func main() {
 			os.Exit(1)
 		}
 		logger.Info("disable-anthropic complete", "config", *configPath, "changed", changed, "fallback_model", *fallbackModel)
+		return
+	}
+	if tickInterval := strings.TrimSpace(*setTickInterval); tickInterval != "" {
+		changed, err := setTickIntervalInConfigFile(*configPath, tickInterval)
+		if err != nil {
+			logger.Error("failed to set tick interval in config", "config", *configPath, "tick_interval", tickInterval, "error", err)
+			os.Exit(1)
+		}
+		logger.Info("set-tick-interval complete", "config", *configPath, "changed", changed, "tick_interval", tickInterval)
 		return
 	}
 
