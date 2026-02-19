@@ -1036,4 +1036,92 @@ func TestRunTick_EndToEndScenarios(t *testing.T) {
 			t.Fatalf("dispatch count = %d, want 0", got)
 		}
 	})
+
+	t.Run("workflow execution uses persisted workflow stage role", func(t *testing.T) {
+		t.Setenv("CORTEX_WORKFLOW_EXECUTION", "enabled")
+
+		lister := NewMockBeadsLister()
+		project := config.Project{Enabled: true, Priority: 1, Workspace: "/tmp/ws-workflow", BeadsDir: "/tmp/p-workflow"}
+		cfg := newRunTickScenarioConfig(5, map[string]config.Project{"test-project": project})
+		cfg.Workflows = map[string]config.WorkflowConfig{
+			"dev": {
+				MatchTypes: []string{"task"},
+				Stages: []config.StageConfig{
+					{Name: "implement", Role: "coder"},
+					{Name: "review", Role: "reviewer"},
+				},
+			},
+		}
+		logBuf := &bytes.Buffer{}
+		sched, st, backend := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+		if err := st.UpsertBeadStage(&store.BeadStage{
+			Project:      "test-project",
+			BeadID:       "wf-1",
+			Workflow:     "dev",
+			CurrentStage: "review",
+			StageIndex:   1,
+			TotalStages:  2,
+		}); err != nil {
+			t.Fatalf("seed bead stage: %v", err)
+		}
+
+		lister.SetBeads(project.BeadsDir, []beads.Bead{
+			createTestBead("wf-1", "workflow stage driven role", "task", "open", 1),
+		})
+
+		sched.RunTick(context.Background())
+
+		dispatches := backend.Dispatches()
+		if len(dispatches) != 1 {
+			t.Fatalf("dispatch count = %d, want 1", len(dispatches))
+		}
+		if dispatches[0].Agent != "test-project-reviewer" {
+			t.Fatalf("agent = %q, want test-project-reviewer", dispatches[0].Agent)
+		}
+	})
+
+	t.Run("workflow execution can be disabled via rollout flag", func(t *testing.T) {
+		t.Setenv("CORTEX_WORKFLOW_EXECUTION", "disabled")
+
+		lister := NewMockBeadsLister()
+		project := config.Project{Enabled: true, Priority: 1, Workspace: "/tmp/ws-workflow-off", BeadsDir: "/tmp/p-workflow-off"}
+		cfg := newRunTickScenarioConfig(5, map[string]config.Project{"test-project": project})
+		cfg.Workflows = map[string]config.WorkflowConfig{
+			"dev": {
+				MatchTypes: []string{"task"},
+				Stages: []config.StageConfig{
+					{Name: "implement", Role: "coder"},
+					{Name: "review", Role: "reviewer"},
+				},
+			},
+		}
+		logBuf := &bytes.Buffer{}
+		sched, st, backend := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+		if err := st.UpsertBeadStage(&store.BeadStage{
+			Project:      "test-project",
+			BeadID:       "wf-off-1",
+			Workflow:     "dev",
+			CurrentStage: "review",
+			StageIndex:   1,
+			TotalStages:  2,
+		}); err != nil {
+			t.Fatalf("seed bead stage: %v", err)
+		}
+
+		lister.SetBeads(project.BeadsDir, []beads.Bead{
+			createTestBead("wf-off-1", "workflow stage ignored when disabled", "task", "open", 1),
+		})
+
+		sched.RunTick(context.Background())
+
+		dispatches := backend.Dispatches()
+		if len(dispatches) != 1 {
+			t.Fatalf("dispatch count = %d, want 1", len(dispatches))
+		}
+		if dispatches[0].Agent != "test-project-coder" {
+			t.Fatalf("agent = %q, want test-project-coder", dispatches[0].Agent)
+		}
+	})
 }

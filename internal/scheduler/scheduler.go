@@ -25,6 +25,7 @@ import (
 	"github.com/antigravity-dev/cortex/internal/matrix"
 	"github.com/antigravity-dev/cortex/internal/store"
 	"github.com/antigravity-dev/cortex/internal/team"
+	"github.com/antigravity-dev/cortex/internal/workflow"
 )
 
 // Scheduler is the core orchestration loop.
@@ -60,6 +61,9 @@ type Scheduler struct {
 	gatewayCircuitUntil     time.Time
 	gatewayCircuitLogAt     time.Time
 	planGateLogAt           time.Time
+	workflowRegistry        *workflow.Registry
+	workflowMode            string
+	workflowEnabled         bool
 	ceremonyScheduler       *CeremonyScheduler
 	completionVerifier      *CompletionVerifier
 	lastCompletionCheck     time.Time
@@ -197,12 +201,66 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 	// Initialize completion verifier
 	scheduler.completionVerifier = NewCompletionVerifier(s, logger.With("component", "completion_verifier"))
 	scheduler.completionVerifier.SetProjects(cfg.Projects)
+	scheduler.workflowRegistry = buildWorkflowRegistry(cfg)
+	scheduler.workflowMode = workflowExecutionMode()
+	scheduler.workflowEnabled = scheduler.workflowRegistry != nil && scheduler.workflowMode != "disabled"
 	if strings.EqualFold(strings.TrimSpace(cfg.Reporter.Channel), "matrix") {
 		scheduler.lifecycleMatrixSender = matrix.NewOpenClawSender(nil, cfg.Reporter.MatrixBotAccount)
 		scheduler.lifecycleReporter = learner.NewReporter(cfg.Reporter, s, d, logger.With("component", "lifecycle_reporter"))
 	}
+	if scheduler.workflowRegistry != nil {
+		logger.Info("workflow execution configured",
+			"mode", scheduler.workflowMode,
+			"enabled", scheduler.workflowEnabled,
+			"workflows", scheduler.workflowRegistry.Names(),
+		)
+	}
 
 	return scheduler
+}
+
+func workflowExecutionMode() string {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("CORTEX_WORKFLOW_EXECUTION")))
+	switch mode {
+	case "", "auto":
+		return "auto"
+	case "on", "true", "1", "enabled":
+		return "enabled"
+	case "off", "false", "0", "disabled":
+		return "disabled"
+	default:
+		return "auto"
+	}
+}
+
+func buildWorkflowRegistry(cfg *config.Config) *workflow.Registry {
+	if cfg == nil || len(cfg.Workflows) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.Workflows))
+	for name := range cfg.Workflows {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	workflows := make([]workflow.Workflow, 0, len(names))
+	for _, name := range names {
+		wfCfg := cfg.Workflows[name]
+		stages := make([]workflow.Stage, 0, len(wfCfg.Stages))
+		for _, stage := range wfCfg.Stages {
+			stages = append(stages, workflow.Stage{
+				Name: stage.Name,
+				Role: stage.Role,
+			})
+		}
+		workflows = append(workflows, workflow.Workflow{
+			Name:        name,
+			MatchLabels: wfCfg.MatchLabels,
+			MatchTypes:  wfCfg.MatchTypes,
+			Stages:      stages,
+		})
+	}
+	return workflow.NewRegistry(workflows)
 }
 
 func (s *Scheduler) listBeadsSafe(beadsDir string) ([]beads.Bead, error) {
@@ -257,6 +315,95 @@ func workflowStageForBead(bead beads.Bead) string {
 		}
 	}
 	return bestStage
+}
+
+func workflowStageIndexForRole(wf *workflow.Workflow, role string) int {
+	for idx, stage := range wf.Stages {
+		if stage.Role == role {
+			return idx
+		}
+	}
+	return -1
+}
+
+func (s *Scheduler) selectWorkflowStage(projectName string, bead beads.Bead, wf *workflow.Workflow, stageLabel, fallbackRole string) workflow.Stage {
+	if wf == nil || len(wf.Stages) == 0 {
+		return workflow.Stage{}
+	}
+
+	if existing, err := s.store.GetBeadStage(projectName, bead.ID); err == nil {
+		if existing.Workflow == wf.Name {
+			if idx := wf.StageIndex(existing.CurrentStage); idx >= 0 {
+				return wf.Stages[idx]
+			}
+		}
+	} else if !strings.Contains(err.Error(), "not found") {
+		s.logger.Warn("failed to read bead workflow stage", "project", projectName, "bead", bead.ID, "error", err)
+	}
+
+	stageIndex := -1
+	if stageLabel != "" {
+		if labelRole, ok := stageRoles[stageLabel]; ok {
+			stageIndex = workflowStageIndexForRole(wf, labelRole)
+		}
+	}
+	if stageIndex < 0 {
+		stageIndex = workflowStageIndexForRole(wf, fallbackRole)
+	}
+	if stageIndex < 0 {
+		stageIndex = 0
+	}
+
+	selectedStage := wf.Stages[stageIndex]
+	if err := s.store.UpsertBeadStage(&store.BeadStage{
+		Project:      projectName,
+		BeadID:       bead.ID,
+		Workflow:     wf.Name,
+		CurrentStage: selectedStage.Name,
+		StageIndex:   stageIndex,
+		TotalStages:  len(wf.Stages),
+	}); err != nil {
+		s.logger.Warn("failed to persist bead workflow stage",
+			"project", projectName,
+			"bead", bead.ID,
+			"workflow", wf.Name,
+			"stage", selectedStage.Name,
+			"error", err,
+		)
+	}
+
+	return selectedStage
+}
+
+func (s *Scheduler) resolveDispatchRole(projectName string, bead beads.Bead) (string, string) {
+	role := InferRole(bead)
+	stage := workflowStageForBead(bead)
+	if !s.workflowEnabled || s.workflowRegistry == nil {
+		return role, stage
+	}
+
+	wf := s.workflowRegistry.Resolve(bead.Type, bead.Labels)
+	if wf == nil || len(wf.Stages) == 0 {
+		return role, stage
+	}
+
+	selectedStage := s.selectWorkflowStage(projectName, bead, wf, stage, role)
+	if strings.TrimSpace(selectedStage.Role) == "" {
+		return role, stage
+	}
+
+	if selectedStage.Role != role {
+		s.logger.Debug("workflow role override applied",
+			"project", projectName,
+			"bead", bead.ID,
+			"workflow", wf.Name,
+			"workflow_stage", selectedStage.Name,
+			"legacy_role", role,
+			"resolved_role", selectedStage.Role,
+		)
+	}
+
+	return selectedStage.Role, stage
 }
 
 func requiresStructuredBeadBeforeDispatch(role string) bool {
@@ -603,12 +750,11 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			continue
 		}
 
-		// Infer role - skip epics and done
-		role := InferRole(item.bead)
+		// Resolve workflow/role selection and skip terminal stages.
+		role, stage := s.resolveDispatchRole(item.name, item.bead)
 		if role == "skip" {
 			continue
 		}
-		stage := workflowStageForBead(item.bead)
 
 		if failures := s.validateBeadStructureForDispatch(item.project, item.bead, role); len(failures) > 0 {
 			s.reportDispatchBlockedByStructure(ctx, item.name, item.bead, role, failures)
