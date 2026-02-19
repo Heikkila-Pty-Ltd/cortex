@@ -1,18 +1,55 @@
 # Cortex Project Structure
 
+Production-ready Go project following [Standard Go Project Layout](https://github.com/golang-standards/project-layout).
+
 ```
 cortex/
 ├── README.md                 # Project overview and quick start
 ├── AGENTS.md                 # Agent/coding instructions
-├── Makefile                  # Build automation
-├── go.mod, go.sum           # Go dependencies
+├── Makefile                  # Build automation with helpful targets
+├── go.mod, go.sum            # Go module dependencies
 ├── VERSION                   # Current version
+├── LICENSE                   # License file
+├── CODE_OF_CONDUCT.md        # Community guidelines
+├── CONTRIBUTING.md           # Contribution guidelines
+│
+├── api/                      # API definitions
+│   ├── proto/               # Protocol Buffer definitions
+│   └── openapi/             # OpenAPI/Swagger specs
+│
+├── assets/                   # Static assets and resources
+│   ├── migrations/          # Database migrations
+│   └── templates/           # Report/email templates
+│
+├── build/                    # Build scripts and outputs
+│   ├── ci/                  # CI/CD configurations
+│   ├── dist/                # Distribution packages
+│   ├── package/             # Packaging (Docker, etc.)
+│   └── scripts/             # Build helper scripts
 │
 ├── cmd/                      # Application entry points
-│   └── cortex/              # Main cortex binary
+│   ├── cortex/              # Main cortex binary
+│   ├── db-backup/           # Database backup tool
+│   ├── db-restore/          # Database restore tool
+│   └── ...                  # Other utility commands
+│
+├── configs/                  # Configuration examples
+│   └── *.toml               # Example configurations
+│
+├── deploy/                   # Deployment configurations
+│   ├── docker/              # Docker files
+│   ├── kubernetes/          # K8s manifests
+│   └── systemd/             # Systemd service files
+│
+├── docs/                     # Documentation
+│   ├── architecture/        # Architecture docs
+│   ├── api/                 # API documentation
+│   ├── development/         # Developer guides
+│   ├── operations/          # Operations guides
+│   └── runbooks/            # Operational runbooks
 │
 ├── internal/                 # Private application code
-│   ├── api/                 # HTTP API handlers
+│   ├── api/                 # HTTP API implementation
 │   ├── beads/               # Beads integration
 │   ├── chief/               # Chief coordinator
 │   ├── config/              # Configuration management
@@ -31,68 +68,140 @@ cortex/
 │   ├── tmux/                # Tmux integration
 │   └── workflow/            # Workflow management
 │
-├── configs/                  # Configuration examples
-│   ├── cortex-learner-example.toml
-│   ├── cortex-interactive.toml
-│   └── cortex.runner.toml
-│
-├── docs/                     # Documentation
-│   ├── runbooks/            # Operational runbooks
-│   ├── CONFIG.md            # Config reference
-│   ├── CORTEX_OVERVIEW.md   # Architecture overview
-│   ├── CORTEX_QUICK_BRIEF.md
-│   ├── CORTEX_LLM_INTERACTION_GUIDE.md
-│   ├── LAUNCH_READINESS_CHECKLIST.md
-│   ├── PLANNING_OPERATING_MODEL.md
-│   ├── RELEASE.md           # Release process
-│   ├── BOOTSTRAP.md         # Bootstrapping guide
-│   ├── CHANGELOG.md         # Change history
-│   ├── SOUL.md              # Project principles
-│   ├── IDENTITY.md          # Identity docs
-│   ├── TOOLS.md             # Tooling guide
-│   ├── USER.md              # User guide
-│   └── HEARTBEAT.md         # Status/heartbeat
+├── pkg/                      # Public library code (if any)
 │
 ├── scripts/                  # Utility scripts
+│   ├── ci/                  # CI/CD scripts
+│   ├── dev/                 # Development scripts
 │   ├── hooks/               # Git hooks
-│   ├── test-safe.sh         # Safe test runner
-│   ├── lint-beads.sh        # Bead linting
-│   └── *.sh                 # Various scripts
+│   ├── ops/                 # Operational scripts
+│   └── release/             # Release scripts
 │
-├── templates/                # Report templates
-│   └── *.tmpl
+├── test/                     # Test utilities and fixtures
+│   ├── fixtures/            # Test data
+│   ├── integration/         # Integration tests
+│   ├── mocks/               # Mock implementations
+│   └── DoD/                 # Definition of Done
 │
-├── test/                     # Test utilities
-│   ├── DoD/                 # Definition of Done
-│   └── integration/         # Integration tests
-│
-├── tools/                    # Development tools
+├── web/                      # Web UI (if applicable)
+│   └── static/              # Static web assets
 │
 ├── archive/                  # Historical artifacts
-│   ├── investigations/      # Past investigations
 │   ├── evidence/            # Old trial evidence
-│   ├── rollbacks/           # Previous rollback binaries
-│   └── rollback-configs/    # Old rollback configs
+│   ├── investigations/      # Past investigations
+│   ├── rollback-configs/    # Old rollback configs
+│   └── rollbacks/           # Previous rollback binaries
+│
+├── artifacts/                # Build and operational artifacts
+│   └── launch/              # Launch-related artifacts
 │
 ├── evidence/                 # Current operational evidence
 │   └── *.md, *.json         # Safety trials, audits
 │
 ├── release/                  # Release artifacts
 │
-├── rollback-config/          # Current rollback config
-│   └── cortex-latest.toml -> ...
+├── rollback-config/          # Current rollback configuration
 │
-├── artifacts/                # Build artifacts
-│   └── launch/              # Launch artifacts
+├── state/                    # Runtime state (gitignored)
 │
-├── ops/                      # Operations (empty, reserved)
-│
-└── .cortex/                  # Runtime state (gitignored)
+└── .cortex/                  # Application runtime data (gitignored)
     └── *.db, *.log
 ```
 
+## Directory Details
+
+### `/api`
+API definitions and specifications:
+- `proto/` - Protocol Buffer definitions for gRPC APIs
+- `openapi/` - OpenAPI/Swagger specifications for REST APIs
+
+### `/assets`
+Static assets that are embedded or used by the application:
+- `migrations/` - Database schema migrations
+- `templates/` - Email, report, and notification templates
+
+### `/build`
+Build-related files and outputs:
+- `ci/` - CI/CD pipeline configurations (GitHub Actions, etc.)
+- `dist/` - Built distribution packages
+- `package/` - Packaging configurations (Dockerfiles, etc.)
+- `scripts/` - Build helper scripts
+
+### `/cmd`
+Main applications for this project. Each subdirectory is a separate binary:
+- `cortex/` - Main orchestrator daemon
+- `db-backup/` - Database backup utility
+- `db-restore/` - Database restore utility
+
+### `/configs`
+Configuration file templates and examples. Your actual config (`cortex.toml`) goes in the project root and is gitignored.
+
+### `/deploy`
+Deployment and infrastructure configurations:
+- `docker/` - Docker and docker-compose files
+- `kubernetes/` - Kubernetes manifests
+- `systemd/` - Systemd service unit files
+
+### `/docs`
+Comprehensive documentation organized by audience:
+- `architecture/` - System design and architecture docs
+- `api/` - API usage and reference
+- `development/` - Setup and contribution guides
+- `operations/` - Running and maintaining Cortex
+- `runbooks/` - Step-by-step operational procedures
+
+### `/internal`
+Private application code. Packages here are not intended for external use.
+
+### `/scripts`
+Utility scripts organized by purpose:
+- `ci/` - Continuous integration scripts
+- `dev/` - Development helper scripts
+- `ops/` - Operational/maintenance scripts
+- `release/` - Release management scripts
+
+### `/test`
+Test utilities, fixtures, and integration tests.
+
 ## Key Files
 
-- `cortex.toml` - Your local config (gitignored, create from example)
-- `cortex.service` - systemd service file
-- `slo-thresholds.json` - SLO definitions
+| File | Purpose |
+|------|---------|
+| `cortex.toml` | Your local configuration (gitignored) |
+| `slo-thresholds.json` | Service Level Objective definitions |
+| `VERSION` | Current release version |
+| `AGENTS.md` | Instructions for AI coding agents |
+
+## Make Targets
+
+```bash
+make help              # Show all available targets
+make build             # Build cortex binary
+make build-all         # Build all binaries
+make test              # Run tests
+make test-race         # Run race detector tests
+make lint              # Run linters
+make lint-beads        # Validate bead quality
+make service-install   # Install systemd service
+make release           # Create a release
+```
+
+## Adding New Commands
+
+To add a new CLI command:
+
+1. Create a new directory under `cmd/`: `mkdir cmd/mycommand`
+2. Add `main.go` with your command implementation
+3. Update `Makefile` to include the new command in `build-all`
+4. Add documentation to `docs/`
+
+## Configuration
+
+Configuration follows a layered approach:
+
+1. **Defaults** - Hardcoded sensible defaults
+2. **Config file** - `cortex.toml` (version controlled example in `configs/`)
+3. **Environment variables** - Override config file settings
+4. **CLI flags** - Highest priority overrides
+
+See `configs/` for configuration examples.
