@@ -238,3 +238,48 @@ func TestGetProviderStatsIgnoresNonFailedStatusesInFailureCategories(t *testing.
 		t.Fatalf("expected unknown failures from non-failed statuses to be ignored, got %d (%v)", got, ps.FailureCategories)
 	}
 }
+
+func TestGetProjectVelocitiesAcrossProjects(t *testing.T) {
+	s := tempInMemoryStore(t)
+	now := time.Now().Add(-6 * time.Hour)
+
+	seedDispatch(t, s, "velocity-a-1", "project-a", "provider-a", "fast", "completed", 120, now)
+	seedDispatch(t, s, "velocity-a-2", "project-a", "provider-a", "fast", "completed", 180, now.Add(time.Minute))
+	seedDispatch(t, s, "velocity-b-1", "project-b", "provider-b", "fast", "completed", 60, now.Add(time.Minute*2))
+	seedDispatch(t, s, "velocity-b-fail", "project-b", "provider-b", "fast", "failed", 0, now.Add(time.Minute*3))
+
+	velocities, err := GetProjectVelocities(s, []string{"project-a", "project-b", "project-missing"}, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("GetProjectVelocities failed: %v", err)
+	}
+
+	a, ok := velocities["project-a"]
+	if !ok {
+		t.Fatalf("missing project-a velocity: %#v", velocities)
+	}
+	if a.Completed != 2 {
+		t.Fatalf("expected project-a completed=2, got %d", a.Completed)
+	}
+	if a.Project != "project-a" {
+		t.Fatalf("expected project-a, got %q", a.Project)
+	}
+	if a.BeadsPerDay <= 0 {
+		t.Fatalf("expected project-a beads/day > 0, got %.4f", a.BeadsPerDay)
+	}
+
+	b, ok := velocities["project-b"]
+	if !ok {
+		t.Fatalf("missing project-b velocity: %#v", velocities)
+	}
+	if b.Completed != 1 {
+		t.Fatalf("expected project-b completed=1, got %d", b.Completed)
+	}
+
+	missing, ok := velocities["project-missing"]
+	if !ok {
+		t.Fatalf("expected missing project key with zero values: %#v", velocities)
+	}
+	if missing.Completed != 0 || missing.BeadsPerDay != 0 {
+		t.Fatalf("expected zero velocity for missing project, got %+v", missing)
+	}
+}

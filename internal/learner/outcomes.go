@@ -170,6 +170,65 @@ func GetProjectVelocity(s *store.Store, project string, window time.Duration) (*
 	return v, nil
 }
 
+// GetProjectVelocities returns per-project velocity for the configured set of projects within a time window.
+func GetProjectVelocities(s *store.Store, projects []string, window time.Duration) (map[string]*ProjectVelocity, error) {
+	if s == nil {
+		return nil, fmt.Errorf("learner: nil store")
+	}
+	cutoff := time.Now().Add(-window).UTC().Format(time.DateTime)
+
+	projectSet := make(map[string]struct{}, len(projects))
+	velocities := make(map[string]*ProjectVelocity, len(projects))
+	for _, p := range projects {
+		project := strings.TrimSpace(p)
+		if project == "" {
+			continue
+		}
+		projectSet[project] = struct{}{}
+		velocities[project] = &ProjectVelocity{Project: project}
+	}
+	if len(projectSet) == 0 {
+		return velocities, nil
+	}
+
+	rows, err := s.DB().Query(`
+		SELECT project, COUNT(*), AVG(duration_s)
+		FROM dispatches
+		WHERE status = 'completed' AND dispatched_at >= ?
+		GROUP BY project
+	`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("learner: query project velocities: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var project string
+		var completed int
+		var avgDur *float64
+		if err := rows.Scan(&project, &completed, &avgDur); err != nil {
+			return nil, fmt.Errorf("learner: scan project velocity: %w", err)
+		}
+		if _, ok := projectSet[project]; !ok {
+			continue
+		}
+		v := velocities[project]
+		v.Completed = completed
+		if avgDur != nil {
+			v.AvgDurationS = *avgDur
+		}
+		days := window.Hours() / 24
+		if days > 0 {
+			v.BeadsPerDay = float64(completed) / days
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return velocities, nil
+}
+
 // GetFastTierCLIComparison compares specific CLI cohorts on the fast tier.
 func GetFastTierCLIComparison(s *store.Store, window time.Duration, cohorts []string) ([]FastTierCLIStats, error) {
 	if len(cohorts) == 0 {
@@ -244,20 +303,25 @@ func enrichProviderFailureCategories(s *store.Store, cutoff string, stats map[st
 			), '')
 		FROM dispatches d
 		WHERE d.dispatched_at >= ?
+		AND d.status = 'failed'
 	`, cutoff)
 	if err != nil {
 		return fmt.Errorf("learner: query provider failure categories: %w", err)
 	}
 	defer rows.Close()
 
+	type pendingFailure struct {
+		id       int64
+		category string
+		summary  string
+	}
+	var pendingUpdates []pendingFailure
+
 	for rows.Next() {
 		var dispatchID int64
 		var provider, status, failureCategory, logPath, output string
 		if err := rows.Scan(&dispatchID, &provider, &status, &failureCategory, &logPath, &output); err != nil {
 			return fmt.Errorf("learner: scan provider failure categories: %w", err)
-		}
-		if !strings.EqualFold(strings.TrimSpace(status), "failed") {
-			continue
 		}
 
 		ps := stats[provider]
@@ -277,7 +341,11 @@ func enrichProviderFailureCategories(s *store.Store, cutoff string, stats map[st
 			if diag := DiagnoseFailure(outputText); diag != nil {
 				category = strings.TrimSpace(diag.Category)
 				if category != "" {
-					_ = s.UpdateFailureDiagnosis(dispatchID, category, diag.Summary)
+					pendingUpdates = append(pendingUpdates, pendingFailure{
+						id:       dispatchID,
+						category: category,
+						summary:  diag.Summary,
+					})
 				}
 			}
 		}
@@ -288,5 +356,16 @@ func enrichProviderFailureCategories(s *store.Store, cutoff string, stats map[st
 		ps.FailureCategories[category]++
 		stats[provider] = ps
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("learner: iterate provider failure categories: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("learner: close provider failure categories rows: %w", err)
+	}
+
+	for _, pending := range pendingUpdates {
+		_ = s.UpdateFailureDiagnosis(pending.id, pending.category, pending.summary)
+	}
+
+	return nil
 }
