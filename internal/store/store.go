@@ -835,6 +835,57 @@ func (s *Store) GetRunningDispatches() ([]Dispatch, error) {
 	return s.queryDispatches(`SELECT ` + dispatchCols + ` FROM dispatches WHERE status = 'running'`)
 }
 
+// ProjectDispatchStatusCounts summarizes dispatch counts per project within a time window.
+type ProjectDispatchStatusCounts struct {
+	Project   string
+	Running   int
+	Completed int
+	Failed    int
+}
+
+// GetProjectDispatchStatusCounts returns counts grouped by project for running/completed/failed dispatches.
+func (s *Store) GetProjectDispatchStatusCounts(since time.Time) (map[string]ProjectDispatchStatusCounts, error) {
+	query := `
+		SELECT
+			project,
+			SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) AS running_count,
+			SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_count,
+			SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count
+		FROM dispatches`
+
+	args := make([]any, 0, 1)
+	if !since.IsZero() {
+		query += ` WHERE dispatched_at >= ?`
+		args = append(args, since.UTC().Format(time.DateTime))
+	}
+	query += ` GROUP BY project`
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: query project dispatch status counts: %w", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[string]ProjectDispatchStatusCounts)
+	for rows.Next() {
+		var project string
+		var running, completed, failed int
+		if err := rows.Scan(&project, &running, &completed, &failed); err != nil {
+			return nil, fmt.Errorf("store: scan project dispatch status counts: %w", err)
+		}
+		counts[project] = ProjectDispatchStatusCounts{
+			Project:   project,
+			Running:   running,
+			Completed: completed,
+			Failed:    failed,
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate project dispatch status counts: %w", err)
+	}
+	return counts, nil
+}
+
 // GetStuckDispatches returns running dispatches older than the given timeout.
 func (s *Store) GetStuckDispatches(timeout time.Duration) ([]Dispatch, error) {
 	cutoff := time.Now().Add(-timeout).UTC().Format(time.DateTime)
@@ -1347,6 +1398,7 @@ func (s *Store) RecordProviderUsage(provider, agentID, beadID string) (int64, er
 	if err != nil {
 		return 0, fmt.Errorf("store: record provider usage: %w", err)
 	}
+<<<<<<< HEAD
 	id, err := res.LastInsertId()
 	if err != nil {
 		return 0, fmt.Errorf("store: record provider usage id: %w", err)
@@ -1360,6 +1412,14 @@ func (s *Store) DeleteProviderUsage(id int64) error {
 		return nil
 	}
 	_, err := s.db.Exec(`DELETE FROM provider_usage WHERE rowid = ?`, id)
+=======
+	return res.LastInsertId()
+}
+
+// DeleteProviderUsage removes a provider usage record (used for rolling back reservations).
+func (s *Store) DeleteProviderUsage(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM provider_usage WHERE id = ?`, id)
+>>>>>>> 5b96a0d4 (feat(cortex): Store enhancements and additional functionality)
 	if err != nil {
 		return fmt.Errorf("store: delete provider usage: %w", err)
 	}
@@ -1640,6 +1700,53 @@ func (s *Store) GetTotalCost(project string) (float64, error) {
 		return 0, fmt.Errorf("store: get total cost: %w", err)
 	}
 	return totalCost, nil
+}
+
+// GetTotalCostSince returns total completed dispatch cost since the provided timestamp.
+// When project is non-empty, totals are scoped to that project.
+func (s *Store) GetTotalCostSince(project string, since time.Time) (float64, error) {
+	query := `SELECT COALESCE(SUM(cost_usd), 0) FROM dispatches WHERE status = 'completed' AND completed_at >= ?`
+	args := []any{since.UTC().Format(time.DateTime)}
+
+	if strings.TrimSpace(project) != "" {
+		query += ` AND project = ?`
+		args = append(args, project)
+	}
+
+	var totalCost float64
+	err := s.db.QueryRow(query, args...).Scan(&totalCost)
+	if err != nil {
+		return 0, fmt.Errorf("store: get total cost since: %w", err)
+	}
+	return totalCost, nil
+}
+
+// CountDispatchesSince counts dispatches since the provided timestamp.
+// If statuses is non-empty, counts only rows whose status matches one of the provided values.
+func (s *Store) CountDispatchesSince(since time.Time, statuses []string) (int, error) {
+	query := `SELECT COUNT(*) FROM dispatches WHERE dispatched_at >= ?`
+	args := []any{since.UTC().Format(time.DateTime)}
+
+	var cleaned []string
+	for _, status := range statuses {
+		if trimmed := strings.TrimSpace(status); trimmed != "" {
+			cleaned = append(cleaned, trimmed)
+		}
+	}
+	if len(cleaned) > 0 {
+		placeholders := strings.Repeat("?,", len(cleaned))
+		query += ` AND status IN (` + strings.TrimSuffix(placeholders, ",") + `)`
+		for _, status := range cleaned {
+			args = append(args, status)
+		}
+	}
+
+	var count int
+	err := s.db.QueryRow(query, args...).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("store: count dispatches since: %w", err)
+	}
+	return count, nil
 }
 
 // InterruptRunningDispatches marks all running dispatches as interrupted.
