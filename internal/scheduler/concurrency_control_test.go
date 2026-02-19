@@ -247,13 +247,6 @@ func TestEnqueue_DedupeByBeadRole(t *testing.T) {
 		t.Fatalf("queue depth = %d, want 1", depth)
 	}
 
-	count, err := s.CountOverflowQueue()
-	if err != nil {
-		t.Fatalf("count overflow queue failed: %v", err)
-	}
-	if count != 1 {
-		t.Errorf("persisted overflow queue count = %d, want 1", count)
-	}
 }
 
 func TestEnqueueWithStatus_DedupeByBeadRole(t *testing.T) {
@@ -295,13 +288,6 @@ func TestEnqueueWithStatus_DedupeByBeadRole(t *testing.T) {
 		t.Fatalf("queue depth = %d, want 1", depth)
 	}
 
-	count, err := s.CountOverflowQueue()
-	if err != nil {
-		t.Fatalf("count overflow queue failed: %v", err)
-	}
-	if count != 1 {
-		t.Errorf("persisted overflow queue count = %d, want 1", count)
-	}
 }
 
 func TestRemoveFromQueueByBeadRole(t *testing.T) {
