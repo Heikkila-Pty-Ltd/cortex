@@ -58,12 +58,12 @@ func (b *TmuxBackend) Dispatch(ctx context.Context, opts DispatchOpts) (Handle, 
 		return Handle{}, fmt.Errorf("tmux backend: CLI %q has empty command", cliName)
 	}
 
-	command, tempPromptPath, err := buildTmuxCommand(cliCfg, opts)
+	command, tempFiles, err := buildTmuxCommand(cliCfg, opts)
 	if err != nil {
 		return Handle{}, err
 	}
-	if tempPromptPath != "" {
-		defer os.Remove(tempPromptPath)
+	for _, tempFile := range tempFiles {
+		defer os.Remove(tempFile)
 	}
 
 	sessionName := SessionName("cortex", opts.Agent)
@@ -71,7 +71,7 @@ func (b *TmuxBackend) Dispatch(ctx context.Context, opts DispatchOpts) (Handle, 
 	if strings.TrimSpace(opts.WorkDir) != "" {
 		args = append(args, "-c", opts.WorkDir)
 	}
-	args = append(args, command)
+	args = append(args, command...)
 
 	cmd := exec.CommandContext(ctx, "tmux", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -178,7 +178,7 @@ func (b *TmuxBackend) sessionForHandle(handle Handle) string {
 	return b.sessions[handle.PID]
 }
 
-func buildTmuxCommand(cliCfg config.CLIConfig, opts DispatchOpts) (string, string, error) {
+func buildTmuxCommand(cliCfg config.CLIConfig, opts DispatchOpts) ([]string, []string, error) {
 	flags := append([]string{}, cliCfg.Args...)
 	mode := strings.TrimSpace(cliCfg.PromptMode)
 	if mode == "" {
@@ -195,22 +195,22 @@ func buildTmuxCommand(cliCfg config.CLIConfig, opts DispatchOpts) (string, strin
 	case "file":
 		f, err := os.CreateTemp("", "cortex-tmux-prompt-*.txt")
 		if err != nil {
-			return "", "", fmt.Errorf("tmux backend: create prompt file: %w", err)
+			return nil, nil, fmt.Errorf("tmux backend: create prompt file: %w", err)
 		}
 		tempPromptPath = f.Name()
 		if _, err := f.WriteString(opts.Prompt); err != nil {
 			_ = f.Close()
 			_ = os.Remove(tempPromptPath)
-			return "", "", fmt.Errorf("tmux backend: write prompt file: %w", err)
+			return nil, nil, fmt.Errorf("tmux backend: write prompt file: %w", err)
 		}
 		if err := f.Close(); err != nil {
 			_ = os.Remove(tempPromptPath)
-			return "", "", fmt.Errorf("tmux backend: close prompt file: %w", err)
+			return nil, nil, fmt.Errorf("tmux backend: close prompt file: %w", err)
 		}
 		promptValue = tempPromptPath
 		flags = replacePromptPathPlaceholders(flags, tempPromptPath)
 	default:
-		return "", "", fmt.Errorf("tmux backend: unsupported prompt_mode %q", mode)
+		return nil, nil, fmt.Errorf("tmux backend: unsupported prompt_mode %q", mode)
 	}
 
 	if strings.TrimSpace(cliCfg.ModelFlag) != "" && strings.TrimSpace(opts.Model) != "" {
@@ -225,14 +225,83 @@ func buildTmuxCommand(cliCfg config.CLIConfig, opts DispatchOpts) (string, strin
 		if tempPromptPath != "" {
 			_ = os.Remove(tempPromptPath)
 		}
-		return "", "", fmt.Errorf("tmux backend: %w", err)
+		return nil, nil, fmt.Errorf("tmux backend: %w", err)
 	}
 
-	base := BuildShellCommand(argv[0], argv[1:]...)
-	if mode == "stdin" {
-		base = fmt.Sprintf("printf %%s %s | %s", ShellEscape(opts.Prompt), base)
+	base := argv
+	tempFiles := []string{}
+	if tempPromptPath != "" {
+		tempFiles = append(tempFiles, tempPromptPath)
 	}
-	return base, tempPromptPath, nil
+	if mode == "stdin" {
+		var wrapperPath string
+		promptPath, err := writeToTempFile(opts.Prompt, "cortex-tmux-stdin-*.txt")
+		if err != nil {
+			for _, tempFile := range tempFiles {
+				_ = os.Remove(tempFile)
+			}
+			return nil, nil, fmt.Errorf("tmux backend: create stdin prompt file: %w", err)
+		}
+		tempFiles = append(tempFiles, promptPath)
+		base, wrapperPath, err = buildTmuxStdinCommand(argv, promptPath)
+		if err != nil {
+			for _, tempFile := range tempFiles {
+				_ = os.Remove(tempFile)
+			}
+			return nil, nil, fmt.Errorf("tmux backend: %w", err)
+		}
+		tempFiles = append(tempFiles, wrapperPath)
+	}
+
+	return base, tempFiles, nil
+}
+
+func buildTmuxStdinCommand(argv []string, promptPath string) ([]string, string, error) {
+	if len(argv) == 0 {
+		return nil, "", fmt.Errorf("tmux backend: empty provider command")
+	}
+	if promptPath == "" {
+		return nil, "", fmt.Errorf("tmux backend: stdin mode requires prompt path")
+	}
+
+	scriptFile, err := os.CreateTemp("", "cortex-tmux-stdin-*.sh")
+	if err != nil {
+		return nil, "", fmt.Errorf("tmux backend: create stdin wrapper script: %w", err)
+	}
+	scriptPath := scriptFile.Name()
+
+	wrapper := `#!/bin/sh
+prompt_file="$1"
+shift
+if [ -z "$prompt_file" ] || [ "$#" -eq 0 ]; then
+  echo "tmux backend: missing stdin wrapper args" >&2
+  exit 1
+fi
+if [ ! -f "$prompt_file" ]; then
+  echo "tmux backend: missing prompt file" >&2
+  exit 1
+fi
+exec < "$prompt_file"
+exec "$@"
+`
+	if _, err := scriptFile.WriteString(wrapper); err != nil {
+		_ = scriptFile.Close()
+		_ = os.Remove(scriptPath)
+		return nil, "", fmt.Errorf("tmux backend: write stdin wrapper script: %w", err)
+	}
+	if err := scriptFile.Close(); err != nil {
+		_ = os.Remove(scriptPath)
+		return nil, "", fmt.Errorf("tmux backend: close stdin wrapper script: %w", err)
+	}
+	if err := os.Chmod(scriptPath, 0700); err != nil {
+		_ = os.Remove(scriptPath)
+		return nil, "", fmt.Errorf("tmux backend: chmod stdin wrapper script: %w", err)
+	}
+
+	cmd := make([]string, 0, len(argv)+3)
+	cmd = append(cmd, "sh", scriptPath, promptPath)
+	cmd = append(cmd, argv...)
+	return cmd, scriptPath, nil
 }
 
 func hashSessionName(sessionName string) int {

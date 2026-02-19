@@ -7,6 +7,11 @@ type CommandBuilder func(provider, model, prompt string, flags []string) ([]stri
 
 var defaultCommandBuilder CommandBuilder = BuildCommand
 
+// BuildDispatchCommand builds provider argv using the configured command builder.
+func BuildDispatchCommand(provider, model, prompt string, flags []string) ([]string, error) {
+	return defaultCommandBuilder(provider, model, prompt, flags)
+}
+
 // Handle uniquely identifies a running dispatch.
 type Handle struct {
 	PID         int

@@ -34,6 +34,10 @@ func TestBuildCommand_Validation(t *testing.T) {
 	if _, err := BuildCommand("provider", "gpt-5", "hello", []string{"--message", "{prompt}"}); err == nil {
 		t.Fatal("expected error when model is provided without model placeholder")
 	}
+
+	if _, err := BuildCommand("provider", "", "", []string{"{unknown}"}); err == nil {
+		t.Fatal("expected error for unsupported placeholder token")
+	}
 }
 
 func TestBuildCommand_ObservedLegacyFailurePatterns(t *testing.T) {
@@ -47,7 +51,7 @@ func TestBuildCommand_ObservedLegacyFailurePatterns(t *testing.T) {
 		{name: "unknown_option_model", prompt: "hello --model gpt-4", unsafePattern: "unknown option '--model'"},
 		{name: "unterminated_quote", prompt: "Message with \"unterminated quote", unsafePattern: "Unterminated quoted string"},
 		{name: "bad_fd_number", prompt: "2>&bogus", unsafePattern: "Bad fd number"},
-		{name: "paren_unexpected", prompt: "(", unsafePattern: "( unexpected"},
+		{name: "paren_unexpected", prompt: "(", unsafePattern: "\"(\" unexpected"},
 	}
 
 	for _, tc := range tests {

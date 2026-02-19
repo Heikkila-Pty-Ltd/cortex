@@ -191,20 +191,24 @@ func clearStaleLocks(agent string) {
 	}
 }
 
-func buildTmuxAgentCommand(scriptPath, msgPath, agentPath, thinkingPath, providerPath string) string {
+func buildTmuxAgentCommand(scriptPath, msgPath, agentPath, thinkingPath, providerPath string) ([]string, error) {
 	argv, err := defaultCommandBuilder("sh", "", "", []string{scriptPath, msgPath, agentPath, thinkingPath, providerPath})
 	if err != nil {
 		// Fallback should never trigger because inputs are static and validated above.
-		return BuildShellCommand("sh", scriptPath, msgPath, agentPath, thinkingPath, providerPath)
+		return []string{"sh", scriptPath, msgPath, agentPath, thinkingPath, providerPath}, nil
 	}
 	// Execute a temp script file with all parameters passed via temp files
 	// to avoid shell parsing issues with user content.
-	return BuildShellCommand(argv[0], argv[1:]...)
+	return argv, nil
 }
 
 // buildSafeShellScript creates a shell script that safely sets environment variables
 // and executes the given command without any shell parsing issues
-func buildSafeShellScript(agentCmd string, env map[string]string) (string, error) {
+func buildSafeShellScript(agentCmd []string, env map[string]string) (string, error) {
+	if len(agentCmd) == 0 {
+		return "", fmt.Errorf("agent command is required")
+	}
+
 	var script strings.Builder
 
 	script.WriteString("#!/bin/bash\n")
@@ -227,11 +231,9 @@ func buildSafeShellScript(agentCmd string, env map[string]string) (string, error
 		script.WriteString("\n")
 	}
 
-	// Execute the command with exec to replace the shell process
-	// This ensures that the agent process gets the correct PID and signals
-	script.WriteString("exec ")
-	script.WriteString(agentCmd)
-	script.WriteString("\n")
+	// Execute the command with exec to replace the shell process.
+	// This ensures that the agent process gets the correct PID and signals.
+	script.WriteString("exec \"$@\"\n")
 
 	return script.String(), nil
 }
@@ -292,7 +294,12 @@ func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt stri
 	}
 
 	// Build agent command with all parameters passed via temp files
-	agentCmd := buildTmuxAgentCommand(scriptPath, promptPath, agentPath, thinkingPath, providerPath)
+	agentCmd, err := buildTmuxAgentCommand(scriptPath, promptPath, agentPath, thinkingPath, providerPath)
+	if err != nil {
+		os.Remove(promptPath)
+		os.Remove(scriptPath)
+		return 0, fmt.Errorf("tmux dispatch: build agent command: %w", err)
+	}
 
 	// Collect all temp files for cleanup
 	tempFiles := []string{promptPath, scriptPath, agentPath, thinkingPath, providerPath}
@@ -364,8 +371,8 @@ func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt stri
 }
 
 // dispatchWithRetry attempts to start a session with fallback for lock conflicts.
-func (d *TmuxDispatcher) dispatchWithRetry(ctx context.Context, sessionName, agentCmd, workDir string, env map[string]string, agent string) error {
-	err := d.DispatchToSession(ctx, sessionName, agentCmd, workDir, env)
+func (d *TmuxDispatcher) dispatchWithRetry(ctx context.Context, sessionName string, agentCmd []string, workDir string, env map[string]string, agent string) error {
+	err := d.DispatchToSessionArgs(ctx, sessionName, agentCmd, workDir, env)
 	if err != nil {
 		// If we get a session lock error, try clearing stale locks once and retry
 		if strings.Contains(err.Error(), "locked") || strings.Contains(err.Error(), "session file") {
@@ -373,7 +380,7 @@ func (d *TmuxDispatcher) dispatchWithRetry(ctx context.Context, sessionName, age
 			// Wait briefly for lock files to be processed
 			time.Sleep(100 * time.Millisecond)
 			// Retry once
-			err = d.DispatchToSession(ctx, sessionName, agentCmd, workDir, env)
+			err = d.DispatchToSessionArgs(ctx, sessionName, agentCmd, workDir, env)
 		}
 	}
 	return err
@@ -401,6 +408,17 @@ func (d *TmuxDispatcher) DispatchToSession(
 	ctx context.Context,
 	sessionName string,
 	agentCmd string,
+	workDir string,
+	env map[string]string,
+) error {
+	return d.DispatchToSessionArgs(ctx, sessionName, []string{"sh", "-c", agentCmd}, workDir, env)
+}
+
+// DispatchToSessionArgs starts an agent command inside a new tmux session using argv-style arguments.
+func (d *TmuxDispatcher) DispatchToSessionArgs(
+	ctx context.Context,
+	sessionName string,
+	agentCmd []string,
 	workDir string,
 	env map[string]string,
 ) error {
@@ -441,9 +459,14 @@ func (d *TmuxDispatcher) DispatchToSession(
 		"new-session",
 		"-d",
 		"-s", sessionName,
-		"-c", workDir,
 		"sh", scriptPath, // Execute the script directly
 	}
+
+	if strings.TrimSpace(workDir) != "" {
+		args = append([]string{"-c", workDir}, args...)
+	}
+
+	args = append(args, agentCmd...)
 
 	cmd := exec.CommandContext(ctx, "tmux", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
