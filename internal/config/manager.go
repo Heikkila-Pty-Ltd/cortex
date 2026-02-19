@@ -18,9 +18,14 @@ type RWMutexManager struct {
 	cfg *Config
 }
 
+// NewManager constructs a manager with an initial config.
+func NewManager(initial *Config) *RWMutexManager {
+	return &RWMutexManager{cfg: initial}
+}
+
 // NewRWMutexManager constructs a manager with an initial config.
 func NewRWMutexManager(initial *Config) *RWMutexManager {
-	return &RWMutexManager{cfg: initial}
+	return NewManager(initial)
 }
 
 // Get returns the current config pointer under a shared lock.

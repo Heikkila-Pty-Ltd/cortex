@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestRWMutexManagerGetSet(t *testing.T) {
@@ -79,6 +81,41 @@ func TestRWMutexManagerConcurrentReadWithWrites(t *testing.T) {
 	}
 }
 
+func TestLoadManager(t *testing.T) {
+	path := writeTestConfig(t, validConfig)
+	mgr, err := LoadManager(path)
+	if err != nil {
+		t.Fatalf("LoadManager failed: %v", err)
+	}
+	if mgr.Get() == nil {
+		t.Fatal("expected non-nil config from LoadManager")
+	}
+}
+
+func TestRWMutexManagerSetUsesExclusiveLock(t *testing.T) {
+	mgr := NewRWMutexManager(&Config{})
+	mgr.mu.RLock()
+
+	done := make(chan struct{})
+	go func() {
+		mgr.Set(&Config{General: General{LogLevel: "debug"}})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("writer completed while reader lock held; expected blocking")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	mgr.mu.RUnlock()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("writer did not complete after releasing reader lock")
+	}
+}
+
 func BenchmarkRWMutexManagerGet(b *testing.B) {
 	mgr := NewRWMutexManager(&Config{General: General{LogLevel: "info"}})
 	b.ReportAllocs()
@@ -88,6 +125,39 @@ func BenchmarkRWMutexManagerGet(b *testing.B) {
 			if cfg == nil {
 				b.Fatal("nil config")
 			}
+		}
+	})
+}
+
+func BenchmarkRWMutexManagerReadMostly(b *testing.B) {
+	mgr := NewRWMutexManager(&Config{General: General{MaxPerTick: 1}})
+	var writes atomic.Int64
+
+	stop := make(chan struct{})
+	defer close(stop)
+
+	go func() {
+		ticker := time.NewTicker(2 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				next := int(writes.Add(1))
+				mgr.Set(&Config{General: General{MaxPerTick: next}})
+			case <-stop:
+				return
+			}
+		}
+	}()
+
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			cfg := mgr.Get()
+			if cfg == nil {
+				b.Fatal("nil config")
+			}
+			_ = cfg.General.MaxPerTick
 		}
 	})
 }

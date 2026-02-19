@@ -49,16 +49,19 @@ type Config struct {
 }
 
 type General struct {
-	TickInterval     Duration `toml:"tick_interval"`
-	MaxPerTick       int      `toml:"max_per_tick"`
-	StuckTimeout     Duration `toml:"stuck_timeout"`
-	MaxRetries       int      `toml:"max_retries"`
-	RetryBackoffBase Duration `toml:"retry_backoff_base"`
-	RetryMaxDelay    Duration `toml:"retry_max_delay"`
-	DispatchCooldown Duration `toml:"dispatch_cooldown"`
-	LogLevel         string   `toml:"log_level"`
-	StateDB          string   `toml:"state_db"`
-	LockFile         string   `toml:"lock_file"`
+	TickInterval           Duration `toml:"tick_interval"`
+	MaxPerTick             int      `toml:"max_per_tick"`
+	StuckTimeout           Duration `toml:"stuck_timeout"`
+	MaxRetries             int      `toml:"max_retries"`
+	RetryBackoffBase       Duration `toml:"retry_backoff_base"`
+	RetryMaxDelay          Duration `toml:"retry_max_delay"`
+	DispatchCooldown       Duration `toml:"dispatch_cooldown"`
+	LogLevel               string   `toml:"log_level"`
+	StateDB                string   `toml:"state_db"`
+	LockFile               string   `toml:"lock_file"`
+	MaxConcurrentCoders    int      `toml:"max_concurrent_coders"`    // hard cap on concurrent coder agents
+	MaxConcurrentReviewers int      `toml:"max_concurrent_reviewers"` // hard cap on concurrent reviewer agents
+	MaxConcurrentTotal     int      `toml:"max_concurrent_total"`     // hard cap on total concurrent agents
 }
 
 // Cadence defines shared sprint cadence across all projects.
@@ -131,8 +134,11 @@ type StageConfig struct {
 }
 
 type Health struct {
-	CheckInterval Duration `toml:"check_interval"`
-	GatewayUnit   string   `toml:"gateway_unit"`
+	CheckInterval          Duration `toml:"check_interval"`
+	GatewayUnit            string   `toml:"gateway_unit"`
+	GatewayUserService     bool     `toml:"gateway_user_service"`     // use `systemctl --user` instead of system scope
+	ConcurrencyWarningPct  float64  `toml:"concurrency_warning_pct"`  // alert threshold (default 0.80)
+	ConcurrencyCriticalPct float64  `toml:"concurrency_critical_pct"` // critical threshold (default 0.95)
 }
 
 type Reporter struct {
@@ -245,6 +251,15 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// LoadManager reads config from path and returns a thread-safe manager.
+func LoadManager(path string) (*RWMutexManager, error) {
+	cfg, err := Load(path)
+	if err != nil {
+		return nil, err
+	}
+	return NewRWMutexManager(cfg), nil
+}
+
 func applyDefaults(cfg *Config) {
 	if cfg.General.TickInterval.Duration == 0 {
 		cfg.General.TickInterval.Duration = 60 * time.Second
@@ -270,6 +285,18 @@ func applyDefaults(cfg *Config) {
 	if cfg.General.LogLevel == "" {
 		cfg.General.LogLevel = "info"
 	}
+
+	// Concurrency limit defaults
+	if cfg.General.MaxConcurrentCoders == 0 {
+		cfg.General.MaxConcurrentCoders = 25
+	}
+	if cfg.General.MaxConcurrentReviewers == 0 {
+		cfg.General.MaxConcurrentReviewers = 10
+	}
+	if cfg.General.MaxConcurrentTotal == 0 {
+		cfg.General.MaxConcurrentTotal = 40
+	}
+
 	if cfg.RateLimits.Window5hCap == 0 {
 		cfg.RateLimits.Window5hCap = 20
 	}
@@ -338,6 +365,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Health.GatewayUnit == "" {
 		cfg.Health.GatewayUnit = "openclaw-gateway.service"
+	}
+	if cfg.Health.ConcurrencyWarningPct == 0 {
+		cfg.Health.ConcurrencyWarningPct = 0.80
+	}
+	if cfg.Health.ConcurrencyCriticalPct == 0 {
+		cfg.Health.ConcurrencyCriticalPct = 0.95
 	}
 
 	// Learner defaults
@@ -829,14 +862,63 @@ func validateDoDConfig(projectName string, dod DoDConfig) error {
 	return nil
 }
 
+// DispatchValidationIssue is a structured dispatch config validation failure.
+type DispatchValidationIssue struct {
+	FieldPath  string
+	Message    string
+	Suggestion string
+}
+
+// DispatchValidationError aggregates dispatch config validation failures.
+type DispatchValidationError struct {
+	Issues []DispatchValidationIssue
+}
+
+func (e *DispatchValidationError) Error() string {
+	if e == nil || len(e.Issues) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("dispatch validation failed")
+	for _, issue := range e.Issues {
+		b.WriteString("\n  - ")
+		if issue.FieldPath != "" {
+			b.WriteString(issue.FieldPath)
+			b.WriteString(": ")
+		}
+		b.WriteString(issue.Message)
+		if strings.TrimSpace(issue.Suggestion) != "" {
+			b.WriteString(" (suggestion: ")
+			b.WriteString(issue.Suggestion)
+			b.WriteString(")")
+		}
+	}
+	return b.String()
+}
+
+func (e *DispatchValidationError) add(fieldPath, message, suggestion string) {
+	e.Issues = append(e.Issues, DispatchValidationIssue{
+		FieldPath:  fieldPath,
+		Message:    message,
+		Suggestion: suggestion,
+	})
+}
+
 // ValidateDispatchConfig validates the dispatch configuration at startup.
 // This prevents runtime command failures due to config/CLI drift.
 func ValidateDispatchConfig(cfg *Config) error {
-	// Validate backend names match known types
-	knownBackends := map[string]bool{
-		"tmux":         true,
-		"headless_cli": true,
-		"openclaw":     true,
+	if cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+
+	knownBackends := map[string]struct{}{
+		"tmux":         {},
+		"headless_cli": {},
+		"openclaw":     {},
+	}
+	cliRequiredBackends := map[string]struct{}{
+		"tmux":         {},
+		"headless_cli": {},
 	}
 
 	routing := cfg.Dispatch.Routing
@@ -848,29 +930,106 @@ func ValidateDispatchConfig(cfg *Config) error {
 		"retry":    routing.RetryBackend,
 	}
 
-	// Check that all configured backends are known types
-	for tier, backend := range backends {
-		if backend != "" && !knownBackends[backend] {
-			return fmt.Errorf("invalid backend type %q for %s tier (valid: tmux, headless_cli, openclaw)", backend, tier)
+	validationErr := &DispatchValidationError{}
+	dispatchConfigured := len(cfg.Dispatch.CLI) > 0
+	for _, backend := range backends {
+		if strings.TrimSpace(backend) != "" {
+			dispatchConfigured = true
+			break
 		}
 	}
-
-	// Validate CLI configurations
-	for cliName, cliConfig := range cfg.Dispatch.CLI {
-		if err := validateCLIConfig(cliName, cliConfig); err != nil {
-			return fmt.Errorf("CLI config %q: %w", cliName, err)
-		}
-	}
-
-	// Validate provider->CLI bindings
-	for providerName, provider := range cfg.Providers {
-		if provider.CLI != "" {
-			if _, exists := cfg.Dispatch.CLI[provider.CLI]; !exists {
-				return fmt.Errorf("provider %q references undefined CLI config %q", providerName, provider.CLI)
+	if !dispatchConfigured {
+		for _, provider := range cfg.Providers {
+			if strings.TrimSpace(provider.CLI) != "" {
+				dispatchConfigured = true
+				break
 			}
 		}
 	}
 
+	// Validate backend names.
+	for tier, backend := range backends {
+		trimmed := strings.TrimSpace(backend)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := knownBackends[trimmed]; !ok {
+			validationErr.add(
+				fmt.Sprintf("dispatch.routing.%s_backend", tier),
+				fmt.Sprintf("invalid backend type %q (valid: tmux, headless_cli, openclaw)", backend),
+				"choose one of: tmux, headless_cli, openclaw",
+			)
+		}
+	}
+
+	// Validate CLI config blocks.
+	for cliName, cliConfig := range cfg.Dispatch.CLI {
+		if err := validateCLIConfig(cliName, cliConfig); err != nil {
+			validationErr.add(
+				fmt.Sprintf("dispatch.cli.%s", cliName),
+				err.Error(),
+				"check dispatch CLI configuration fields",
+			)
+		}
+	}
+
+	// Validate provider -> backend -> CLI requirements for dispatch tiers.
+	tierBackends := map[string]string{
+		"fast":     strings.TrimSpace(routing.FastBackend),
+		"balanced": strings.TrimSpace(routing.BalancedBackend),
+		"premium":  strings.TrimSpace(routing.PremiumBackend),
+	}
+	for providerName, provider := range cfg.Providers {
+		tier := strings.TrimSpace(strings.ToLower(provider.Tier))
+		backend := tierBackends[tier]
+		if dispatchConfigured && tier != "" && backend == "" {
+			validationErr.add(
+				fmt.Sprintf("providers.%s.tier", providerName),
+				fmt.Sprintf("tier %q requires dispatch.routing.%s_backend to be configured", tier, tier),
+				fmt.Sprintf("set dispatch.routing.%s_backend to tmux, headless_cli, or openclaw", tier),
+			)
+			continue
+		}
+		if _, needsCLI := cliRequiredBackends[backend]; !needsCLI {
+			continue
+		}
+
+		cliKey, source := resolveProviderCLIKey(provider.CLI, cfg.Dispatch.CLI)
+		if cliKey == "" {
+			validationErr.add(
+				fmt.Sprintf("providers.%s.cli", providerName),
+				fmt.Sprintf("no CLI binding resolved for provider %q using %s backend", providerName, backend),
+				fmt.Sprintf("set providers.%s.cli or define dispatch.cli.codex", providerName),
+			)
+			continue
+		}
+
+		cliCfg, ok := cfg.Dispatch.CLI[cliKey]
+		if !ok {
+			field := fmt.Sprintf("providers.%s.cli", providerName)
+			if source == "default_cli" {
+				field = "dispatch.cli"
+			}
+			validationErr.add(
+				field,
+				fmt.Sprintf("provider %q references undefined CLI config %q", providerName, cliKey),
+				fmt.Sprintf("add [dispatch.cli.%s] or update providers.%s.cli", cliKey, providerName),
+			)
+			continue
+		}
+
+		if strings.TrimSpace(provider.Model) != "" && strings.TrimSpace(cliCfg.ModelFlag) == "" {
+			validationErr.add(
+				fmt.Sprintf("dispatch.cli.%s.model_flag", cliKey),
+				fmt.Sprintf("model_flag is required for provider %q (model=%q)", providerName, provider.Model),
+				"set model_flag (for example --model or -m)",
+			)
+		}
+	}
+
+	if len(validationErr.Issues) > 0 {
+		return validationErr
+	}
 	return nil
 }
 
@@ -906,4 +1065,27 @@ func validateCLIConfig(name string, config CLIConfig) error {
 	}
 
 	return nil
+}
+
+// resolveProviderCLIKey resolves provider -> dispatch.cli key deterministically.
+// Resolution order (matching runtime defaults):
+// 1) providers.<name>.cli when set
+// 2) dispatch.cli.codex when present
+// 3) lexicographically first dispatch.cli key
+func resolveProviderCLIKey(explicitCLI string, cliConfigs map[string]CLIConfig) (key string, source string) {
+	if trimmed := strings.TrimSpace(explicitCLI); trimmed != "" {
+		return trimmed, "provider.cli"
+	}
+	if _, ok := cliConfigs["codex"]; ok {
+		return "codex", "default_cli"
+	}
+	keys := make([]string, 0, len(cliConfigs))
+	for key := range cliConfigs {
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return "", "none"
+	}
+	sort.Strings(keys)
+	return keys[0], "default_cli"
 }
