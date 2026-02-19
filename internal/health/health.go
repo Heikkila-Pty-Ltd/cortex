@@ -398,15 +398,20 @@ func cleanupLogFiles(logDir string, cutoff time.Time) (int, error) {
 	return deleted, err
 }
 
-func systemctlArgs(userService bool, args ...string) []string {
-	if userService {
-		return append([]string{"--user"}, args...)
+func systemctlArgs(userService bool, machineUser string, args ...string) []string {
+	if !userService {
+		return args
 	}
-	return args
+
+	prefix := []string{"--user"}
+	if machineUser != "" {
+		prefix = append(prefix, "--machine="+machineUser+"@.host")
+	}
+	return append(prefix, args...)
 }
 
-func systemctlCmd(ctx context.Context, userService bool, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "systemctl", systemctlArgs(userService, args...)...)
+func systemctlCmd(ctx context.Context, userService bool, machineUser string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "systemctl", systemctlArgs(userService, machineUser, args...)...)
 	if !userService {
 		return cmd
 	}
@@ -416,23 +421,19 @@ func systemctlCmd(ctx context.Context, userService bool, args ...string) *exec.C
 	busAddr := fmt.Sprintf("unix:path=%s/bus", runtimeDir)
 
 	env := os.Environ()
-	if os.Getenv("XDG_RUNTIME_DIR") == "" {
-		env = append(env, "XDG_RUNTIME_DIR="+runtimeDir)
+	if strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR")) == "" {
+		env = setOrReplaceEnvVar(env, "XDG_RUNTIME_DIR", runtimeDir)
 	}
-	if os.Getenv("DBUS_SESSION_BUS_ADDRESS") == "" {
-		env = append(env, "DBUS_SESSION_BUS_ADDRESS="+busAddr)
+	if strings.TrimSpace(os.Getenv("DBUS_SESSION_BUS_ADDRESS")) == "" {
+		env = setOrReplaceEnvVar(env, "DBUS_SESSION_BUS_ADDRESS", busAddr)
 	}
 	cmd.Env = env
 	return cmd
 }
 
 func isUnitActive(ctx context.Context, unit string, userService bool) (bool, error) {
-	cmd := systemctlCmd(ctx, userService, "is-active", unit)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	err := cmd.Run()
-	state := strings.TrimSpace(out.String())
+	state, err := runSystemctl(ctx, userService, "is-active", unit)
+	state = strings.TrimSpace(state)
 	switch state {
 	case "active":
 		return true, nil
@@ -446,9 +447,95 @@ func isUnitActive(ctx context.Context, unit string, userService bool) (bool, err
 }
 
 func restartUnit(ctx context.Context, unit string, userService bool) error {
-	return systemctlCmd(ctx, userService, "restart", unit).Run()
+	output, err := runSystemctl(ctx, userService, "restart", unit)
+	if err != nil && strings.TrimSpace(output) != "" {
+		return fmt.Errorf("systemctl restart %s: %w (%s)", unit, err, strings.TrimSpace(output))
+	}
+	return err
 }
 
 func clearStaleLocks() {
 	exec.Command("sh", "-c", "rm -f /tmp/openclaw-gateway*").Run()
+}
+
+func runSystemctl(ctx context.Context, userService bool, args ...string) (string, error) {
+	output, err := runSystemctlOnce(ctx, userService, "", args...)
+	if err == nil || !userService || !isUserBusUnavailableError(output) {
+		return output, err
+	}
+
+	machineUser := systemctlMachineUser()
+	if machineUser == "" {
+		return output, err
+	}
+	return runSystemctlOnce(ctx, userService, machineUser, args...)
+}
+
+func runSystemctlOnce(ctx context.Context, userService bool, machineUser string, args ...string) (string, error) {
+	cmd := systemctlCmd(ctx, userService, machineUser, args...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := cmd.Run()
+	return strings.TrimSpace(out.String()), err
+}
+
+func setOrReplaceEnvVar(env []string, key, value string) []string {
+	prefix := key + "="
+	target := prefix + value
+	out := make([]string, 0, len(env)+1)
+	replaced := false
+
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			if !replaced {
+				out = append(out, target)
+				replaced = true
+			}
+			continue
+		}
+		out = append(out, entry)
+	}
+	if !replaced {
+		out = append(out, target)
+	}
+	return out
+}
+
+func isUserBusUnavailableError(output string) bool {
+	text := strings.ToLower(strings.TrimSpace(output))
+	if text == "" {
+		return false
+	}
+	return strings.Contains(text, "failed to connect to user scope bus") ||
+		strings.Contains(text, "failed to connect to bus: no medium found") ||
+		strings.Contains(text, "$dbus_session_bus_address and $xdg_runtime_dir not defined")
+}
+
+func systemctlMachineUser() string {
+	candidates := []string{
+		strings.TrimSpace(os.Getenv("CORTEX_SYSTEMCTL_USER")),
+		strings.TrimSpace(os.Getenv("SUDO_USER")),
+		strings.TrimSpace(os.Getenv("LOGNAME")),
+		strings.TrimSpace(os.Getenv("USER")),
+		usernameFromHome(strings.TrimSpace(os.Getenv("HOME"))),
+	}
+	for _, candidate := range candidates {
+		if candidate == "" || strings.EqualFold(candidate, "root") {
+			continue
+		}
+		return candidate
+	}
+	return ""
+}
+
+func usernameFromHome(home string) string {
+	home = strings.TrimSpace(home)
+	if strings.HasPrefix(home, "/home/") || strings.HasPrefix(home, "/Users/") {
+		parts := strings.Split(home, "/")
+		if len(parts) >= 3 {
+			return strings.TrimSpace(parts[2])
+		}
+	}
+	return ""
 }
