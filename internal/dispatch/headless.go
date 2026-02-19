@@ -167,27 +167,31 @@ func (b *HeadlessBackend) Status(handle Handle) (DispatchStatus, error) {
 
 	b.mu.RLock()
 	p, ok := b.processes[pid]
+	if !ok {
+		b.mu.RUnlock()
+		if syscall.Kill(pid, 0) == nil {
+			return DispatchStatus{State: "running", ExitCode: -1}, nil
+		}
+		return DispatchStatus{State: "unknown", ExitCode: -1}, nil
+	}
+
+	state := p.state
+	exitCode := p.exitCode
 	b.mu.RUnlock()
-	if ok {
-		switch p.state {
+
+	switch state {
 		case "running":
 			if syscall.Kill(pid, 0) == nil {
 				return DispatchStatus{State: "running", ExitCode: -1}, nil
 			}
 			return DispatchStatus{State: "unknown", ExitCode: -1}, nil
 		case "completed":
-			return DispatchStatus{State: "completed", ExitCode: p.exitCode}, nil
+			return DispatchStatus{State: "completed", ExitCode: exitCode}, nil
 		case "failed":
-			return DispatchStatus{State: "failed", ExitCode: p.exitCode}, nil
+			return DispatchStatus{State: "failed", ExitCode: exitCode}, nil
 		default:
 			return DispatchStatus{State: "unknown", ExitCode: -1}, nil
-		}
 	}
-
-	if syscall.Kill(pid, 0) == nil {
-		return DispatchStatus{State: "running", ExitCode: -1}, nil
-	}
-	return DispatchStatus{State: "unknown", ExitCode: -1}, nil
 }
 
 func (b *HeadlessBackend) CaptureOutput(handle Handle) (string, error) {
@@ -198,12 +202,18 @@ func (b *HeadlessBackend) CaptureOutput(handle Handle) (string, error) {
 
 	b.mu.RLock()
 	p, ok := b.processes[pid]
-	b.mu.RUnlock()
-	if !ok || strings.TrimSpace(p.logPath) == "" {
+	if !ok {
+		b.mu.RUnlock()
 		return "", nil
 	}
 
-	output, err := os.ReadFile(p.logPath)
+	logPath := p.logPath
+	b.mu.RUnlock()
+	if strings.TrimSpace(logPath) == "" {
+		return "", nil
+	}
+
+	output, err := os.ReadFile(logPath)
 	if err != nil {
 		return "", fmt.Errorf("headless backend: read output: %w", err)
 	}
@@ -223,9 +233,13 @@ func (b *HeadlessBackend) Cleanup(handle Handle) error {
 		return nil
 	}
 
+	var tempPromptPath string
+	var logPath string
 	b.mu.Lock()
 	p, ok := b.processes[pid]
 	if ok {
+		tempPromptPath = p.tempPromptPath
+		logPath = p.logPath
 		delete(b.processes, pid)
 	}
 	b.mu.Unlock()
@@ -234,11 +248,11 @@ func (b *HeadlessBackend) Cleanup(handle Handle) error {
 		return nil
 	}
 
-	if p.tempPromptPath != "" {
-		_ = os.Remove(p.tempPromptPath)
+	if tempPromptPath != "" {
+		_ = os.Remove(tempPromptPath)
 	}
-	if b.retentionDays <= 0 && strings.TrimSpace(p.logPath) != "" {
-		_ = os.Remove(p.logPath)
+	if b.retentionDays <= 0 && strings.TrimSpace(logPath) != "" {
+		_ = os.Remove(logPath)
 	}
 	return nil
 }
@@ -278,9 +292,7 @@ func buildHeadlessArgs(cliCfg config.CLIConfig, opts DispatchOpts) ([]string, st
 	promptValue := opts.Prompt
 	switch mode {
 	case "stdin":
-		flags = replacePromptPlaceholders(flags, opts.Prompt)
 	case "arg":
-		flags = replacePromptPlaceholders(flags, opts.Prompt)
 	case "file":
 		f, err := os.CreateTemp("", "cortex-prompt-*.txt")
 		if err != nil {
@@ -297,7 +309,6 @@ func buildHeadlessArgs(cliCfg config.CLIConfig, opts DispatchOpts) ([]string, st
 			return nil, "", fmt.Errorf("headless backend: close prompt file: %w", err)
 		}
 		promptValue = tempPromptPath
-		flags = replacePromptPathPlaceholders(flags, tempPromptPath)
 	default:
 		return nil, "", fmt.Errorf("headless backend: unsupported prompt_mode %q", mode)
 	}
@@ -317,26 +328,6 @@ func buildHeadlessArgs(cliCfg config.CLIConfig, opts DispatchOpts) ([]string, st
 		return nil, "", fmt.Errorf("headless backend: %w", err)
 	}
 	return argv[1:], tempPromptPath, nil
-}
-
-func replacePromptPlaceholders(args []string, prompt string) []string {
-	out := make([]string, 0, len(args))
-	for _, arg := range args {
-		arg = strings.ReplaceAll(arg, "{prompt}", prompt)
-		arg = strings.ReplaceAll(arg, "{prompt_file}", prompt)
-		out = append(out, arg)
-	}
-	return out
-}
-
-func replacePromptPathPlaceholders(args []string, promptPath string) []string {
-	out := make([]string, 0, len(args))
-	for _, arg := range args {
-		arg = strings.ReplaceAll(arg, "{prompt}", promptPath)
-		arg = strings.ReplaceAll(arg, "{prompt_file}", promptPath)
-		out = append(out, arg)
-	}
-	return out
 }
 
 func sanitizeForFilename(v string) string {
