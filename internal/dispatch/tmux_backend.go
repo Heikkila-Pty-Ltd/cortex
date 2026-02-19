@@ -23,6 +23,9 @@ type TmuxBackend struct {
 	mu          sync.RWMutex
 	sessions    map[int]string
 	sessionLogs map[string]string
+	// sessionTempFiles tracks temp prompt/script files created per dispatch handle.
+	// Files are cleaned up in Cleanup() once the backend lifecycle finishes.
+	sessionTempFiles map[int][]string
 }
 
 func NewTmuxBackend(cliConfigs map[string]config.CLIConfig, historyLimit int) *TmuxBackend {
@@ -34,10 +37,11 @@ func NewTmuxBackend(cliConfigs map[string]config.CLIConfig, historyLimit int) *T
 		historyLimit = defaultHistoryLimit
 	}
 	return &TmuxBackend{
-		cliConfigs:   clis,
-		historyLimit: historyLimit,
-		sessions:     make(map[int]string),
-		sessionLogs:  make(map[string]string),
+		cliConfigs:       clis,
+		historyLimit:     historyLimit,
+		sessions:         make(map[int]string),
+		sessionLogs:      make(map[string]string),
+		sessionTempFiles: make(map[int][]string),
 	}
 }
 
@@ -62,8 +66,10 @@ func (b *TmuxBackend) Dispatch(ctx context.Context, opts DispatchOpts) (Handle, 
 	if err != nil {
 		return Handle{}, err
 	}
-	for _, tempFile := range tempFiles {
-		defer os.Remove(tempFile)
+	cleanupTempFiles := func() {
+		for _, tempFile := range tempFiles {
+			_ = os.Remove(tempFile)
+		}
 	}
 
 	sessionName := SessionName("cortex", opts.Agent)
@@ -75,21 +81,25 @@ func (b *TmuxBackend) Dispatch(ctx context.Context, opts DispatchOpts) (Handle, 
 
 	cmd := exec.CommandContext(ctx, "tmux", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
+		cleanupTempFiles()
 		return Handle{}, fmt.Errorf("tmux backend: create session %q: %w (%s)", sessionName, err, strings.TrimSpace(string(out)))
 	}
 
 	if out, err := exec.Command("tmux", "set", "-t", sessionName, "remain-on-exit", "on").CombinedOutput(); err != nil {
 		_ = KillSession(sessionName)
+		cleanupTempFiles()
 		return Handle{}, fmt.Errorf("tmux backend: set remain-on-exit for %q: %w (%s)", sessionName, err, strings.TrimSpace(string(out)))
 	}
 	if out, err := exec.Command("tmux", "set-option", "-t", sessionName, "history-limit", strconv.Itoa(b.historyLimit)).CombinedOutput(); err != nil {
 		_ = KillSession(sessionName)
+		cleanupTempFiles()
 		return Handle{}, fmt.Errorf("tmux backend: set history-limit for %q: %w (%s)", sessionName, err, strings.TrimSpace(string(out)))
 	}
 
 	handle := hashSessionName(sessionName)
 	b.mu.Lock()
 	b.sessions[handle] = sessionName
+	b.sessionTempFiles[handle] = append([]string{}, tempFiles...)
 	if strings.TrimSpace(opts.LogPath) != "" {
 		b.sessionLogs[sessionName] = opts.LogPath
 	}
@@ -165,7 +175,13 @@ func (b *TmuxBackend) Cleanup(handle Handle) error {
 	b.mu.Lock()
 	delete(b.sessions, handle.PID)
 	delete(b.sessionLogs, sessionName)
+	tempFiles := b.sessionTempFiles[handle.PID]
+	delete(b.sessionTempFiles, handle.PID)
 	b.mu.Unlock()
+
+	for _, tempFile := range tempFiles {
+		_ = os.Remove(tempFile)
+	}
 	return nil
 }
 
@@ -189,9 +205,7 @@ func buildTmuxCommand(cliCfg config.CLIConfig, opts DispatchOpts) ([]string, []s
 	promptValue := opts.Prompt
 	switch mode {
 	case "arg":
-		flags = replacePromptPlaceholders(flags, opts.Prompt)
 	case "stdin":
-		flags = replacePromptPlaceholders(flags, opts.Prompt)
 	case "file":
 		f, err := os.CreateTemp("", "cortex-tmux-prompt-*.txt")
 		if err != nil {
@@ -208,7 +222,6 @@ func buildTmuxCommand(cliCfg config.CLIConfig, opts DispatchOpts) ([]string, []s
 			return nil, nil, fmt.Errorf("tmux backend: close prompt file: %w", err)
 		}
 		promptValue = tempPromptPath
-		flags = replacePromptPathPlaceholders(flags, tempPromptPath)
 	default:
 		return nil, nil, fmt.Errorf("tmux backend: unsupported prompt_mode %q", mode)
 	}
