@@ -29,14 +29,23 @@ Keep implementation costs low by moving decision-making into plan-space:
 
 ## Readiness Definition
 
+The `stage:ready` gate is a hard preflight:
+
+- `lint-beads` must pass with all `stage:ready` requirements
+- scheduler preflight auto-reverts any invalid `stage:ready` bead back to `stage:planning`
+
 A bead is executable only when all are true:
 
 - `stage:ready`
-- acceptance criteria exists
-- design notes exists
-- estimate exists
+- acceptance criteria exists and explicitly includes:
+  - a test requirement (for example: `test`, `unit test`, `integration test`, or `e2e`)
+  - a DoD requirement (`DoD` or `definition of done`)
+- design notes exists (non-empty)
+- estimate exists (`estimated_minutes > 0`)
 - dependencies are satisfied
 - bead is included in the active approved plan frontier
+
+Invalid `stage:ready` beads are auto-reverted by scheduler preflight to `stage:planning`, with a bead note and `stage_ready_gate_reverted` health event.
 
 ## Execution Gate
 
@@ -70,4 +79,3 @@ Human approval is required before plan policy changes become active.
 - Bot-autonomous: execution, monitoring, routine summaries, and optimization suggestions.
 - Human-required: activating plans and approving policy-impacting changes.
 - Human-by-exception: reviews/retros when risk thresholds are breached.
-
