@@ -128,6 +128,20 @@ esac
 
 	cfg := &config.Config{
 		Chief: config.Chief{Enabled: true, AgentID: "chief-sm"},
+		Providers: map[string]config.Provider{
+			"premium-provider": {
+				Tier:   "premium",
+				Authed: true,
+				Model:  "gpt-5.3-codex",
+				CLI:    "codex",
+			},
+			"balanced-provider": {
+				Tier:   "balanced",
+				Authed: true,
+				Model:  "gpt-5.3-codex",
+				CLI:    "codex",
+			},
+		},
 		Tiers: config.Tiers{
 			Premium:  []string{"premium-provider"},
 			Balanced: []string{"balanced-provider"},
