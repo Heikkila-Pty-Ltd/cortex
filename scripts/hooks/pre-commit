@@ -1,0 +1,38 @@
+#!/bin/bash
+
+# Prevent direct commits to master/main
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+if [ "$BRANCH" = "master" ] || [ "$BRANCH" = "main" ]; then
+    echo ""
+    echo "════════════════════════════════════════════════════════════════"
+    echo "❌ ERROR: Direct commits to $BRANCH are not allowed!"
+    echo "════════════════════════════════════════════════════════════════"
+    echo ""
+    echo "Please create a feature branch instead:"
+    echo ""
+    echo "  git checkout -b feature/your-feature-name"
+    echo "  git commit -m \"your message\""
+    echo ""
+    echo "Or use a worktree for parallel work:"
+    echo ""
+    echo "  git worktree add ../cortex-feature feature/your-feature-name"
+    echo "  cd ../cortex-feature"
+    echo "  # work and commit here"
+    echo ""
+    echo "Branch naming conventions:"
+    echo "  feature/*  - New features"
+    echo "  fix/*      - Bug fixes"
+    echo "  chore/*    - Maintenance tasks"
+    echo "  refactor/* - Code refactoring"
+    echo ""
+    echo "To bypass this check (ONLY for emergencies):"
+    echo "  git commit --no-verify"
+    echo ""
+    echo "════════════════════════════════════════════════════════════════"
+    echo ""
+    exit 1
+fi
+
+# Hook passed
+exit 0
