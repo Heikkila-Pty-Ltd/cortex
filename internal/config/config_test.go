@@ -169,6 +169,22 @@ merge_method = "invalid"
 	}
 }
 
+func TestLoadProjectMergeConfigEmptyMergeMethod(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.merge-empty]
+enabled = true
+beads_dir = "/tmp/merge-empty/.beads"
+workspace = "/tmp/merge-empty"
+priority = 1
+merge_method = ""
+`
+	path := writeTestConfig(t, cfg)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected empty merge_method to fail")
+	}
+}
+
 func TestLoadProjectMergeConfigCustom(t *testing.T) {
 	cfg := validConfig + `
 

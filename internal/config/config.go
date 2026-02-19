@@ -83,10 +83,10 @@ type Project struct {
 	BaseBranch   string `toml:"base_branch"`   // branch to create features from (default "main")
 	BranchPrefix string `toml:"branch_prefix"` // prefix for feature branches (default "feat/")
 	UseBranches  bool   `toml:"use_branches"`  // enable branch workflow (default false)
-	MergeMethod  string `toml:"merge_method"`  // squash, merge, rebase
+	MergeMethod  string `toml:"merge_method"`  // squash, merge, rebase (default squash)
 
 	PostMergeChecks     []string `toml:"post_merge_checks"`      // checks run after PR merge
-	AutoRevertOnFailure bool     `toml:"auto_revert_on_failure"` // auto-revert merge when post-merge checks fail
+	AutoRevertOnFailure bool     `toml:"auto_revert_on_failure"` // auto-revert merge when post-merge checks fail (default true)
 
 	// Sprint planning configuration (optional for backward compatibility)
 	SprintPlanningDay  string `toml:"sprint_planning_day"`  // day of week for sprint planning (e.g., "Monday")
@@ -624,7 +624,7 @@ func applyDefaults(cfg *Config, md toml.MetaData) {
 		if project.BranchPrefix == "" {
 			project.BranchPrefix = "feat/"
 		}
-		if strings.TrimSpace(project.MergeMethod) == "" {
+		if !md.IsDefined("projects", name, "merge_method") {
 			project.MergeMethod = "squash"
 		}
 		project.MergeMethod = strings.ToLower(strings.TrimSpace(project.MergeMethod))
@@ -1217,10 +1217,6 @@ func validateRetryPolicy(fieldPath string, policy RetryPolicy) error {
 
 func validateProjectMergeConfig(projectName string, project Project) error {
 	method := strings.ToLower(strings.TrimSpace(project.MergeMethod))
-	if method == "" {
-		return nil
-	}
-
 	switch method {
 	case "squash", "merge", "rebase":
 		return nil
