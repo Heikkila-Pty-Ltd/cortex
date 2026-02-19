@@ -204,7 +204,8 @@ func runOpenclawShellScriptWithStub(t *testing.T, prompt string, mode string) (c
 }
 
 func TestOpenclawShellScript_LargePromptSkipsInlineMessage(t *testing.T) {
-	prompt := strings.Repeat("x", MaxCLIArgSize+1)
+	limit := maxArgSizeFromSystem(t)
+	prompt := strings.Repeat("x", limit+1)
 	captured, output, fallbackTriggered := runOpenclawShellScriptWithStub(t, prompt, "require_stdin")
 	if fallbackTriggered {
 		t.Fatal("did not expect fallback when large prompt uses stdin")

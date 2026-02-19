@@ -25,7 +25,7 @@ var maxCLIArgSize = discoverMaxCLIArgSize()
 // Cortex hardening in cortex-46d.7.3 explicitly targets CLI headless/tmux
 // command construction, not this legacy openclaw PID/legacy path.
 func openclawShellScript() string {
-	return openclawShellScriptWithPromptInlineLimit(MaxCLIArgSize)
+	return openclawShellScriptWithPromptInlineLimit(maxCLIArgSize)
 }
 
 func discoverMaxCLIArgSize() int {
@@ -65,7 +65,7 @@ prompt_inline_limit=%d
 inline_message=1
 
 prompt_bytes="$(wc -c < "$msg_file" 2>/dev/null || echo 0)"
-if [ "$prompt_bytes" -gt "$prompt_inline_limit" ]; then
+if [ "$prompt_bytes" -ge "$prompt_inline_limit" ]; then
   inline_message=0
 fi
 
