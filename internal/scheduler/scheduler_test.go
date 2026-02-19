@@ -908,6 +908,67 @@ func TestRunTick_EndToEndScenarios(t *testing.T) {
 		}
 	})
 
+	t.Run("structure requirements block coder assignment before dispatch", func(t *testing.T) {
+		lister := NewMockBeadsLister()
+		project := config.Project{
+			Enabled:   true,
+			Priority:  1,
+			Workspace: "/tmp/ws-structure-coder",
+			BeadsDir:  "/tmp/p-structure-coder",
+			DoD: config.DoDConfig{
+				RequireEstimate:   true,
+				RequireAcceptance: true,
+			},
+		}
+		cfg := newRunTickScenarioConfig(5, map[string]config.Project{"test-project": project})
+		logBuf := &bytes.Buffer{}
+		sched, _, backend := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+		bead := createTestBead("structure-coder-1", "missing structure", "task", "open", 1)
+		bead.Labels = []string{"stage:coding"}
+		bead.Acceptance = "   "
+		bead.EstimateMinutes = 0
+		lister.SetBeads(project.BeadsDir, []beads.Bead{bead})
+
+		sched.RunTick(context.Background())
+
+		if got := len(backend.Dispatches()); got != 0 {
+			t.Fatalf("dispatch count = %d, want 0", got)
+		}
+		if !strings.Contains(logBuf.String(), "dispatch blocked by bead structure requirements") {
+			t.Fatalf("expected structure-block log, got: %s", logBuf.String())
+		}
+	})
+
+	t.Run("structure requirements do not block scrum backlog refinement assignment", func(t *testing.T) {
+		lister := NewMockBeadsLister()
+		project := config.Project{
+			Enabled:   true,
+			Priority:  1,
+			Workspace: "/tmp/ws-structure-scrum",
+			BeadsDir:  "/tmp/p-structure-scrum",
+			DoD: config.DoDConfig{
+				RequireEstimate:   true,
+				RequireAcceptance: true,
+			},
+		}
+		cfg := newRunTickScenarioConfig(5, map[string]config.Project{"test-project": project})
+		logBuf := &bytes.Buffer{}
+		sched, _, backend := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+		bead := createTestBead("structure-scrum-1", "needs refinement", "task", "open", 1)
+		bead.Labels = []string{"stage:backlog"}
+		bead.Acceptance = ""
+		bead.EstimateMinutes = 0
+		lister.SetBeads(project.BeadsDir, []beads.Bead{bead})
+
+		sched.RunTick(context.Background())
+
+		if got := len(backend.Dispatches()); got != 1 {
+			t.Fatalf("dispatch count = %d, want 1", got)
+		}
+	})
+
 	t.Run("agent busy skips dispatch", func(t *testing.T) {
 		lister := NewMockBeadsLister()
 		project := config.Project{Enabled: true, Priority: 1, Workspace: "/tmp/ws7", BeadsDir: "/tmp/p7"}

@@ -54,6 +54,7 @@ type Scheduler struct {
 	churnBlock             map[string]time.Time
 	epicBreakup            map[string]time.Time
 	claimAnomaly           map[string]time.Time
+	dispatchBlockAnomaly   map[string]time.Time
 	gatewayCircuitUntil    time.Time
 	gatewayCircuitLogAt    time.Time
 	planGateLogAt          time.Time
@@ -120,6 +121,7 @@ const (
 	claimLeaseGrace       = 1 * time.Minute
 	terminalClaimGrace    = 2 * time.Minute
 	claimAnomalyLogWindow = 10 * time.Minute
+	dispatchBlockLogWindow = 10 * time.Minute
 
 	gatewayFailureWindow    = 2 * time.Minute
 	gatewayFailureThreshold = 5
@@ -161,6 +163,7 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 		churnBlock:                make(map[string]time.Time),
 		epicBreakup:               make(map[string]time.Time),
 		claimAnomaly:              make(map[string]time.Time),
+		dispatchBlockAnomaly:      make(map[string]time.Time),
 		utilizationSampleInterval: 1 * time.Minute,
 		dodQueue:                  make(chan dodQueueItem, dodQueueCapacity),
 		dodQueued:                 make(map[string]struct{}),
@@ -233,6 +236,79 @@ func (s *Scheduler) hasLiveSessionSafe(agent string) bool {
 		return s.hasLiveSession(agent)
 	}
 	return dispatch.HasLiveSession(agent)
+}
+
+func workflowStageForBead(bead beads.Bead) string {
+	bestStage := ""
+	bestOrder := -1
+	for _, label := range bead.Labels {
+		if order, ok := stageOrder[label]; ok && order > bestOrder {
+			bestStage = label
+			bestOrder = order
+		}
+	}
+	return bestStage
+}
+
+func requiresStructuredBeadBeforeDispatch(role string) bool {
+	switch role {
+	case "coder", "reviewer", "ops":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Scheduler) validateBeadStructureForDispatch(project config.Project, bead beads.Bead, role string) []string {
+	if !requiresStructuredBeadBeforeDispatch(role) {
+		return nil
+	}
+
+	failures := make([]string, 0, 2)
+	if project.DoD.RequireEstimate && bead.EstimateMinutes <= 0 {
+		failures = append(failures, "missing estimate (required before assignment)")
+	}
+	if project.DoD.RequireAcceptance && strings.TrimSpace(bead.Acceptance) == "" {
+		failures = append(failures, "missing acceptance criteria (required before assignment)")
+	}
+	return failures
+}
+
+func (s *Scheduler) reportDispatchBlockedByStructure(ctx context.Context, projectName string, bead beads.Bead, role string, failures []string) {
+	if len(failures) == 0 {
+		return
+	}
+	reason := strings.Join(failures, "; ")
+	stage := workflowStageForBead(bead)
+	key := "dispatch_structure_blocked:" + projectName + ":" + bead.ID
+	now := time.Now()
+	if last, ok := s.dispatchBlockAnomaly[key]; ok && now.Sub(last) < dispatchBlockLogWindow {
+		return
+	}
+	s.dispatchBlockAnomaly[key] = now
+
+	s.logger.Warn("dispatch blocked by bead structure requirements",
+		"project", projectName,
+		"bead", bead.ID,
+		"role", role,
+		"stage", stage,
+		"requirements", reason,
+	)
+	_ = s.store.RecordHealthEventWithDispatch(
+		"dispatch_blocked_structure",
+		fmt.Sprintf("project %s bead %s blocked before assignment (%s): %s", projectName, bead.ID, role, reason),
+		0,
+		bead.ID,
+	)
+	s.reportBeadLifecycle(ctx, beadLifecycleEvent{
+		Project:       projectName,
+		BeadID:        bead.ID,
+		Event:         "dispatch_blocked",
+		WorkflowStage: stage,
+		Status:        bead.Status,
+		AgentID:       ResolveAgent(projectName, role),
+		Note:          "blocked before assignment: " + reason,
+	})
 }
 
 func (s *Scheduler) ensureTeamSafe(project, workspace, model string, roles []string, logger *slog.Logger) ([]string, error) {
@@ -523,6 +599,12 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		if role == "skip" {
 			continue
 		}
+		stage := workflowStageForBead(item.bead)
+
+		if failures := s.validateBeadStructureForDispatch(item.project, item.bead, role); len(failures) > 0 {
+			s.reportDispatchBlockedByStructure(ctx, item.name, item.bead, role, failures)
+			continue
+		}
 
 		// Check agent-busy guard: one dispatch per agent per project per tick
 		agent := ResolveAgent(item.name, role)
@@ -585,15 +667,6 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		if provider == nil {
 			s.logger.Warn("no provider available, deferring", "bead", item.bead.ID, "tier", tier)
 			continue
-		}
-
-		// Determine stage for logging and diff fetching
-		stage := ""
-		for _, label := range item.bead.Labels {
-			if len(label) > 6 && label[:6] == "stage:" {
-				stage = label
-				break
-			}
 		}
 
 		// Fetch PR diff if this is a reviewer dispatch
