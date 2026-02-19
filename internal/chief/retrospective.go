@@ -2,6 +2,7 @@ package chief
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -25,19 +26,21 @@ type retrospectiveActionItem struct {
 
 // RetrospectiveRecorder handles post-processing for overall retrospective ceremonies.
 type RetrospectiveRecorder struct {
-	cfg        *config.Config
-	store      *store.Store
-	dispatcher dispatch.DispatcherInterface
-	logger     *slog.Logger
+	cfg         *config.Config
+	store       *store.Store
+	dispatcher  dispatch.DispatcherInterface
+	logger      *slog.Logger
+	createIssue func(context.Context, string, string, string, int, string, []string) (string, error)
 }
 
 // NewRetrospectiveRecorder creates a recorder for overall retrospective outcomes.
 func NewRetrospectiveRecorder(cfg *config.Config, store *store.Store, dispatcher dispatch.DispatcherInterface, logger *slog.Logger) *RetrospectiveRecorder {
 	return &RetrospectiveRecorder{
-		cfg:        cfg,
-		store:      store,
-		dispatcher: dispatcher,
-		logger:     logger,
+		cfg:         cfg,
+		store:       store,
+		dispatcher:  dispatcher,
+		logger:      logger,
+		createIssue: beads.CreateIssueCtx,
 	}
 }
 
@@ -50,8 +53,11 @@ func (rr *RetrospectiveRecorder) RecordRetrospectiveResults(ctx context.Context,
 		return fmt.Errorf("retrospective output is empty")
 	}
 
+	var errs []error
+
 	if err := rr.sendRetrospectiveSummaryToMatrix(ctx, ceremonyID, output); err != nil {
 		rr.logger.Warn("failed to send retrospective summary to matrix", "error", err, "ceremony_id", ceremonyID)
+		errs = append(errs, err)
 	}
 
 	actionItems := parseRetrospectiveActionItems(output)
@@ -64,6 +70,7 @@ func (rr *RetrospectiveRecorder) RecordRetrospectiveResults(ctx context.Context,
 				"title", item.Title,
 				"project", item.ProjectName,
 				"error", err)
+			errs = append(errs, err)
 			continue
 		}
 		created++
@@ -81,10 +88,16 @@ func (rr *RetrospectiveRecorder) RecordRetrospectiveResults(ctx context.Context,
 		}
 	}
 
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
 	return nil
 }
 
 func (rr *RetrospectiveRecorder) sendRetrospectiveSummaryToMatrix(ctx context.Context, ceremonyID, output string) error {
+	if rr.cfg == nil {
+		return fmt.Errorf("retrospective config is nil")
+	}
 	room := strings.TrimSpace(rr.cfg.Chief.MatrixRoom)
 	if room == "" {
 		return nil
@@ -123,6 +136,9 @@ func (rr *RetrospectiveRecorder) sendRetrospectiveSummaryToMatrix(ctx context.Co
 }
 
 func (rr *RetrospectiveRecorder) createActionItemBead(ctx context.Context, ceremonyID string, item retrospectiveActionItem) (string, error) {
+	if rr.cfg == nil {
+		return "", fmt.Errorf("retrospective config is nil")
+	}
 	projectName := strings.TrimSpace(item.ProjectName)
 	if projectName == "" {
 		projectName = "cortex"
@@ -155,7 +171,11 @@ func (rr *RetrospectiveRecorder) createActionItemBead(ctx context.Context, cerem
 		emptyFallback(item.Why, "not specified"),
 	)
 
-	return beads.CreateIssueCtx(ctx, beadsDir, title, "task", normalizePriority(item.Priority), description, nil)
+	createIssue := rr.createIssue
+	if createIssue == nil {
+		createIssue = beads.CreateIssueCtx
+	}
+	return createIssue(ctx, beadsDir, title, "task", normalizePriority(item.Priority), description, nil)
 }
 
 func (rr *RetrospectiveRecorder) defaultProject() (string, config.Project) {

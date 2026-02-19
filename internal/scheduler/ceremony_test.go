@@ -136,5 +136,33 @@ func TestHasRunningCeremonyDispatch(t *testing.T) {
 	t.Log("TestHasRunningCeremonyDispatch: ceremony detection logic test completed")
 }
 
+func TestOverallRetrospectiveScheduleRunsAfterProjectRetrospective(t *testing.T) {
+	cfg := &config.Config{
+		Chief: config.Chief{
+			Enabled: true,
+		},
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
+	cs := NewCeremonyScheduler(cfg, nil, nil, logger)
+
+	schedules := cs.GetSchedules()
+	projectRetro := schedules[chief.CeremonySprintRetro]
+	overallRetro := schedules[chief.CeremonyRetrospective]
+
+	if projectRetro.DayOfWeek != overallRetro.DayOfWeek {
+		t.Fatalf("expected overall retro to be on same day as project retro, got %v vs %v", overallRetro.DayOfWeek, projectRetro.DayOfWeek)
+	}
+
+	projectMins := projectRetro.TimeOfDay.Hour()*60 + projectRetro.TimeOfDay.Minute()
+	overallMins := overallRetro.TimeOfDay.Hour()*60 + overallRetro.TimeOfDay.Minute()
+	if overallMins <= projectMins {
+		t.Fatalf("expected overall retro to run after project retro, got %02d:%02d <= %02d:%02d",
+			overallRetro.TimeOfDay.Hour(),
+			overallRetro.TimeOfDay.Minute(),
+			projectRetro.TimeOfDay.Hour(),
+			projectRetro.TimeOfDay.Minute())
+	}
+}
+
 // Note: Full integration tests would require a real store instance
 // These tests focus on the ceremony scheduling logic
