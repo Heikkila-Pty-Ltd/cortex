@@ -229,6 +229,41 @@ func TestIsBeadDispatched(t *testing.T) {
 	}
 }
 
+func TestGetProjectDispatchStatusCounts(t *testing.T) {
+	s := tempStore(t)
+
+	now := time.Now().UTC()
+
+	seedDispatchAtTime(t, s, "dispatch-running", "project-alpha", "running", now.Add(-2*time.Hour), 0)
+	seedDispatchAtTime(t, s, "dispatch-completed", "project-alpha", "completed", now.Add(-1*time.Hour), 120)
+	seedDispatchAtTime(t, s, "dispatch-failed", "project-alpha", "failed", now.Add(-26*time.Hour), 0)
+
+	seedDispatchAtTime(t, s, "dispatch-beta-running", "project-beta", "running", now.Add(-3*time.Hour), 0)
+	seedDispatchAtTime(t, s, "dispatch-beta-completed", "project-beta", "completed", now.Add(-4*time.Hour), 90)
+	seedDispatchAtTime(t, s, "dispatch-beta-failed", "project-beta", "failed", now.Add(-30*time.Hour), 0)
+
+	counts, err := s.GetProjectDispatchStatusCounts(now.Add(-24 * time.Hour))
+	if err != nil {
+		t.Fatalf("GetProjectDispatchStatusCounts failed: %v", err)
+	}
+
+	alpha, ok := counts["project-alpha"]
+	if !ok {
+		t.Fatalf("missing project-alpha counts: %#v", counts)
+	}
+	if alpha.Running != 1 || alpha.Completed != 1 || alpha.Failed != 0 {
+		t.Fatalf("unexpected project-alpha counts: %#v", alpha)
+	}
+
+	beta, ok := counts["project-beta"]
+	if !ok {
+		t.Fatalf("missing project-beta counts: %#v", counts)
+	}
+	if beta.Running != 1 || beta.Completed != 1 || beta.Failed != 0 {
+		t.Fatalf("unexpected project-beta counts: %#v", beta)
+	}
+}
+
 func TestGetStuckDispatches(t *testing.T) {
 	s := tempStore(t)
 
@@ -636,7 +671,7 @@ func TestCountDispatchesSinceAndCostWindow(t *testing.T) {
 	if err := s.UpdateDispatchStatus(oldID, "failed", 1, 1.0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateDispatchStatus(recentID, "failed", 1, 1.0); err != nil {
+	if err := s.UpdateDispatchStatus(recentID, "completed", 0, 1.0); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.UpdateDispatchStatus(otherID, "completed", 0, 1.0); err != nil {
@@ -653,14 +688,16 @@ func TestCountDispatchesSinceAndCostWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	count, err := s.CountDispatchesSince(cutoff, []string{"failed", "completed"})
+	// CountDispatchesSince counts by dispatched_at regardless of status when statuses are provided
+	count, err := s.CountDispatchesSince(cutoff, []string{"completed"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if count != 2 {
-		t.Fatalf("expected 2 dispatches since cutoff, got %d", count)
+		t.Fatalf("expected 2 completed dispatches since cutoff, got %d", count)
 	}
 
+	// GetTotalCostSince only counts completed dispatches (by completed_at)
 	cost, err := s.GetTotalCostSince("", cutoff)
 	if err != nil {
 		t.Fatal(err)
@@ -675,6 +712,28 @@ func TestCountDispatchesSinceAndCostWindow(t *testing.T) {
 	}
 	if costProjA != 0.2 {
 		t.Fatalf("expected proj-a windowed cost 0.2, got %.3f", costProjA)
+	}
+}
+
+func seedDispatchAtTime(t *testing.T, s *Store, beadID, projectName, status string, dispatchedAt time.Time, durationS float64) {
+	t.Helper()
+
+	id, err := s.RecordDispatch(beadID, projectName, "agent-1", "cerebras", "fast", 123, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatalf("RecordDispatch failed: %v", err)
+	}
+
+	completedAt := dispatchedAt
+	if status != "running" {
+		completedAt = dispatchedAt.Add(time.Minute)
+	}
+
+	if _, err := s.DB().Exec(`
+		UPDATE dispatches
+		SET status = ?, duration_s = ?, dispatched_at = ?, completed_at = ?
+		WHERE id = ?
+	`, status, durationS, dispatchedAt.UTC().Format(time.DateTime), completedAt.UTC().Format(time.DateTime), id); err != nil {
+		t.Fatalf("seed dispatch: %v", err)
 	}
 }
 
@@ -1049,6 +1108,133 @@ func TestGetTotalCost(t *testing.T) {
 	}
 	if nonExistCost != 0 {
 		t.Errorf("non-existent project cost = %f, want 0", nonExistCost)
+	}
+}
+
+func TestGetTotalCostSince(t *testing.T) {
+	s := tempStore(t)
+
+	now := time.Now()
+
+	dispatchID1, err := s.RecordDispatch("bead-1", "proj-a", "agent-1", "claude", "premium", 100, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchID2, err := s.RecordDispatch("bead-2", "proj-a", "agent-1", "claude", "premium", 100, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchID3, err := s.RecordDispatch("bead-3", "proj-a", "agent-1", "claude", "premium", 100, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.RecordDispatchCost(dispatchID1, 1000, 2000, 0.10); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordDispatchCost(dispatchID2, 1500, 2500, 0.20); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordDispatchCost(dispatchID3, 2000, 3000, 0.30); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.UpdateDispatchStatus(dispatchID1, "completed", 0, 12); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(dispatchID2, "completed", 0, 12); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(dispatchID3, "completed", 0, 12); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetDispatchTime(dispatchID1, now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	oldCompleted := now.Add(-2 * time.Hour).UTC().Format(time.DateTime)
+	if _, err := s.DB().Exec(`UPDATE dispatches SET completed_at = ? WHERE id = ?`, oldCompleted, dispatchID1); err != nil {
+		t.Fatal(err)
+	}
+
+	total, err := s.GetTotalCostSince("", now.Add(-90*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprintf("%.3f", total) != fmt.Sprintf("%.3f", 0.20+0.30) {
+		t.Errorf("recent cost = %f, want 0.50", total)
+	}
+
+	recentForProject, err := s.GetTotalCostSince("proj-a", now.Add(-90*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprintf("%.3f", recentForProject) != fmt.Sprintf("%.3f", 0.20+0.30) {
+		t.Errorf("recent project cost = %f, want 0.50", recentForProject)
+	}
+
+	olderWindow, err := s.GetTotalCostSince("", now.Add(-3*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprintf("%.3f", olderWindow) != fmt.Sprintf("%.3f", 0.60) {
+		t.Errorf("full window cost = %f, want 0.60", olderWindow)
+	}
+}
+
+func TestCountDispatchesSince(t *testing.T) {
+	s := tempStore(t)
+	now := time.Now()
+
+	dispatchID1, err := s.RecordDispatch("bead-1", "proj-a", "agent-1", "claude", "premium", 100, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchID2, err := s.RecordDispatch("bead-2", "proj-a", "agent-1", "claude", "premium", 101, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatchID3, err := s.RecordDispatch("bead-3", "proj-a", "agent-1", "claude", "premium", 102, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.UpdateDispatchStatus(dispatchID1, "completed", 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(dispatchID2, "completed", 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateDispatchStatus(dispatchID3, "failed", 1, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.SetDispatchTime(dispatchID1, now.Add(-2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	totalCount, err := s.CountDispatchesSince(now.Add(-90*time.Minute), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if totalCount != 2 {
+		t.Fatalf("total recent dispatches = %d, want 2", totalCount)
+	}
+
+	completedFailedCount, err := s.CountDispatchesSince(now.Add(-90*time.Minute), []string{"completed", "failed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completedFailedCount != 2 {
+		t.Fatalf("completed/failed recent dispatches = %d, want 2", completedFailedCount)
+	}
+
+	completedCount, err := s.CountDispatchesSince(now.Add(-90*time.Minute), []string{"completed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completedCount != 1 {
+		t.Fatalf("completed recent dispatches = %d, want 1", completedCount)
 	}
 }
 
