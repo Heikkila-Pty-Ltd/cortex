@@ -105,6 +105,29 @@ func TestChiefSprintReviewerGatherSprintCompletionData_EndToEnd(t *testing.T) {
 		t.Fatalf("alpha velocity minutes/day = %.4f, want 18.0", alpha.VelocityMetrics.VelocityMinutesPerDay)
 	}
 
+	beta := completionData.ProjectCompletions["beta"]
+	if beta == nil {
+		t.Fatalf("expected beta project data")
+	}
+	if len(beta.CompletedBeads) != 0 {
+		t.Fatalf("beta completed beads = %d, want 0", len(beta.CompletedBeads))
+	}
+	if beta.VelocityMetrics == nil {
+		t.Fatal("beta velocity metrics missing")
+	}
+	if beta.VelocityMetrics.BeadsCompleted != 0 {
+		t.Fatalf("beta beads completed = %d, want 0", beta.VelocityMetrics.BeadsCompleted)
+	}
+	if beta.VelocityMetrics.EstimatedMinutes != 0 {
+		t.Fatalf("beta estimated minutes = %d, want 0", beta.VelocityMetrics.EstimatedMinutes)
+	}
+	if beta.VelocityMetrics.VelocityBeadsPerDay != 0 {
+		t.Fatalf("beta velocity beads/day = %.4f, want 0", beta.VelocityMetrics.VelocityBeadsPerDay)
+	}
+	if beta.VelocityMetrics.VelocityMinutesPerDay != 0 {
+		t.Fatalf("beta velocity minutes/day = %.4f, want 0", beta.VelocityMetrics.VelocityMinutesPerDay)
+	}
+
 	if len(completionData.CrossProjectDeps) != 1 {
 		t.Fatalf("cross-project milestones = %d, want 1", len(completionData.CrossProjectDeps))
 	}
@@ -176,7 +199,20 @@ JSON
     "labels":["sprint:selected"],
     "estimated_minutes":90,
     "depends_on":["alpha-1"],
-    "created_at":"2026-01-30T08:00:00Z",
+    "created_at":"2026-02-02T08:00:00Z",
+    "updated_at":"2026-02-08T11:00:00Z"
+  },
+  {
+    "id":"beta-2",
+    "title":"Ship integration contract tests",
+    "description":"Integration tests for the shared API endpoint exposed by alpha",
+    "status":"open",
+    "priority":2,
+    "issue_type":"task",
+    "labels":["sprint:selected"],
+    "estimated_minutes":60,
+    "depends_on":["alpha-1"],
+    "created_at":"2026-02-03T08:30:00Z",
     "updated_at":"2026-02-08T11:00:00Z"
   }
 ]
