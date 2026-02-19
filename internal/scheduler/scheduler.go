@@ -1405,6 +1405,225 @@ func (s *Scheduler) checkCeremonies(ctx context.Context) {
 	if s.ceremonyScheduler != nil {
 		s.ceremonyScheduler.CheckCeremonies(ctx)
 	}
+	
+	// Check and trigger sprint retrospective ceremonies for each enabled project
+	s.checkSprintCeremonies(ctx)
+}
+
+// checkSprintCeremonies evaluates and triggers sprint review/retrospective ceremonies
+func (s *Scheduler) checkSprintCeremonies(ctx context.Context) {
+	// Only check sprint ceremonies periodically (hourly) to avoid spam
+	now := time.Now()
+	if now.Hour() % 1 != 0 || now.Minute() > 5 {
+		return // Only check in the first 5 minutes of each hour
+	}
+
+	for projectName, project := range s.cfg.Projects {
+		if !project.Enabled {
+			continue
+		}
+		
+		s.checkProjectSprintCeremony(ctx, projectName, project)
+	}
+}
+
+// checkProjectSprintCeremony checks if a project should run sprint ceremonies
+func (s *Scheduler) checkProjectSprintCeremony(ctx context.Context, projectName string, project config.Project) {
+	// Create ceremony orchestrator for this project
+	ceremony := learner.NewSprintCeremony(s.cfg, s.store, s.dispatcher, s.logger, projectName)
+	
+	// Check if ceremonies are due based on cadence configuration
+	shouldRunReview := s.shouldRunSprintCeremony(ctx, projectName, "review")
+	shouldRunRetro := s.shouldRunSprintCeremony(ctx, projectName, "retrospective")
+	
+	if !shouldRunReview && !shouldRunRetro {
+		return
+	}
+	
+	s.logger.Info("sprint ceremonies due for project", 
+		"project", projectName,
+		"review", shouldRunReview,
+		"retrospective", shouldRunRetro)
+		
+	// Check ceremony eligibility
+	if shouldRunReview {
+		eligible, err := ceremony.IsEligibleForCeremony(ctx, "sprint_review")
+		if err != nil {
+			s.logger.Error("failed to check review ceremony eligibility", 
+				"project", projectName, "error", err)
+			return
+		}
+		if !eligible {
+			s.logger.Debug("project not eligible for review ceremony", "project", projectName)
+			shouldRunReview = false
+		}
+	}
+	
+	if shouldRunRetro {
+		eligible, err := ceremony.IsEligibleForCeremony(ctx, "sprint_retrospective")
+		if err != nil {
+			s.logger.Error("failed to check retrospective ceremony eligibility", 
+				"project", projectName, "error", err)
+			return
+		}
+		if !eligible {
+			s.logger.Debug("project not eligible for retrospective ceremony", "project", projectName)
+			shouldRunRetro = false
+		}
+	}
+	
+	// Execute ceremonies in proper sequence (review before retrospective)
+	if shouldRunReview && shouldRunRetro {
+		// Run sequenced ceremonies (review -> retrospective)
+		go s.runSequencedCeremoniesAsync(ctx, ceremony, projectName)
+	} else if shouldRunReview {
+		// Run only review
+		go s.runReviewCeremonyAsync(ctx, ceremony, projectName)
+	} else if shouldRunRetro {
+		// Run only retrospective (review may have already completed)
+		go s.runRetrospectiveCeremonyAsync(ctx, ceremony, projectName)
+	}
+}
+
+// shouldRunSprintCeremony checks if a sprint ceremony should run based on schedule
+func (s *Scheduler) shouldRunSprintCeremony(ctx context.Context, projectName, ceremonyType string) bool {
+	now := time.Now()
+	
+	// Use cadence configuration to determine ceremony timing
+	if s.cfg.Cadence.SprintStartDay == "" || s.cfg.Cadence.SprintStartTime == "" {
+		return false // No cadence configured
+	}
+	
+	// Parse sprint start configuration
+	startWeekday, err := s.cfg.Cadence.StartWeekday()
+	if err != nil {
+		s.logger.Warn("invalid cadence sprint_start_day", "project", projectName, "error", err)
+		return false
+	}
+	
+	_, _, err = s.cfg.Cadence.StartClock()
+	if err != nil {
+		s.logger.Warn("invalid cadence sprint_start_time", "project", projectName, "error", err)
+		return false
+	}
+	
+	location, err := s.cfg.Cadence.LoadLocation()
+	if err != nil {
+		s.logger.Warn("invalid cadence timezone", "project", projectName, "error", err)
+		location = time.UTC
+	}
+	
+	localNow := now.In(location)
+	
+	// Calculate ceremony times based on sprint schedule
+	// Sprint review: Friday afternoon before sprint end
+	// Sprint retrospective: 1 hour after review
+	var ceremonyWeekday time.Weekday
+	var ceremonyHour, ceremonyMinute int
+	
+	switch ceremonyType {
+	case "review":
+		// Review runs on Friday afternoon (day before sprint start)
+		ceremonyWeekday = (startWeekday + 6) % 7 // Day before start day
+		ceremonyHour = 15 // 3 PM
+		ceremonyMinute = 0
+	case "retrospective":
+		// Retrospective runs on Friday afternoon, 1 hour after review
+		ceremonyWeekday = (startWeekday + 6) % 7 // Day before start day  
+		ceremonyHour = 16 // 4 PM
+		ceremonyMinute = 0
+	default:
+		return false
+	}
+	
+	// Check if today is the ceremony day
+	if localNow.Weekday() != ceremonyWeekday {
+		return false
+	}
+	
+	// Check if we're past the ceremony time
+	ceremonyTime := time.Date(localNow.Year(), localNow.Month(), localNow.Day(),
+		ceremonyHour, ceremonyMinute, 0, 0, location)
+	if localNow.Before(ceremonyTime) {
+		return false
+	}
+	
+	// Don't run too late in the day (within 4 hours of ceremony time)
+	if localNow.After(ceremonyTime.Add(4 * time.Hour)) {
+		return false
+	}
+	
+	s.logger.Debug("ceremony timing check passed",
+		"project", projectName,
+		"ceremony_type", ceremonyType,
+		"weekday", ceremonyWeekday.String(),
+		"ceremony_time", ceremonyTime.Format("15:04"),
+		"current_time", localNow.Format("15:04"))
+	
+	return true
+}
+
+// runSequencedCeremoniesAsync runs review followed by retrospective asynchronously
+func (s *Scheduler) runSequencedCeremoniesAsync(ctx context.Context, ceremony *learner.SprintCeremony, projectName string) {
+	s.logger.Info("starting sequenced sprint ceremonies", "project", projectName)
+	
+	reviewResult, retroResult, err := ceremony.RunSequencedCeremonies(ctx)
+	if err != nil {
+		s.logger.Error("sequenced ceremonies failed", "project", projectName, "error", err)
+		
+		// Record failure event
+		s.store.RecordHealthEvent("sprint_ceremony_failed",
+			fmt.Sprintf("Sprint ceremonies failed for project %s: %v", projectName, err))
+		return
+	}
+	
+	s.logger.Info("sequenced sprint ceremonies completed",
+		"project", projectName,
+		"review_success", reviewResult != nil && reviewResult.Success,
+		"retro_success", retroResult != nil && retroResult.Success)
+	
+	// Record success event
+	s.store.RecordHealthEvent("sprint_ceremony_completed",
+		fmt.Sprintf("Sprint ceremonies completed for project %s: review=%t, retro=%t", 
+			projectName, 
+			reviewResult != nil && reviewResult.Success,
+			retroResult != nil && retroResult.Success))
+}
+
+// runReviewCeremonyAsync runs sprint review ceremony asynchronously
+func (s *Scheduler) runReviewCeremonyAsync(ctx context.Context, ceremony *learner.SprintCeremony, projectName string) {
+	s.logger.Info("starting sprint review ceremony", "project", projectName)
+	
+	result, err := ceremony.RunReview(ctx)
+	if err != nil {
+		s.logger.Error("review ceremony failed", "project", projectName, "error", err)
+		s.store.RecordHealthEvent("sprint_review_failed",
+			fmt.Sprintf("Sprint review failed for project %s: %v", projectName, err))
+		return
+	}
+	
+	s.logger.Info("sprint review ceremony completed",
+		"project", projectName,
+		"success", result.Success,
+		"duration", result.Duration)
+}
+
+// runRetrospectiveCeremonyAsync runs sprint retrospective ceremony asynchronously  
+func (s *Scheduler) runRetrospectiveCeremonyAsync(ctx context.Context, ceremony *learner.SprintCeremony, projectName string) {
+	s.logger.Info("starting sprint retrospective ceremony", "project", projectName)
+	
+	result, err := ceremony.RunRetro(ctx)
+	if err != nil {
+		s.logger.Error("retrospective ceremony failed", "project", projectName, "error", err)
+		s.store.RecordHealthEvent("sprint_retrospective_failed",
+			fmt.Sprintf("Sprint retrospective failed for project %s: %v", projectName, err))
+		return
+	}
+	
+	s.logger.Info("sprint retrospective ceremony completed",
+		"project", projectName,
+		"success", result.Success,
+		"duration", result.Duration)
 }
 
 func (s *Scheduler) checkSprintPlanningTriggers(ctx context.Context) {

@@ -1,4 +1,4 @@
-// Package learner contains ceremony implementations for sprint reviews and retrospectives.
+// Package learner implements sprint ceremony orchestration with sequenced review and retrospective.
 package learner
 
 import (
@@ -14,397 +14,574 @@ import (
 	"github.com/antigravity-dev/cortex/internal/store"
 )
 
-// SprintCeremony handles sprint review and retrospective ceremonies
+// SprintCeremony orchestrates sequenced sprint review and retrospective ceremonies.
 type SprintCeremony struct {
-	cfg        *config.Config
-	store      *store.Store
-	dispatcher dispatch.DispatcherInterface
-	logger     *slog.Logger
+	cfg         *config.Config
+	store       *store.Store
+	dispatcher  dispatch.DispatcherInterface
+	logger      *slog.Logger
+	projectName string
 }
 
-// CeremonyResult represents the outcome of a ceremony dispatch
+// CeremonyResult tracks the outcome of a ceremony execution.
 type CeremonyResult struct {
-	CeremonyID  string
-	DispatchID  int64
-	StartedAt   time.Time
-	CompletedAt time.Time
-	Status      string
-	Output      string
-	Error       error
+	CeremonyType string        `json:"ceremony_type"`
+	ProjectName  string        `json:"project_name"`
+	Success      bool          `json:"success"`
+	DispatchID   int64         `json:"dispatch_id,omitempty"`
+	BeadID       string        `json:"bead_id,omitempty"`
+	StartTime    time.Time     `json:"start_time"`
+	EndTime      time.Time     `json:"end_time,omitempty"`
+	Duration     time.Duration `json:"duration,omitempty"`
+	Error        string        `json:"error,omitempty"`
+	Output       string        `json:"output,omitempty"`
 }
 
-// NewSprintCeremony creates a new SprintCeremony instance
-func NewSprintCeremony(cfg *config.Config, store *store.Store, dispatcher dispatch.DispatcherInterface, logger *slog.Logger) *SprintCeremony {
+// NewSprintCeremony creates a new sprint ceremony orchestrator for a project.
+func NewSprintCeremony(cfg *config.Config, store *store.Store, dispatcher dispatch.DispatcherInterface, logger *slog.Logger, projectName string) *SprintCeremony {
 	return &SprintCeremony{
-		cfg:        cfg,
-		store:      store,
-		dispatcher: dispatcher,
-		logger:     logger.With("component", "sprint_ceremony"),
+		cfg:         cfg,
+		store:       store,
+		dispatcher:  dispatcher,
+		logger:      logger.With("component", "sprint_ceremony", "project", projectName),
+		projectName: projectName,
 	}
 }
 
-// RunReview executes a sprint review ceremony for a specific project
-func (sc *SprintCeremony) RunReview(ctx context.Context, projectName string) (*CeremonyResult, error) {
-	if !sc.cfg.Chief.Enabled {
-		return nil, fmt.Errorf("ceremonies not enabled in configuration")
-	}
-
-	project, exists := sc.cfg.Projects[projectName]
-	if !exists {
-		return nil, fmt.Errorf("project %s not found", projectName)
-	}
-
-	sc.logger.Info("starting sprint review ceremony", "project", projectName)
-
-	// Create ceremony bead for tracking
-	ceremonyBead := sc.createCeremonyBead(projectName, "review", "Sprint review ceremony")
-
-	// Build review prompt with project context
-	prompt, err := sc.buildReviewPrompt(ctx, projectName, project)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build review prompt: %w", err)
-	}
-
-	// Dispatch the ceremony using premium tier
-	dispatchID, err := sc.dispatchCeremony(ctx, ceremonyBead, projectName, prompt, "review")
-	if err != nil {
-		return nil, fmt.Errorf("failed to dispatch review ceremony: %w", err)
-	}
+// RunReview executes the sprint review ceremony for the project.
+// This should run before RunRetro() to provide context for the retrospective.
+func (sc *SprintCeremony) RunReview(ctx context.Context) (*CeremonyResult, error) {
+	sc.logger.Info("starting sprint review ceremony")
 
 	result := &CeremonyResult{
-		CeremonyID: ceremonyBead.ID,
-		DispatchID: dispatchID,
-		StartedAt:  time.Now(),
-		Status:     "running",
+		CeremonyType: "sprint_review",
+		ProjectName:  sc.projectName,
+		StartTime:    time.Now(),
 	}
 
-	sc.logger.Info("sprint review ceremony dispatched",
-		"project", projectName,
-		"ceremony_id", ceremonyBead.ID,
-		"dispatch_id", dispatchID)
+	// Create ceremony bead for tracking
+	ceremonyBead := sc.createCeremonyBead("sprint_review", "Sprint Review Ceremony")
+	result.BeadID = ceremonyBead.ID
+
+	// Get project configuration
+	project, exists := sc.cfg.Projects[sc.projectName]
+	if !exists {
+		err := fmt.Errorf("project %s not found in configuration", sc.projectName)
+		result.Error = err.Error()
+		return result, err
+	}
+
+	// Dispatch sprint review with scrum master agent (premium tier)
+	dispatchID, err := sc.dispatchCeremony(ctx, ceremonyBead, "sprint_review", project)
+	if err != nil {
+		sc.logger.Error("failed to dispatch sprint review", "error", err)
+		result.Error = err.Error()
+		return result, fmt.Errorf("dispatch sprint review: %w", err)
+	}
+
+	result.DispatchID = dispatchID
+	sc.logger.Info("sprint review ceremony dispatched", "dispatch_id", dispatchID, "bead_id", ceremonyBead.ID)
+
+	// Wait for completion (blocking to ensure sequencing)
+	success, err := sc.waitForCeremonyCompletion(ctx, dispatchID, 30*time.Minute)
+	result.EndTime = time.Now()
+	result.Duration = result.EndTime.Sub(result.StartTime)
+	result.Success = success
+
+	if err != nil {
+		sc.logger.Error("sprint review ceremony failed", "error", err, "duration", result.Duration)
+		result.Error = err.Error()
+		return result, fmt.Errorf("sprint review completion: %w", err)
+	}
+
+	// Capture output for processing
+	if output, outErr := sc.store.GetOutput(dispatchID); outErr != nil {
+		sc.logger.Warn("failed to get ceremony output", "error", outErr)
+	} else {
+		result.Output = output
+	}
+
+	sc.logger.Info("sprint review ceremony completed successfully", "duration", result.Duration)
+	return result, nil
+}
+
+// RunRetro executes the sprint retrospective ceremony for the project.
+// This should run after RunReview() to have full sprint data context.
+func (sc *SprintCeremony) RunRetro(ctx context.Context) (*CeremonyResult, error) {
+	sc.logger.Info("starting sprint retrospective ceremony")
+
+	result := &CeremonyResult{
+		CeremonyType: "sprint_retrospective",
+		ProjectName:  sc.projectName,
+		StartTime:    time.Now(),
+	}
+
+	// Create ceremony bead for tracking
+	ceremonyBead := sc.createCeremonyBead("sprint_retrospective", "Sprint Retrospective Ceremony")
+	result.BeadID = ceremonyBead.ID
+
+	// Get project configuration
+	project, exists := sc.cfg.Projects[sc.projectName]
+	if !exists {
+		err := fmt.Errorf("project %s not found in configuration", sc.projectName)
+		result.Error = err.Error()
+		return result, err
+	}
+
+	// Generate retrospective data before dispatching
+	retroReport, err := GenerateWeeklyRetro(sc.store)
+	if err != nil {
+		sc.logger.Warn("failed to generate retro report for context", "error", err)
+		// Continue without retro report - the scrum master can gather it
+	}
+
+	// Dispatch sprint retrospective with scrum master agent (premium tier)
+	dispatchID, err := sc.dispatchCeremonyWithContext(ctx, ceremonyBead, "sprint_retro", project, retroReport)
+	if err != nil {
+		sc.logger.Error("failed to dispatch sprint retrospective", "error", err)
+		result.Error = err.Error()
+		return result, fmt.Errorf("dispatch sprint retrospective: %w", err)
+	}
+
+	result.DispatchID = dispatchID
+	sc.logger.Info("sprint retrospective ceremony dispatched", "dispatch_id", dispatchID, "bead_id", ceremonyBead.ID)
+
+	// Wait for completion (blocking)
+	success, err := sc.waitForCeremonyCompletion(ctx, dispatchID, 45*time.Minute)
+	result.EndTime = time.Now()
+	result.Duration = result.EndTime.Sub(result.StartTime)
+	result.Success = success
+
+	if err != nil {
+		sc.logger.Error("sprint retrospective ceremony failed", "error", err, "duration", result.Duration)
+		result.Error = err.Error()
+		return result, fmt.Errorf("sprint retrospective completion: %w", err)
+	}
+
+	// Capture output for processing
+	if output, outErr := sc.store.GetOutput(dispatchID); outErr != nil {
+		sc.logger.Warn("failed to get retrospective output", "error", outErr)
+	} else {
+		result.Output = output
+	}
+
+	// Process ceremony results (route to Matrix, record events)
+	if err := sc.processCeremonyResults(ctx, result); err != nil {
+		sc.logger.Error("failed to process ceremony results", "error", err)
+	}
+
+	sc.logger.Info("sprint retrospective ceremony completed successfully", "duration", result.Duration)
+
+	// Record ceremony completion event
+	sc.recordCeremonyEvent("retrospective_completed",
+		fmt.Sprintf("Sprint retrospective completed for %s in %.1fs", sc.projectName, result.Duration.Seconds()),
+		dispatchID)
 
 	return result, nil
 }
 
-// RunRetro executes a sprint retrospective ceremony for a specific project
-func (sc *SprintCeremony) RunRetro(ctx context.Context, projectName string) (*CeremonyResult, error) {
-	if !sc.cfg.Chief.Enabled {
-		return nil, fmt.Errorf("ceremonies not enabled in configuration")
-	}
+// RunSequencedCeremonies runs sprint review followed by retrospective with proper sequencing.
+// This is the main entry point for complete ceremony execution.
+func (sc *SprintCeremony) RunSequencedCeremonies(ctx context.Context) (reviewResult *CeremonyResult, retroResult *CeremonyResult, err error) {
+	sc.logger.Info("starting sequenced sprint ceremonies", "sequence", "review -> retrospective")
 
-	project, exists := sc.cfg.Projects[projectName]
-	if !exists {
-		return nil, fmt.Errorf("project %s not found", projectName)
-	}
-
-	sc.logger.Info("starting sprint retrospective ceremony", "project", projectName)
-
-	// Create ceremony bead for tracking
-	ceremonyBead := sc.createCeremonyBead(projectName, "retrospective", "Sprint retrospective ceremony")
-
-	// Build retrospective prompt with project data and previous sprint analysis
-	prompt, err := sc.buildRetroPrompt(ctx, projectName, project)
+	// Step 1: Run sprint review first
+	reviewResult, err = sc.RunReview(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build retrospective prompt: %w", err)
+		sc.logger.Error("sprint review failed, aborting retrospective", "error", err)
+		return reviewResult, nil, fmt.Errorf("review ceremony failed: %w", err)
 	}
 
-	// Dispatch the ceremony using premium tier
-	dispatchID, err := sc.dispatchCeremony(ctx, ceremonyBead, projectName, prompt, "retrospective")
+	if !reviewResult.Success {
+		sc.logger.Warn("sprint review did not complete successfully, proceeding with retrospective anyway")
+	}
+
+	// Brief pause between ceremonies
+	select {
+	case <-time.After(2 * time.Minute):
+	case <-ctx.Done():
+		return reviewResult, nil, ctx.Err()
+	}
+
+	// Step 2: Run retrospective with full sprint data
+	retroResult, err = sc.RunRetro(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to dispatch retrospective ceremony: %w", err)
+		sc.logger.Error("sprint retrospective failed", "error", err)
+		return reviewResult, retroResult, fmt.Errorf("retrospective ceremony failed: %w", err)
 	}
 
-	result := &CeremonyResult{
-		CeremonyID: ceremonyBead.ID,
-		DispatchID: dispatchID,
-		StartedAt:  time.Now(),
-		Status:     "running",
-	}
+	sc.logger.Info("sequenced sprint ceremonies completed",
+		"review_success", reviewResult.Success,
+		"retro_success", retroResult.Success,
+		"total_duration", time.Since(reviewResult.StartTime))
 
-	sc.logger.Info("sprint retrospective ceremony dispatched",
-		"project", projectName,
-		"ceremony_id", ceremonyBead.ID,
-		"dispatch_id", dispatchID)
-
-	return result, nil
+	return reviewResult, retroResult, nil
 }
 
-// MonitorCompletion monitors ceremony completion and processes results
-func (sc *SprintCeremony) MonitorCompletion(ctx context.Context, result *CeremonyResult) error {
-	sc.logger.Info("monitoring ceremony completion",
-		"ceremony_id", result.CeremonyID,
-		"dispatch_id", result.DispatchID)
-
-	// Poll for completion
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	timeout := time.NewTimer(1 * time.Hour) // Max ceremony duration
-	defer timeout.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timeout.C:
-			result.Status = "timeout"
-			result.Error = fmt.Errorf("ceremony timed out after 1 hour")
-			return result.Error
-		case <-ticker.C:
-			dispatch, err := sc.store.GetDispatchByID(result.DispatchID)
-			if err != nil {
-				sc.logger.Error("failed to check ceremony dispatch status",
-					"ceremony_id", result.CeremonyID,
-					"dispatch_id", result.DispatchID,
-					"error", err)
-				continue
-			}
-
-			switch dispatch.Status {
-			case "completed":
-				result.CompletedAt = time.Now()
-				result.Status = "completed"
-
-				// Capture output for processing
-				if output, err := sc.store.GetOutput(result.DispatchID); err != nil {
-					sc.logger.Warn("failed to get ceremony output", "error", err)
-				} else {
-					result.Output = output
-				}
-
-				// Process ceremony results (send to Matrix, etc.)
-				if err := sc.processCeremonyResults(ctx, result); err != nil {
-					sc.logger.Error("failed to process ceremony results", "error", err)
-					result.Error = err
-				}
-
-				sc.logger.Info("ceremony completed successfully",
-					"ceremony_id", result.CeremonyID,
-					"duration", result.CompletedAt.Sub(result.StartedAt))
-				return nil
-
-			case "failed":
-				result.CompletedAt = time.Now()
-				result.Status = "failed"
-				result.Error = fmt.Errorf("ceremony dispatch failed with exit code %d", dispatch.ExitCode)
-
-				sc.logger.Error("ceremony dispatch failed",
-					"ceremony_id", result.CeremonyID,
-					"dispatch_id", result.DispatchID,
-					"exit_code", dispatch.ExitCode)
-				return result.Error
-
-			default:
-				// Continue polling if still running
-				sc.logger.Debug("ceremony still running",
-					"ceremony_id", result.CeremonyID,
-					"status", dispatch.Status)
-			}
-		}
-	}
-}
-
-// createCeremonyBead creates a synthetic bead for tracking ceremony work
-func (sc *SprintCeremony) createCeremonyBead(projectName, ceremonyType, title string) beads.Bead {
+// createCeremonyBead creates a synthetic bead for tracking ceremony execution.
+func (sc *SprintCeremony) createCeremonyBead(ceremonyType, title string) beads.Bead {
 	now := time.Now()
 	return beads.Bead{
-		ID:          fmt.Sprintf("ceremony-%s-%s-%d", projectName, ceremonyType, now.Unix()),
+		ID:          fmt.Sprintf("ceremony-%s-%s-%d", sc.projectName, ceremonyType, now.Unix()),
 		Title:       title,
-		Description: fmt.Sprintf("Sprint %s ceremony for project %s", ceremonyType, projectName),
+		Description: fmt.Sprintf("Sprint ceremony: %s for project %s", ceremonyType, sc.projectName),
 		Type:        "task",
 		Status:      "open",
 		Priority:    1, // High priority for ceremonies
 		CreatedAt:   now,
-		Labels:      []string{fmt.Sprintf("ceremony:%s", ceremonyType), fmt.Sprintf("project:%s", projectName)},
+		Labels:      []string{fmt.Sprintf("ceremony:%s", ceremonyType), fmt.Sprintf("project:%s", sc.projectName)},
 	}
 }
 
-// dispatchCeremony dispatches a ceremony using purpose-based tier routing and scrum master agent
-func (sc *SprintCeremony) dispatchCeremony(ctx context.Context, bead beads.Bead, projectName, prompt, ceremonyType string) (int64, error) {
-	purpose := ceremonyPurpose(ceremonyType)
-	provider, tier := dispatch.SelectProviderForPurpose(sc.cfg, purpose)
+// dispatchCeremony dispatches a ceremony with the scrum master agent using premium tier.
+func (sc *SprintCeremony) dispatchCeremony(ctx context.Context, bead beads.Bead, ceremonyType string, project config.Project) (int64, error) {
+	return sc.dispatchCeremonyWithContext(ctx, bead, ceremonyType, project, nil)
+}
+
+// dispatchCeremonyWithContext dispatches a ceremony with additional context data.
+func (sc *SprintCeremony) dispatchCeremonyWithContext(ctx context.Context, bead beads.Bead, ceremonyType string, project config.Project, retroReport *RetroReport) (int64, error) {
+	// Use premium tier provider for analytical reasoning (per requirements)
+	provider := sc.selectPremiumProvider()
 	if provider == "" {
-		return 0, fmt.Errorf("no provider available for ceremony purpose %q", purpose)
+		return 0, fmt.Errorf("no premium provider available for ceremony dispatch")
 	}
 
-	// Use project-specific scrum master agent for Matrix routing
-	agentID := fmt.Sprintf("%s-scrum", projectName)
+	// Use scrum master agent for Matrix output routing (per requirements)
+	agentID := fmt.Sprintf("%s-scrum", sc.projectName)
 
-	// Get project workspace
-	project := sc.cfg.Projects[projectName]
+	// Build ceremony prompt
+	prompt := sc.buildCeremonyPrompt(ctx, ceremonyType, retroReport)
+
 	workspace := config.ExpandHome(project.Workspace)
-
-	sc.logger.Info("dispatching ceremony",
-		"project", projectName,
-		"ceremony_type", ceremonyType,
-		"agent", agentID,
-		"provider", provider,
-		"tier", tier)
 
 	// Record dispatch in store first
 	dispatchID, err := sc.store.RecordDispatch(
 		bead.ID,
-		projectName,
+		sc.projectName,
 		agentID,
 		provider,
-		tier,
-		-1, // PID will be set by dispatcher
-		"", // session name will be set by dispatcher
+		"premium", // Premium tier for analytical work
+		-1,        // handle (will be set by dispatcher)
+		"",        // session name (will be set by dispatcher)
 		prompt,
-		"",         // log path will be set by dispatcher
-		"",         // branch (not used for ceremonies)
-		"openclaw", // backend - use openclaw for Matrix output routing
+		"",        // log path (will be set by dispatcher)
+		"",        // branch (not used for ceremonies)
+		"tmux",    // backend
 	)
 	if err != nil {
-		return 0, fmt.Errorf("failed to record ceremony dispatch: %w", err)
+		return 0, fmt.Errorf("record ceremony dispatch: %w", err)
 	}
 
-	// Dispatch with premium thinking level for analytical work
+	// Execute the dispatch with premium tier thinking level
 	handle, err := sc.dispatcher.Dispatch(ctx, agentID, prompt, provider, "high", workspace)
 	if err != nil {
-		// Mark dispatch as failed if it couldn't start
-		if updateErr := sc.store.UpdateDispatchStatus(dispatchID, "failed", 1, 0); updateErr != nil {
-			sc.logger.Error("failed to update failed dispatch status", "error", updateErr)
-		}
-		return 0, fmt.Errorf("failed to dispatch ceremony: %w", err)
+		sc.store.UpdateDispatchStatus(dispatchID, "failed", 1, 0)
+		return 0, fmt.Errorf("dispatch ceremony: %w", err)
 	}
 
 	sc.logger.Info("ceremony dispatch successful",
+		"ceremony_type", ceremonyType,
 		"dispatch_id", dispatchID,
-		"handle", handle,
-		"ceremony_type", ceremonyType)
+		"agent_id", agentID,
+		"provider", provider,
+		"handle", handle)
 
 	return dispatchID, nil
 }
 
-func ceremonyPurpose(ceremonyType string) string {
-	switch strings.ToLower(strings.TrimSpace(ceremonyType)) {
-	case "review":
-		return dispatch.ScrumPurposeReview
-	case "retrospective":
-		return dispatch.ScrumPurposeReporting
+// selectPremiumProvider chooses a premium tier provider for ceremony execution.
+func (sc *SprintCeremony) selectPremiumProvider() string {
+	// Try premium tier first
+	if len(sc.cfg.Tiers.Premium) > 0 {
+		for _, providerName := range sc.cfg.Tiers.Premium {
+			if _, exists := sc.cfg.Providers[providerName]; exists {
+				return providerName
+			}
+		}
+	}
+
+	// Fallback to balanced tier if no premium available
+	if len(sc.cfg.Tiers.Balanced) > 0 {
+		for _, providerName := range sc.cfg.Tiers.Balanced {
+			if _, exists := sc.cfg.Providers[providerName]; exists {
+				sc.logger.Warn("using balanced tier provider for ceremony (premium not available)", "provider", providerName)
+				return providerName
+			}
+		}
+	}
+
+	return ""
+}
+
+// buildCeremonyPrompt constructs the appropriate prompt for ceremony execution.
+func (sc *SprintCeremony) buildCeremonyPrompt(ctx context.Context, ceremonyType string, retroReport *RetroReport) string {
+	switch ceremonyType {
+	case "sprint_review":
+		return sc.buildSprintReviewPrompt(ctx)
+	case "sprint_retro":
+		return sc.buildSprintRetrospectivePrompt(ctx, retroReport)
 	default:
-		return dispatch.ScrumPurposeReporting
+		return fmt.Sprintf("Execute %s ceremony for project %s", ceremonyType, sc.projectName)
 	}
 }
 
-// buildReviewPrompt creates the prompt for sprint review ceremonies
-func (sc *SprintCeremony) buildReviewPrompt(ctx context.Context, projectName string, project config.Project) (string, error) {
+// buildSprintReviewPrompt creates the sprint review ceremony prompt.
+func (sc *SprintCeremony) buildSprintReviewPrompt(ctx context.Context) string {
 	// Gather sprint completion data
+	project := sc.cfg.Projects[sc.projectName]
 	beadsDir := config.ExpandHome(project.BeadsDir)
-	completedWork, err := sc.getCompletedWork(ctx, projectName, beadsDir)
+	completedWork, err := sc.getCompletedWork(ctx, sc.projectName, beadsDir)
 	if err != nil {
-		sc.logger.Warn("failed to gather completed work for review", "project", projectName, "error", err)
+		sc.logger.Warn("failed to gather completed work for review", "project", sc.projectName, "error", err)
 		completedWork = "Unable to gather completed work data"
 	}
 
-	prompt := fmt.Sprintf(`# Sprint Review Ceremony - Project %s
+	return fmt.Sprintf(`# Sprint Review Ceremony - Project: %s
 
 You are the **Scrum Master** conducting a sprint review for project %s.
 
 ## Your Mission
 
-1. **Review Sprint Accomplishments**:
+1. **Sprint Summary Analysis**:
+   - Gather completed work from this sprint using store queries
+   - Calculate velocity and completion metrics
+   - Identify blockers resolved and remaining
+   - Analyze sprint goal achievement
+
+2. **Review Sprint Accomplishments**:
    %s
 
-2. **Analyze Sprint Outcomes**:
-   - What was completed vs planned?
-   - Quality of deliverables (based on dispatch success rates)
-   - Blockers and challenges encountered
-   - Value delivered to stakeholders
+3. **Stakeholder Value Review**:
+   - Summarize deliverables and business value created
+   - Compare planned vs actual scope completion
+   - Highlight key accomplishments and learnings
+   - Document any scope changes or pivots
 
-3. **Prepare for Stakeholder Demo** (if applicable):
-   - Identify demonstrable features
-   - Prepare summary of technical achievements
-   - Note any customer-facing improvements
+4. **Forward-Looking Assessment**:
+   - Identify impediments for next sprint
+   - Note technical debt accumulated or resolved
+   - Flag cross-project dependencies created/resolved
+   - Assess backlog health and grooming needs
 
-4. **Output Requirements**:
-   - Generate structured sprint review report
-   - Highlight key accomplishments and metrics
-   - Identify items for retrospective discussion
-   - Format output for Matrix room sharing
+5. **Matrix Output** (REQUIRED):
+   - Send structured summary to Matrix room
+   - Include sprint metrics, key deliverables, blockers
+   - Format for stakeholder consumption
+   - Tag relevant team members for visibility
 
 ## Context
 - **Project**: %s
-- **Review Type**: Sprint Review (accomplishment-focused)
-- **Audience**: Product stakeholders, team members
-- **Next Step**: This will inform the subsequent retrospective ceremony
+- **Sprint End**: %s
+- **Priority**: This review provides context for retrospective
+- **Audience**: Product owner, stakeholders, team
 
-Execute the sprint review analysis and generate the report now.
-
-## Analysis Instructions
-- Use analytical reasoning (premium tier) for deep insights
-- Focus on value delivery and stakeholder impact
-- Identify patterns in completion rates and types of work
-- Prepare actionable insights for the retrospective
-
-Begin sprint review ceremony execution.`, projectName, projectName, completedWork, projectName)
-
-	return prompt, nil
+Execute comprehensive sprint review and deliver Matrix summary now.
+`, sc.projectName, sc.projectName, completedWork, sc.projectName, time.Now().Format("2006-01-02"))
 }
 
-// buildRetroPrompt creates the prompt for sprint retrospective ceremonies
-func (sc *SprintCeremony) buildRetroPrompt(ctx context.Context, projectName string, project config.Project) (string, error) {
-	// Get recent retrospective report for context
-	retroReport, err := GenerateWeeklyRetro(sc.store)
-	if err != nil {
-		sc.logger.Warn("failed to generate retrospective data", "project", projectName, "error", err)
-	}
-
+// buildSprintRetrospectivePrompt creates the sprint retrospective ceremony prompt.
+func (sc *SprintCeremony) buildSprintRetrospectivePrompt(ctx context.Context, retroReport *RetroReport) string {
 	// Gather provider performance and failure analysis
-	performanceData := sc.gatherPerformanceData(ctx, projectName)
+	performanceData := sc.gatherPerformanceData(ctx, sc.projectName)
 
-	prompt := fmt.Sprintf(`# Sprint Retrospective Ceremony - Project %s
+	promptBuilder := fmt.Sprintf(`# Sprint Retrospective Ceremony - Project: %s
 
 You are the **Scrum Master** conducting a sprint retrospective for project %s.
 
 ## Your Mission
 
-1. **Analyze Sprint Performance Data**:
+1. **Data-Driven Analysis** (Premium Tier Reasoning):
+   - Use deep analytical reasoning to extract maximum learning value
+   - Compare current sprint with historical patterns
+   - Identify systemic issues vs one-time problems
+   - Correlate velocity changes with process changes
+
+2. **Analyze Sprint Performance Data**:
    %s
 
-2. **Conduct Retrospective Analysis**:
-   - What went well? (successes to continue)
-   - What didn't go well? (problems to address) 
-   - What can we improve? (actionable changes)
-   - Root cause analysis of failures and blockers
+3. **Team Health Assessment**:
+   - Analyze collaboration patterns from dispatch data
+   - Review failure modes and recovery patterns
+   - Assess tool/process effectiveness
+   - Identify skills gaps or training opportunities
 
-3. **Generate Actionable Improvements**:
-   - Process improvements for the team
-   - Technical debt that needs addressing
-   - Provider/tier optimization recommendations
-   - Capacity and estimation adjustments
+4. **Process Optimization**:
+   - Review estimation accuracy vs actual effort
+   - Analyze provider tier usage and effectiveness
+   - Identify automation opportunities
+   - Recommend process improvements
 
-4. **Output Requirements**:
-   - Structured retrospective report with clear sections
-   - Specific, measurable improvement actions
-   - Priority ranking of recommendations
-   - Format for Matrix room sharing and team discussion
+5. **Action Planning**:
+   - Create specific, measurable improvement goals
+   - Assign ownership for action items
+   - Set timeline for improvement implementation
+   - Plan review checkpoint for next retrospective
 
-## Historical Context
-%s
+6. **Matrix Output** (REQUIRED):
+   - Send comprehensive retrospective summary to Matrix room
+   - Include identified issues, improvements, action items
+   - Format for team consumption and future reference
+   - Ensure action items have owners and timelines
 
 ## Context
 - **Project**: %s
-- **Ceremony Type**: Sprint Retrospective (improvement-focused)
-- **Audience**: Development team, product owner
-- **Previous Step**: Sprint review has been completed
-- **Goal**: Continuous improvement through data-driven insights
+- **Sprint Period**: Previous 7 days
+- **Priority**: Use Opus-level reasoning for deep insights
+- **Sequence**: Review already completed, full data available
 
-## Analysis Instructions
-- Use premium tier analytical reasoning for deep insights
-- Focus on systemic improvements rather than blame
-- Correlate performance data with team processes
-- Provide specific, actionable recommendations
-- Consider both technical and process improvements
+`, sc.projectName, sc.projectName, performanceData, sc.projectName)
 
-Execute the sprint retrospective analysis and generate improvement recommendations now.`,
-		projectName, projectName, performanceData, sc.formatRetroContext(retroReport), projectName)
+	// Add retrospective report data if available
+	if retroReport != nil {
+		promptBuilder += fmt.Sprintf(`
+## Pre-Gathered Retrospective Data
 
-	return prompt, nil
+**Sprint Metrics:**
+- Total Dispatches: %d
+- Completed: %d (%.1f%%)
+- Failed: %d (%.1f%%)
+- Average Duration: %.1fs
+
+`, retroReport.TotalDispatches,
+			retroReport.Completed,
+			float64(retroReport.Completed)/float64(retroReport.TotalDispatches)*100,
+			retroReport.Failed,
+			float64(retroReport.Failed)/float64(retroReport.TotalDispatches)*100,
+			retroReport.AvgDuration)
+
+		if len(retroReport.ProviderStats) > 0 {
+			promptBuilder += "**Provider Performance:**\n"
+			for provider, stats := range retroReport.ProviderStats {
+				promptBuilder += fmt.Sprintf("- %s: %d total, %.1f%% success, %.1fs avg\n",
+					provider, stats.Total, stats.SuccessRate, stats.AvgDuration)
+			}
+			promptBuilder += "\n"
+		}
+
+		if len(retroReport.Recommendations) > 0 {
+			promptBuilder += "**Initial Recommendations:**\n"
+			for _, rec := range retroReport.Recommendations {
+				promptBuilder += fmt.Sprintf("- %s\n", rec)
+			}
+			promptBuilder += "\n"
+		}
+	}
+
+	// Add historical context
+	promptBuilder += sc.formatRetroContext(retroReport)
+
+	promptBuilder += `
+Execute comprehensive retrospective analysis and deliver actionable Matrix summary now.`
+
+	return promptBuilder
 }
 
-// getCompletedWork gathers recently completed work for sprint review
+// waitForCeremonyCompletion waits for a ceremony dispatch to complete.
+func (sc *SprintCeremony) waitForCeremonyCompletion(ctx context.Context, dispatchID int64, timeout time.Duration) (bool, error) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	timeoutTimer := time.NewTimer(timeout)
+	defer timeoutTimer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-timeoutTimer.C:
+			return false, fmt.Errorf("ceremony timeout after %v", timeout)
+		case <-ticker.C:
+			dispatch, err := sc.store.GetDispatchByID(dispatchID)
+			if err != nil {
+				sc.logger.Error("failed to check ceremony dispatch status", "dispatch_id", dispatchID, "error", err)
+				continue
+			}
+
+			switch dispatch.Status {
+			case "completed":
+				sc.logger.Info("ceremony completed successfully", "dispatch_id", dispatchID)
+				return true, nil
+			case "failed":
+				sc.logger.Error("ceremony dispatch failed", "dispatch_id", dispatchID, "exit_code", dispatch.ExitCode)
+				return false, fmt.Errorf("ceremony dispatch failed with exit code %d", dispatch.ExitCode)
+			case "cancelled":
+				return false, fmt.Errorf("ceremony dispatch was cancelled")
+			case "running":
+				// Still running, continue waiting
+				sc.logger.Debug("ceremony still running", "dispatch_id", dispatchID)
+				continue
+			default:
+				sc.logger.Warn("unexpected ceremony dispatch status", "dispatch_id", dispatchID, "status", dispatch.Status)
+				continue
+			}
+		}
+	}
+}
+
+// recordCeremonyEvent records a ceremony event in the store for tracking.
+func (sc *SprintCeremony) recordCeremonyEvent(eventType, message string, dispatchID int64) {
+	err := sc.store.RecordHealthEventWithDispatch(eventType, message, dispatchID, "")
+	if err != nil {
+		sc.logger.Error("failed to record ceremony event", "event_type", eventType, "error", err)
+	}
+}
+
+// IsEligibleForCeremony checks if the project is eligible for ceremony execution.
+func (sc *SprintCeremony) IsEligibleForCeremony(ctx context.Context, ceremonyType string) (bool, error) {
+	project, exists := sc.cfg.Projects[sc.projectName]
+	if !exists {
+		return false, fmt.Errorf("project %s not found", sc.projectName)
+	}
+
+	if !project.Enabled {
+		sc.logger.Debug("project not enabled for ceremonies", "project", sc.projectName)
+		return false, nil
+	}
+
+	// Check for recent ceremony dispatches to avoid duplicates
+	recentWindow := 6 * time.Hour // Prevent duplicate ceremonies within 6 hours
+	hasRecent, err := sc.hasRecentCeremonyDispatch(ctx, ceremonyType, recentWindow)
+	if err != nil {
+		return false, fmt.Errorf("check recent ceremony dispatch: %w", err)
+	}
+
+	if hasRecent {
+		sc.logger.Debug("recent ceremony dispatch found, skipping",
+			"ceremony_type", ceremonyType,
+			"window", recentWindow)
+		return false, nil
+	}
+
+	return true, nil
+}
+
+// hasRecentCeremonyDispatch checks for recent ceremony dispatches of the given type.
+func (sc *SprintCeremony) hasRecentCeremonyDispatch(ctx context.Context, ceremonyType string, window time.Duration) (bool, error) {
+	cutoff := time.Now().Add(-window)
+
+	running, err := sc.store.GetRunningDispatches()
+	if err != nil {
+		return false, fmt.Errorf("get running dispatches: %w", err)
+	}
+
+	ceremonyPrefix := fmt.Sprintf("ceremony-%s-%s-", sc.projectName, ceremonyType)
+
+	for _, dispatch := range running {
+		if dispatch.DispatchedAt.After(cutoff) {
+			if len(dispatch.BeadID) > len(ceremonyPrefix) && dispatch.BeadID[:len(ceremonyPrefix)] == ceremonyPrefix {
+				sc.logger.Debug("found recent ceremony dispatch",
+					"bead_id", dispatch.BeadID,
+					"ceremony_type", ceremonyType,
+					"dispatched_at", dispatch.DispatchedAt)
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
+// getCompletedWork gathers recently completed work for sprint review.
 func (sc *SprintCeremony) getCompletedWork(ctx context.Context, projectName, beadsDir string) (string, error) {
 	// Get completed dispatches from the last sprint period (7 days)
 	cutoff := time.Now().Add(-7 * 24 * time.Hour).UTC().Format(time.DateTime)
@@ -430,7 +607,7 @@ func (sc *SprintCeremony) getCompletedWork(ctx context.Context, projectName, bea
 	return workSummary.String(), nil
 }
 
-// gatherPerformanceData collects performance metrics for retrospective analysis
+// gatherPerformanceData collects performance metrics for retrospective analysis.
 func (sc *SprintCeremony) gatherPerformanceData(ctx context.Context, projectName string) string {
 	// Get dispatch performance for the project over the last sprint
 	cutoff := time.Now().Add(-7 * 24 * time.Hour).UTC().Format(time.DateTime)
@@ -447,7 +624,7 @@ func (sc *SprintCeremony) gatherPerformanceData(ctx context.Context, projectName
 			COALESCE(SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END), 0),
 			AVG(CASE WHEN status='completed' THEN duration_s ELSE NULL END)
-		FROM dispatches 
+		FROM dispatches
 		WHERE project = ? AND dispatched_at >= ?
 	`, projectName, cutoff).Scan(&totalDispatches, &completedDispatches, &failedDispatches, &avgDuration)
 
@@ -474,10 +651,10 @@ func (sc *SprintCeremony) gatherPerformanceData(ctx context.Context, projectName
 	return dataBuilder.String()
 }
 
-// formatRetroContext formats retrospective context data
+// formatRetroContext formats retrospective context data.
 func (sc *SprintCeremony) formatRetroContext(report *RetroReport) string {
 	if report == nil {
-		return "No retrospective context available."
+		return "No retrospective context available.\n"
 	}
 
 	var context strings.Builder
@@ -497,27 +674,27 @@ func (sc *SprintCeremony) formatRetroContext(report *RetroReport) string {
 	return context.String()
 }
 
-// processCeremonyResults processes completed ceremony output and routes to Matrix
+// processCeremonyResults processes completed ceremony output and routes to Matrix.
 func (sc *SprintCeremony) processCeremonyResults(ctx context.Context, result *CeremonyResult) error {
 	if strings.TrimSpace(result.Output) == "" {
-		sc.logger.Warn("ceremony completed with empty output", "ceremony_id", result.CeremonyID)
+		sc.logger.Warn("ceremony completed with empty output", "bead_id", result.BeadID)
 		return nil
 	}
 
 	// The output routing to Matrix is handled by the scrum master agent dispatch
-	// The openclaw backend will automatically route output to the configured Matrix room
+	// The backend will automatically route output to the configured Matrix room
 	// based on the agent configuration
 
 	sc.logger.Info("ceremony results processed",
-		"ceremony_id", result.CeremonyID,
+		"bead_id", result.BeadID,
 		"output_length", len(result.Output))
 
 	// Record ceremony completion event for monitoring
 	eventType := "sprint_ceremony_completed"
 	details := fmt.Sprintf("ceremony %s completed successfully with %d characters of output",
-		result.CeremonyID, len(result.Output))
+		result.BeadID, len(result.Output))
 
-	if err := sc.store.RecordHealthEventWithDispatch(eventType, details, result.DispatchID, result.CeremonyID); err != nil {
+	if err := sc.store.RecordHealthEventWithDispatch(eventType, details, result.DispatchID, result.BeadID); err != nil {
 		sc.logger.Warn("failed to record ceremony completion event", "error", err)
 	}
 
