@@ -117,6 +117,51 @@ func TestLoadManager(t *testing.T) {
 	}
 }
 
+func TestRWMutexManagerNilSafeMethods(t *testing.T) {
+	var mgr *RWMutexManager
+
+	if got := mgr.Get(); got != nil {
+		t.Fatalf("Get on nil manager should return nil, got %#v", got)
+	}
+
+	if err := mgr.Reload(validConfig); err == nil {
+		t.Fatal("expected error when reloading with nil manager")
+	}
+
+	mgr.Set(&Config{General: General{LogLevel: "info"}})
+	if got := mgr.Get(); got != nil {
+		t.Fatalf("Set on nil manager should not initialize config, got %#v", got)
+	}
+}
+
+func TestRWMutexManagerReloadUsesWriterLock(t *testing.T) {
+	mgr := NewRWMutexManager(&Config{})
+	path := writeTestConfig(t, validConfig)
+
+	mgr.mu.RLock()
+	done := make(chan struct{})
+	go func() {
+		err := mgr.Reload(path)
+		if err != nil {
+			t.Error(err)
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("reload completed while reader lock held; expected blocking")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	mgr.mu.RUnlock()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("reload did not complete after releasing reader lock")
+	}
+}
+
 func TestRWMutexManagerSetUsesExclusiveLock(t *testing.T) {
 	mgr := NewRWMutexManager(&Config{})
 	mgr.mu.RLock()
@@ -193,6 +238,43 @@ func BenchmarkRWMutexManagerReadMostly(b *testing.B) {
 			case <-ticker.C:
 				next := int(writes.Add(1))
 				mgr.Set(&Config{General: General{MaxPerTick: next}})
+			case <-stop:
+				return
+			}
+		}
+	}()
+
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			cfg := mgr.Get()
+			if cfg == nil {
+				b.Fatal("nil config")
+			}
+			_ = cfg.General.MaxPerTick
+		}
+	})
+}
+
+func BenchmarkRWMutexManagerReadMostlyWithReloads(b *testing.B) {
+	path := writeTestConfig(b, validConfig)
+	mgr := NewRWMutexManager(nil)
+	if err := mgr.Reload(path); err != nil {
+		b.Fatalf("initial reload failed: %v", err)
+	}
+
+	stop := make(chan struct{})
+	defer close(stop)
+
+	ticker := time.NewTicker(2 * time.Millisecond)
+	go func() {
+		defer ticker.Stop()
+		for i := 0; ; i++ {
+			select {
+			case <-ticker.C:
+				updated := strings.Replace(validConfig, "max_per_tick = 10", fmt.Sprintf("max_per_tick = %d", (i%20)+1), 1)
+				reloadedPath := writeTestConfig(b, updated)
+				_ = mgr.Reload(reloadedPath)
 			case <-stop:
 				return
 			}

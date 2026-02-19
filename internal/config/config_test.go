@@ -9,12 +9,12 @@ import (
 	"time"
 )
 
-func writeTestConfig(t *testing.T, content string) string {
-	t.Helper()
-	dir := t.TempDir()
+func writeTestConfig(tb testing.TB, content string) string {
+	tb.Helper()
+	dir := tb.TempDir()
 	path := filepath.Join(dir, "cortex.toml")
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	return path
 }

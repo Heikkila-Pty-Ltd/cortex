@@ -366,8 +366,12 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// LoadManager reads config from path and returns a thread-safe manager.
+// LoadManager reads config from path and returns an RWMutex-backed thread-safe manager.
 func LoadManager(path string) (ConfigManager, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, fmt.Errorf("config path is required")
+	}
+
 	cfg, err := Load(path)
 	if err != nil {
 		return nil, err

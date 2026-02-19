@@ -29,7 +29,14 @@ func NewRWMutexManager(initial *Config) *RWMutexManager {
 }
 
 // Get returns the current config pointer under a shared lock.
+//
+// Callers must treat the returned config as read-only; callers that mutate
+// fields must clone before mutation to avoid races between concurrent consumers.
 func (m *RWMutexManager) Get() *Config {
+	if m == nil {
+		return nil
+	}
+
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.cfg
@@ -37,6 +44,10 @@ func (m *RWMutexManager) Get() *Config {
 
 // Set updates the current config pointer under an exclusive lock.
 func (m *RWMutexManager) Set(cfg *Config) {
+	if m == nil {
+		return
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cfg = cfg.Clone()
@@ -44,6 +55,9 @@ func (m *RWMutexManager) Set(cfg *Config) {
 
 // Reload loads config from path and atomically swaps it into place.
 func (m *RWMutexManager) Reload(path string) error {
+	if m == nil {
+		return fmt.Errorf("config manager is nil")
+	}
 	if path == "" {
 		return fmt.Errorf("config reload path is required")
 	}
@@ -53,7 +67,9 @@ func (m *RWMutexManager) Reload(path string) error {
 		return err
 	}
 
-	m.Set(loaded)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg = loaded.Clone()
 	return nil
 }
 
