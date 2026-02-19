@@ -329,6 +329,71 @@ func TestListBeadsCtxFallsBackWhenAllUnsupported(t *testing.T) {
 	if !strings.Contains(got, "list --limit 0 --json --quiet") {
 		t.Fatalf("expected fallback without --all to include --limit 0, got %q", got)
 	}
+	if strings.Contains(got, "--format=json") {
+		t.Fatalf("expected no --format=json fallback usage, got %q", got)
+	}
+}
+
+func TestListBeadsCtxRecoversFromOutOfSyncDatabase(t *testing.T) {
+	projectDir := t.TempDir()
+	beadsDir := filepath.Join(projectDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+	logPath := filepath.Join(projectDir, "args.log")
+	attemptPath := filepath.Join(projectDir, "list-attempts")
+
+	fakeBin := t.TempDir()
+	bdPath := filepath.Join(fakeBin, "bd")
+	script := "#!/bin/sh\n" +
+		"echo \"$@\" >> \"$BD_ARGS_LOG\"\n" +
+		"case \"$*\" in\n" +
+		"  *\"sync --import-only\"*)\n" +
+		"    echo 'ok'\n" +
+		"    exit 0\n" +
+		"    ;;\n" +
+		"  *\"list\"*)\n" +
+		"    n=0\n" +
+		"    if [ -f \"$BD_LIST_ATTEMPTS\" ]; then n=$(cat \"$BD_LIST_ATTEMPTS\"); fi\n" +
+		"    n=$((n+1))\n" +
+		"    echo \"$n\" > \"$BD_LIST_ATTEMPTS\"\n" +
+		"    if [ \"$n\" -eq 1 ]; then\n" +
+		"      echo 'Database out of sync with JSONL. run \"bd sync --import-only\"' >&2\n" +
+		"      exit 1\n" +
+		"    fi\n" +
+		"    echo '[{\"id\":\"cortex-sync\",\"title\":\"Recovered task\",\"status\":\"open\",\"priority\":2,\"issue_type\":\"task\"}]'\n" +
+		"    ;;\n" +
+		"  *)\n" +
+		"    echo '[]'\n" +
+		"    ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(bdPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake bd: %v", err)
+	}
+
+	t.Setenv("BD_ARGS_LOG", logPath)
+	t.Setenv("BD_LIST_ATTEMPTS", attemptPath)
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+	beadList, err := ListBeadsCtx(context.Background(), beadsDir)
+	if err != nil {
+		t.Fatalf("ListBeadsCtx recovery failed: %v", err)
+	}
+	if len(beadList) != 1 || beadList[0].ID != "cortex-sync" {
+		t.Fatalf("expected recovered bead cortex-sync, got %+v", beadList)
+	}
+
+	args, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	got := string(args)
+	if strings.Count(got, "list ") < 2 {
+		t.Fatalf("expected list to be retried after recovery sync, got %q", got)
+	}
+	if !strings.Contains(got, "sync --import-only") {
+		t.Fatalf("expected recovery sync call, got %q", got)
+	}
 }
 
 func TestSyncImportCtxUsesImportOnly(t *testing.T) {

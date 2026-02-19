@@ -3004,6 +3004,27 @@ func (s *Scheduler) reconcileProjectClaimHealth(ctx context.Context, projectName
 			continue
 		}
 		if latest == nil {
+			assignee := strings.TrimSpace(bead.Assignee)
+			if strings.HasPrefix(assignee, projectName+"-") && !bead.UpdatedAt.IsZero() && now.Sub(bead.UpdatedAt) >= terminalClaimGrace {
+				if err := s.releaseBeadOwnershipSafe(ctx, beadsDir, bead.ID); err != nil {
+					s.logClaimAnomalyOnce(
+						"claimed_no_dispatch_release_failed:"+projectName+":"+bead.ID,
+						"claim_reconcile_release_failed",
+						fmt.Sprintf("failed to release stale scheduler claim for project %s bead %s (assignee=%s): %v", projectName, bead.ID, assignee, err),
+						0,
+						bead.ID,
+					)
+					continue
+				}
+				_ = s.store.RecordHealthEventWithDispatch(
+					"stale_claim_released",
+					fmt.Sprintf("project %s released stale scheduler claim for bead %s with no dispatch history (assignee=%s)", projectName, bead.ID, assignee),
+					0,
+					bead.ID,
+				)
+				continue
+			}
+
 			s.logClaimAnomalyOnce(
 				"claimed_no_dispatch:"+projectName+":"+bead.ID,
 				"claimed_no_dispatch",

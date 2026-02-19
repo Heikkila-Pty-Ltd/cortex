@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/antigravity-dev/cortex/internal/beads"
 	"github.com/antigravity-dev/cortex/internal/config"
@@ -126,5 +127,87 @@ func TestReconcileProjectClaimHealthReleasesLegacyTerminalClaim(t *testing.T) {
 	}
 	if !strings.Contains(string(args), "update bead-legacy --assignee=") {
 		t.Fatalf("expected legacy claim release command in bd args, got %q", string(args))
+	}
+}
+
+func TestReconcileProjectClaimHealthReleasesStaleManagedClaimWithoutDispatch(t *testing.T) {
+	logPath := setupFakeBDForClaimTests(t)
+
+	projectDir := t.TempDir()
+	beadsDir := filepath.Join(projectDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+
+	s := newClaimHealthScheduler(t, beadsDir)
+	project := s.cfg.Projects["test-project"]
+
+	beadList := []beads.Bead{
+		{
+			ID:        "bead-managed",
+			Status:    "open",
+			Assignee:  "test-project-coder",
+			UpdatedAt: time.Now().Add(-10 * time.Minute),
+		},
+	}
+
+	s.reconcileProjectClaimHealth(context.Background(), "test-project", project, beadList)
+
+	args, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read bd args log: %v", err)
+	}
+	if !strings.Contains(string(args), "update bead-managed --assignee=") {
+		t.Fatalf("expected managed stale claim release command in bd args, got %q", string(args))
+	}
+
+	events, err := s.store.GetRecentHealthEvents(1)
+	if err != nil {
+		t.Fatalf("read health events: %v", err)
+	}
+	found := false
+	for _, evt := range events {
+		if evt.EventType == "stale_claim_released" && evt.BeadID == "bead-managed" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected stale_claim_released health event for bead-managed, got %+v", events)
+	}
+}
+
+func TestReconcileProjectClaimHealthDoesNotReleaseManualClaimWithoutDispatch(t *testing.T) {
+	logPath := setupFakeBDForClaimTests(t)
+
+	projectDir := t.TempDir()
+	beadsDir := filepath.Join(projectDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+
+	s := newClaimHealthScheduler(t, beadsDir)
+	project := s.cfg.Projects["test-project"]
+
+	beadList := []beads.Bead{
+		{
+			ID:        "bead-manual",
+			Status:    "open",
+			Assignee:  "human-owner",
+			UpdatedAt: time.Now().Add(-10 * time.Minute),
+		},
+	}
+
+	s.reconcileProjectClaimHealth(context.Background(), "test-project", project, beadList)
+
+	args, err := os.ReadFile(logPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return
+		}
+		t.Fatalf("read bd args log: %v", err)
+	}
+	if strings.Contains(string(args), "update bead-manual --assignee=") {
+		t.Fatalf("did not expect manual claim release command, got %q", string(args))
 	}
 }

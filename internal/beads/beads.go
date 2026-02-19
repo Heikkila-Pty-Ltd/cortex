@@ -129,32 +129,15 @@ func ListBeads(beadsDir string) ([]Bead, error) {
 // ListBeadsCtx is the context-aware version of ListBeads.
 func ListBeadsCtx(ctx context.Context, beadsDir string) ([]Bead, error) {
 	root := projectRoot(beadsDir)
-
-	commands := [][]string{
-		{"list", "--all", "--limit", "0", "--json", "--quiet"},
-		{"list", "--all", "--limit", "0", "--format=json"},
-		{"list", "--all", "--json", "--quiet"},
-		{"list", "--all", "--format=json"},
-		{"list", "--limit", "0", "--json", "--quiet"},
-		{"list", "--limit", "0", "--format=json"},
-		{"list", "--json", "--quiet"},
-		{"list", "--format=json"},
-	}
-
-	var (
-		out     []byte
-		err     error
-		lastErr error
-	)
-	for _, args := range commands {
-		out, err = runBD(ctx, root, args...)
-		if err == nil {
-			break
+	out, err := runBDList(ctx, root)
+	if err != nil && isOutOfSyncListError(err) {
+		if syncErr := SyncImportCtx(ctx, beadsDir); syncErr != nil {
+			return nil, fmt.Errorf("listing beads: %w (auto-recovery sync failed: %v)", err, syncErr)
 		}
-		lastErr = err
+		out, err = runBDList(ctx, root)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("listing beads: %w", lastErr)
+		return nil, fmt.Errorf("listing beads: %w", err)
 	}
 
 	var beads []Bead
@@ -163,6 +146,39 @@ func ListBeadsCtx(ctx context.Context, beadsDir string) ([]Bead, error) {
 	}
 	resolveDependencies(beads)
 	return beads, nil
+}
+
+func runBDList(ctx context.Context, projectDir string) ([]byte, error) {
+	commands := [][]string{
+		{"list", "--all", "--limit", "0", "--json", "--quiet"},
+		{"list", "--all", "--json", "--quiet"},
+		{"list", "--limit", "0", "--json", "--quiet"},
+		{"list", "--json", "--quiet"},
+	}
+
+	var lastErr error
+	for _, args := range commands {
+		out, err := runBD(ctx, projectDir, args...)
+		if err == nil {
+			return out, nil
+		}
+		if isOutOfSyncListError(err) {
+			return nil, err
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no bd list commands configured")
+	}
+	return nil, lastErr
+}
+
+func isOutOfSyncListError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database out of sync")
 }
 
 // SyncImport refreshes the local beads DB from JSONL in import-only mode.
