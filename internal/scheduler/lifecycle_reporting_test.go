@@ -2,8 +2,10 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/antigravity-dev/cortex/internal/config"
 )
@@ -149,6 +151,93 @@ func TestReportBeadLifecycleFallsBackToReporterWhenDirectSendFails(t *testing.T)
 	}
 }
 
+func TestReportBeadLifecycleSkipsFallbackWhenRateLimited(t *testing.T) {
+	reporter := &recordingLifecycleReporter{}
+	sender := &recordingLifecycleMatrixSender{
+		err: errors.New(`matrix send failed: status 429 ({"errcode":"M_LIMIT_EXCEEDED","error":"Too Many Requests","retry_after_ms":1000})`),
+	}
+	s := &Scheduler{
+		cfg: &config.Config{
+			Reporter: config.Reporter{DefaultRoom: "!fallback:matrix.org"},
+			Projects: map[string]config.Project{
+				"project-a": {Enabled: true},
+			},
+		},
+		lifecycleReporter:       reporter,
+		lifecycleMatrixSender:   sender,
+		lifecycleRateLimitUntil: make(map[string]time.Time),
+		lifecycleRateLimitLog:   make(map[string]time.Time),
+	}
+
+	s.reportBeadLifecycle(context.Background(), beadLifecycleEvent{
+		Project: "project-a",
+		BeadID:  "bead-123",
+		Event:   "dispatch_started",
+	})
+	if len(sender.rooms) != 1 {
+		t.Fatalf("expected one direct sender attempt, got %d", len(sender.rooms))
+	}
+	if len(reporter.calls) != 0 {
+		t.Fatalf("expected no reporter fallback while rate-limited, got %d", len(reporter.calls))
+	}
+
+	// Second call should be suppressed by in-memory backoff and not call sender again.
+	s.reportBeadLifecycle(context.Background(), beadLifecycleEvent{
+		Project: "project-a",
+		BeadID:  "bead-123",
+		Event:   "dispatch_started",
+	})
+	if len(sender.rooms) != 1 {
+		t.Fatalf("expected no additional direct sender attempt during backoff, got %d", len(sender.rooms))
+	}
+	if len(reporter.calls) != 0 {
+		t.Fatalf("expected no reporter fallback during backoff, got %d", len(reporter.calls))
+	}
+}
+
+func TestReportBeadLifecycleRetriesAfterRateLimitBackoffExpires(t *testing.T) {
+	reporter := &recordingLifecycleReporter{}
+	sender := &recordingLifecycleMatrixSender{
+		err: errors.New(`matrix send failed: status 429 ({"errcode":"M_LIMIT_EXCEEDED","retry_after_ms":1})`),
+	}
+	s := &Scheduler{
+		cfg: &config.Config{
+			Reporter: config.Reporter{DefaultRoom: "!fallback:matrix.org"},
+			Projects: map[string]config.Project{
+				"project-a": {Enabled: true},
+			},
+		},
+		lifecycleReporter:       reporter,
+		lifecycleMatrixSender:   sender,
+		lifecycleRateLimitUntil: make(map[string]time.Time),
+		lifecycleRateLimitLog:   make(map[string]time.Time),
+	}
+
+	s.reportBeadLifecycle(context.Background(), beadLifecycleEvent{
+		Project: "project-a",
+		BeadID:  "bead-123",
+		Event:   "dispatch_started",
+	})
+	if len(sender.rooms) != 1 {
+		t.Fatalf("expected first direct sender attempt, got %d", len(sender.rooms))
+	}
+
+	time.Sleep(120 * time.Millisecond)
+	sender.err = nil
+
+	s.reportBeadLifecycle(context.Background(), beadLifecycleEvent{
+		Project: "project-a",
+		BeadID:  "bead-123",
+		Event:   "dispatch_started",
+	})
+	if len(sender.rooms) != 2 {
+		t.Fatalf("expected retry attempt after backoff, got %d", len(sender.rooms))
+	}
+	if len(reporter.calls) != 0 {
+		t.Fatalf("expected no reporter fallback on successful retry, got %d", len(reporter.calls))
+	}
+}
+
 func TestFormatLifecycleMatrixAgentPrompt(t *testing.T) {
 	msg := formatLifecycleMatrixAgentPrompt("!room:matrix.org", "hello world")
 	if !strings.Contains(msg, "Matrix Bead Lifecycle Update") {
@@ -185,5 +274,50 @@ func TestLifecycleEventForDispatchStatus(t *testing.T) {
 		if got := lifecycleEventForDispatchStatus(status); got != want {
 			t.Fatalf("lifecycleEventForDispatchStatus(%q) = %q, want %q", status, got, want)
 		}
+	}
+}
+
+func TestLifecycleRateLimitRetryAfter(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		limited bool
+		min     time.Duration
+		max     time.Duration
+	}{
+		{
+			name:    "matrix 429 with retry after",
+			err:     errors.New(`matrix send failed: status 429 ({"errcode":"M_LIMIT_EXCEEDED","retry_after_ms":762})`),
+			limited: true,
+			min:     762 * time.Millisecond,
+			max:     762 * time.Millisecond,
+		},
+		{
+			name:    "matrix 429 without retry after",
+			err:     errors.New(`matrix send failed: status 429 ({"errcode":"M_LIMIT_EXCEEDED"})`),
+			limited: true,
+			min:     5 * time.Second,
+			max:     5 * time.Second,
+		},
+		{
+			name:    "non-rate-limit error",
+			err:     errors.New("network timeout"),
+			limited: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, limited := lifecycleRateLimitRetryAfter(tt.err)
+			if limited != tt.limited {
+				t.Fatalf("limited = %v, want %v (duration=%v)", limited, tt.limited, got)
+			}
+			if !tt.limited {
+				return
+			}
+			if got < tt.min || got > tt.max {
+				t.Fatalf("retry duration = %v, want within [%v,%v]", got, tt.min, tt.max)
+			}
+		})
 	}
 }

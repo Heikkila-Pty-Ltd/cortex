@@ -29,38 +29,40 @@ import (
 
 // Scheduler is the core orchestration loop.
 type Scheduler struct {
-	cfg                    *config.Config
-	store                  *store.Store
-	rateLimiter            *dispatch.RateLimiter
-	dispatcher             dispatch.DispatcherInterface
-	now                    func() time.Time
-	getBacklogBeads        func(context.Context, string, string) ([]*store.BacklogBead, error)
-	runSprintPlanning      func(context.Context) error
-	listBeads              func(string) ([]beads.Bead, error)
-	buildCrossProjectGraph func(context.Context, map[string]config.Project) (*beads.CrossProjectGraph, error)
-	syncBeadsImport        func(context.Context, string) error
-	claimBeadOwnership     func(context.Context, string, string) error
-	releaseBeadOwnership   func(context.Context, string, string) error
-	hasLiveSession         func(string) bool
-	ensureTeam             func(string, string, string, []string, *slog.Logger) ([]string, error)
-	lifecycleMatrixSender  lifecycleMatrixSender
-	lifecycleReporter      lifecycleReporter
-	backends               map[string]dispatch.Backend
-	logger                 *slog.Logger
-	dryRun                 bool
-	mu                     sync.Mutex
-	paused                 bool
-	quarantine             map[string]time.Time
-	churnBlock             map[string]time.Time
-	epicBreakup            map[string]time.Time
-	claimAnomaly           map[string]time.Time
-	dispatchBlockAnomaly   map[string]time.Time
-	gatewayCircuitUntil    time.Time
-	gatewayCircuitLogAt    time.Time
-	planGateLogAt          time.Time
-	ceremonyScheduler      *CeremonyScheduler
-	completionVerifier     *CompletionVerifier
-	lastCompletionCheck    time.Time
+	cfg                     *config.Config
+	store                   *store.Store
+	rateLimiter             *dispatch.RateLimiter
+	dispatcher              dispatch.DispatcherInterface
+	now                     func() time.Time
+	getBacklogBeads         func(context.Context, string, string) ([]*store.BacklogBead, error)
+	runSprintPlanning       func(context.Context) error
+	listBeads               func(string) ([]beads.Bead, error)
+	buildCrossProjectGraph  func(context.Context, map[string]config.Project) (*beads.CrossProjectGraph, error)
+	syncBeadsImport         func(context.Context, string) error
+	claimBeadOwnership      func(context.Context, string, string) error
+	releaseBeadOwnership    func(context.Context, string, string) error
+	hasLiveSession          func(string) bool
+	ensureTeam              func(string, string, string, []string, *slog.Logger) ([]string, error)
+	lifecycleMatrixSender   lifecycleMatrixSender
+	lifecycleReporter       lifecycleReporter
+	backends                map[string]dispatch.Backend
+	logger                  *slog.Logger
+	dryRun                  bool
+	mu                      sync.Mutex
+	paused                  bool
+	quarantine              map[string]time.Time
+	churnBlock              map[string]time.Time
+	epicBreakup             map[string]time.Time
+	claimAnomaly            map[string]time.Time
+	dispatchBlockAnomaly    map[string]time.Time
+	lifecycleRateLimitUntil map[string]time.Time
+	lifecycleRateLimitLog   map[string]time.Time
+	gatewayCircuitUntil     time.Time
+	gatewayCircuitLogAt     time.Time
+	planGateLogAt           time.Time
+	ceremonyScheduler       *CeremonyScheduler
+	completionVerifier      *CompletionVerifier
+	lastCompletionCheck     time.Time
 
 	// Provider performance profiling
 	profiles           map[string]learner.ProviderProfile
@@ -117,16 +119,21 @@ const (
 	nightModeStartHour = 22
 	nightModeEndHour   = 7
 
-	claimLeaseTTL         = 3 * time.Minute
-	claimLeaseGrace       = 1 * time.Minute
-	terminalClaimGrace    = 2 * time.Minute
-	claimAnomalyLogWindow = 10 * time.Minute
-	dispatchBlockLogWindow = 10 * time.Minute
+	claimLeaseTTL                 = 3 * time.Minute
+	claimLeaseGrace               = 1 * time.Minute
+	terminalClaimGrace            = 2 * time.Minute
+	claimedNoDispatchManagedGrace = 15 * time.Minute
+	claimAnomalyLogWindow         = 10 * time.Minute
+	dispatchBlockLogWindow        = 10 * time.Minute
 
 	gatewayFailureWindow    = 2 * time.Minute
 	gatewayFailureThreshold = 5
 	gatewayCircuitDuration  = 10 * time.Minute
 	planGateLogInterval     = 2 * time.Minute
+
+	lifecycleRateLimitMinBackoff = 100 * time.Millisecond
+	lifecycleRateLimitMaxBackoff = 2 * time.Minute
+	lifecycleRateLimitLogWindow  = 30 * time.Second
 
 	dodQueueCapacity      = 128
 	tickWatchdogThreshold = 90 * time.Second
@@ -164,6 +171,8 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 		epicBreakup:               make(map[string]time.Time),
 		claimAnomaly:              make(map[string]time.Time),
 		dispatchBlockAnomaly:      make(map[string]time.Time),
+		lifecycleRateLimitUntil:   make(map[string]time.Time),
+		lifecycleRateLimitLog:     make(map[string]time.Time),
 		utilizationSampleInterval: 1 * time.Minute,
 		dodQueue:                  make(chan dodQueueItem, dodQueueCapacity),
 		dodQueued:                 make(map[string]struct{}),
@@ -3078,23 +3087,26 @@ func (s *Scheduler) reconcileProjectClaimHealth(ctx context.Context, projectName
 		}
 		if latest == nil {
 			assignee := strings.TrimSpace(bead.Assignee)
-			if strings.HasPrefix(assignee, projectName+"-") && !bead.UpdatedAt.IsZero() && now.Sub(bead.UpdatedAt) >= terminalClaimGrace {
-				if err := s.releaseBeadOwnershipSafe(ctx, beadsDir, bead.ID); err != nil {
-					s.logClaimAnomalyOnce(
-						"claimed_no_dispatch_release_failed:"+projectName+":"+bead.ID,
-						"claim_reconcile_release_failed",
-						fmt.Sprintf("failed to release stale scheduler claim for project %s bead %s (assignee=%s): %v", projectName, bead.ID, assignee, err),
+			if isSchedulerManagedAssignee(projectName, assignee) {
+				if !bead.UpdatedAt.IsZero() && now.Sub(bead.UpdatedAt) >= claimedNoDispatchManagedGrace {
+					if err := s.releaseBeadOwnershipSafe(ctx, beadsDir, bead.ID); err != nil {
+						s.logClaimAnomalyOnce(
+							"claimed_no_dispatch_release_failed:"+projectName+":"+bead.ID,
+							"claim_reconcile_release_failed",
+							fmt.Sprintf("failed to release stale scheduler claim for project %s bead %s (assignee=%s): %v", projectName, bead.ID, assignee, err),
+							0,
+							bead.ID,
+						)
+						continue
+					}
+					_ = s.store.RecordHealthEventWithDispatch(
+						"stale_claim_released",
+						fmt.Sprintf("project %s released stale scheduler claim for bead %s with no dispatch history (assignee=%s)", projectName, bead.ID, assignee),
 						0,
 						bead.ID,
 					)
-					continue
 				}
-				_ = s.store.RecordHealthEventWithDispatch(
-					"stale_claim_released",
-					fmt.Sprintf("project %s released stale scheduler claim for bead %s with no dispatch history (assignee=%s)", projectName, bead.ID, assignee),
-					0,
-					bead.ID,
-				)
+				// Managed assignee with no dispatch history is expected briefly after claim.
 				continue
 			}
 
@@ -3197,6 +3209,25 @@ func (s *Scheduler) logClaimAnomalyOnce(key, eventType, details string, dispatch
 func isTerminalDispatchStatus(status string) bool {
 	switch strings.TrimSpace(strings.ToLower(status)) {
 	case "completed", "failed", "cancelled", "interrupted", "retried":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSchedulerManagedAssignee(projectName, assignee string) bool {
+	cleanAssignee := strings.ToLower(strings.TrimSpace(assignee))
+	if cleanAssignee == "" {
+		return false
+	}
+
+	projectPrefix := strings.ToLower(strings.TrimSpace(projectName))
+	if projectPrefix != "" && strings.HasPrefix(cleanAssignee, projectPrefix+"-") {
+		return true
+	}
+
+	switch cleanAssignee {
+	case "coder", "reviewer", "planner", "scrum", "ops", "qa", "main":
 		return true
 	default:
 		return false

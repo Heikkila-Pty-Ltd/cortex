@@ -147,7 +147,7 @@ func TestReconcileProjectClaimHealthReleasesStaleManagedClaimWithoutDispatch(t *
 			ID:        "bead-managed",
 			Status:    "open",
 			Assignee:  "test-project-coder",
-			UpdatedAt: time.Now().Add(-10 * time.Minute),
+			UpdatedAt: time.Now().Add(-20 * time.Minute),
 		},
 	}
 
@@ -174,6 +174,80 @@ func TestReconcileProjectClaimHealthReleasesStaleManagedClaimWithoutDispatch(t *
 	}
 	if !found {
 		t.Fatalf("expected stale_claim_released health event for bead-managed, got %+v", events)
+	}
+}
+
+func TestReconcileProjectClaimHealthReleasesStaleRoleManagedClaimWithoutDispatch(t *testing.T) {
+	logPath := setupFakeBDForClaimTests(t)
+
+	projectDir := t.TempDir()
+	beadsDir := filepath.Join(projectDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+
+	s := newClaimHealthScheduler(t, beadsDir)
+	project := s.cfg.Projects["test-project"]
+
+	beadList := []beads.Bead{
+		{
+			ID:        "bead-role-managed",
+			Status:    "open",
+			Assignee:  "planner",
+			UpdatedAt: time.Now().Add(-20 * time.Minute),
+		},
+	}
+
+	s.reconcileProjectClaimHealth(context.Background(), "test-project", project, beadList)
+
+	args, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read bd args log: %v", err)
+	}
+	if !strings.Contains(string(args), "update bead-role-managed --assignee=") {
+		t.Fatalf("expected role-managed stale claim release command in bd args, got %q", string(args))
+	}
+}
+
+func TestReconcileProjectClaimHealthDoesNotLogAnomalyForFreshManagedClaimWithoutDispatch(t *testing.T) {
+	logPath := setupFakeBDForClaimTests(t)
+
+	projectDir := t.TempDir()
+	beadsDir := filepath.Join(projectDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+
+	s := newClaimHealthScheduler(t, beadsDir)
+	project := s.cfg.Projects["test-project"]
+
+	beadList := []beads.Bead{
+		{
+			ID:        "bead-fresh-managed",
+			Status:    "open",
+			Assignee:  "ops",
+			UpdatedAt: time.Now().Add(-5 * time.Minute),
+		},
+	}
+
+	s.reconcileProjectClaimHealth(context.Background(), "test-project", project, beadList)
+
+	args, err := os.ReadFile(logPath)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read bd args log: %v", err)
+	}
+	if err == nil && strings.Contains(string(args), "update bead-fresh-managed --assignee=") {
+		t.Fatalf("did not expect fresh managed claim release command, got %q", string(args))
+	}
+
+	events, err := s.store.GetRecentHealthEvents(20)
+	if err != nil {
+		t.Fatalf("read health events: %v", err)
+	}
+	for _, evt := range events {
+		if evt.EventType == "claimed_no_dispatch" && evt.BeadID == "bead-fresh-managed" {
+			t.Fatalf("did not expect claimed_no_dispatch anomaly for fresh managed claim: %+v", evt)
+		}
 	}
 }
 

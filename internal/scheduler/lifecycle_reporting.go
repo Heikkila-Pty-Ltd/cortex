@@ -3,9 +3,13 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
+
+var matrixRetryAfterMSRe = regexp.MustCompile(`retry_after_ms["'=:\s]*([0-9]+)`)
 
 type lifecycleReporter interface {
 	SendProjectMessage(ctx context.Context, projectName, message string)
@@ -49,6 +53,18 @@ func (s *Scheduler) reportBeadLifecycle(ctx context.Context, evt beadLifecycleEv
 	if room == "" {
 		return
 	}
+	now := time.Now()
+	if remaining, blocked := s.lifecycleBackoffRemaining(room, now); blocked {
+		if s.shouldLogLifecycleRateLimit(room, now) && s.logger != nil {
+			s.logger.Warn("matrix lifecycle send suppressed due to active rate-limit backoff",
+				"project", project,
+				"bead", beadID,
+				"room", room,
+				"retry_in", remaining.String(),
+			)
+		}
+		return
+	}
 
 	evt.Project = project
 	evt.BeadID = beadID
@@ -56,6 +72,27 @@ func (s *Scheduler) reportBeadLifecycle(ctx context.Context, evt beadLifecycleEv
 
 	if s.lifecycleMatrixSender != nil {
 		if err := s.lifecycleMatrixSender.SendMessage(ctx, room, notification); err == nil {
+			return
+		} else if retryAfter, limited := lifecycleRateLimitRetryAfter(err); limited {
+			until := now.Add(retryAfter)
+			s.setLifecycleBackoff(room, until)
+			if s.shouldLogLifecycleRateLimit(room, now) && s.logger != nil {
+				s.logger.Warn("matrix lifecycle send rate-limited; applying backoff",
+					"project", project,
+					"bead", beadID,
+					"room", room,
+					"retry_after", retryAfter.String(),
+				)
+			}
+			if s.store != nil {
+				_ = s.store.RecordHealthEventWithDispatch(
+					"matrix_lifecycle_rate_limited",
+					fmt.Sprintf("project %s bead %s lifecycle message rate-limited for room %s; backing off for %s", project, beadID, room, retryAfter),
+					evt.DispatchID,
+					beadID,
+				)
+			}
+			// Avoid fallback dispatch churn while Matrix explicitly asks us to retry later.
 			return
 		} else if s.logger != nil {
 			s.logger.Warn("failed direct matrix lifecycle send; falling back to reporter dispatch",
@@ -68,6 +105,77 @@ func (s *Scheduler) reportBeadLifecycle(ctx context.Context, evt beadLifecycleEv
 	if s.lifecycleReporter != nil {
 		s.lifecycleReporter.SendProjectMessage(ctx, project, formatLifecycleMatrixAgentPrompt(room, notification))
 	}
+}
+
+func (s *Scheduler) lifecycleBackoffRemaining(room string, now time.Time) (time.Duration, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	until, ok := s.lifecycleRateLimitUntil[room]
+	if !ok {
+		return 0, false
+	}
+	if !until.After(now) {
+		delete(s.lifecycleRateLimitUntil, room)
+		return 0, false
+	}
+	return until.Sub(now), true
+}
+
+func (s *Scheduler) setLifecycleBackoff(room string, until time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.lifecycleRateLimitUntil == nil {
+		s.lifecycleRateLimitUntil = make(map[string]time.Time)
+	}
+	if existing, ok := s.lifecycleRateLimitUntil[room]; ok && existing.After(until) {
+		return
+	}
+	s.lifecycleRateLimitUntil[room] = until
+}
+
+func (s *Scheduler) shouldLogLifecycleRateLimit(room string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.lifecycleRateLimitLog == nil {
+		s.lifecycleRateLimitLog = make(map[string]time.Time)
+	}
+	last, ok := s.lifecycleRateLimitLog[room]
+	if ok && now.Sub(last) < lifecycleRateLimitLogWindow {
+		return false
+	}
+	s.lifecycleRateLimitLog[room] = now
+	return true
+}
+
+func lifecycleRateLimitRetryAfter(err error) (time.Duration, bool) {
+	if err == nil {
+		return 0, false
+	}
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	isRateLimited := strings.Contains(lower, "m_limit_exceeded") ||
+		strings.Contains(lower, "too many requests") ||
+		strings.Contains(lower, "status 429")
+	if !isRateLimited {
+		return 0, false
+	}
+
+	retry := 5 * time.Second
+	if m := matrixRetryAfterMSRe.FindStringSubmatch(msg); len(m) == 2 {
+		if ms, convErr := strconv.Atoi(m[1]); convErr == nil && ms > 0 {
+			retry = time.Duration(ms) * time.Millisecond
+		}
+	}
+	if retry < lifecycleRateLimitMinBackoff {
+		retry = lifecycleRateLimitMinBackoff
+	}
+	if retry > lifecycleRateLimitMaxBackoff {
+		retry = lifecycleRateLimitMaxBackoff
+	}
+	return retry, true
 }
 
 func lifecycleEventForDispatchStatus(status string) string {

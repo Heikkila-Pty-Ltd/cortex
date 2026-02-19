@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -26,6 +28,9 @@ func main() {
 	dryRun := flag.Bool("dry-run", false, "run tick logic without actually dispatching agents")
 	disableAnthropic := flag.Bool("disable-anthropic", false, "remove Anthropic/Claude providers from config and exit")
 	fallbackModel := flag.String("fallback-model", "gpt-5.3-codex", "fallback chief model used with -disable-anthropic")
+	normalizeBeadsProject := flag.String("normalize-beads-project", "", "normalize oversized .beads/issues.jsonl rows for the given project and exit")
+	normalizeBeadsMaxBytes := flag.Int("normalize-beads-max-bytes", 60000, "maximum bytes allowed per issues.jsonl row in -normalize-beads-project mode")
+	normalizeBeadsDryRun := flag.Bool("normalize-beads-dry-run", false, "preview normalize-beads changes without writing files")
 	flag.Parse()
 
 	// Bootstrap logger (text, info) for early startup
@@ -49,6 +54,35 @@ func main() {
 	if err != nil {
 		logger.Error("failed to load config", "error", err)
 		os.Exit(1)
+	}
+	if projectName := strings.TrimSpace(*normalizeBeadsProject); projectName != "" {
+		projectCfg, ok := cfg.Projects[projectName]
+		if !ok {
+			logger.Error("normalize-beads failed: project not found", "project", projectName)
+			os.Exit(1)
+		}
+		beadsDir := config.ExpandHome(strings.TrimSpace(projectCfg.BeadsDir))
+		if beadsDir == "" {
+			logger.Error("normalize-beads failed: project beads_dir is empty", "project", projectName)
+			os.Exit(1)
+		}
+		issuesPath := filepath.Clean(issuesJSONLPath(beadsDir))
+		result, normalizeErr := normalizeOversizedBeadsJSONL(issuesPath, *normalizeBeadsMaxBytes, *normalizeBeadsDryRun)
+		if normalizeErr != nil {
+			logger.Error("normalize-beads failed", "project", projectName, "path", issuesPath, "error", normalizeErr)
+			os.Exit(1)
+		}
+		logger.Info("normalize-beads complete",
+			"project", projectName,
+			"path", result.Path,
+			"dry_run", *normalizeBeadsDryRun,
+			"total_rows", result.TotalLines,
+			"oversized_rows", result.OversizedRows,
+			"changed_rows", result.ChangedRows,
+			"bytes_before", result.BytesBefore,
+			"bytes_after", result.BytesAfter,
+		)
+		return
 	}
 	for _, project := range cfg.MissingProjectRoomRouting() {
 		logger.Warn("project has no matrix_room and reporter.default_room is unset",
