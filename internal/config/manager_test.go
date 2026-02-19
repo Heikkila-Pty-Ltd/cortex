@@ -43,6 +43,13 @@ func TestRWMutexManagerReload(t *testing.T) {
 	}
 }
 
+func TestRWMutexManagerReloadRequiresPath(t *testing.T) {
+	mgr := NewRWMutexManager(&Config{})
+	if err := mgr.Reload(""); err == nil {
+		t.Fatal("expected error for empty reload path")
+	}
+}
+
 func TestRWMutexManagerConcurrentReadWithWrites(t *testing.T) {
 	mgr := NewRWMutexManager(&Config{General: General{MaxPerTick: 1}})
 
