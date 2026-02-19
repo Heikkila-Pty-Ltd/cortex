@@ -2,6 +2,11 @@ package dispatch
 
 import "context"
 
+// CommandBuilder constructs an exec-compatible argv for provider commands.
+type CommandBuilder func(provider, model, prompt string, flags []string) ([]string, error)
+
+var defaultCommandBuilder CommandBuilder = BuildCommand
+
 // Handle uniquely identifies a running dispatch.
 type Handle struct {
 	PID         int
@@ -23,7 +28,7 @@ type DispatchOpts struct {
 
 // DispatchStatus represents the current state of a dispatch.
 type DispatchStatus struct {
-	State    string  // "running", "completed", "failed", "unknown"
+	State    string // "running", "completed", "failed", "unknown"
 	ExitCode int
 	Duration float64 // seconds
 }

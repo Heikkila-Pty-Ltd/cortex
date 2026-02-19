@@ -179,18 +179,19 @@ func (b *TmuxBackend) sessionForHandle(handle Handle) string {
 }
 
 func buildTmuxCommand(cliCfg config.CLIConfig, opts DispatchOpts) (string, string, error) {
-	args := append([]string{}, cliCfg.Args...)
+	flags := append([]string{}, cliCfg.Args...)
 	mode := strings.TrimSpace(cliCfg.PromptMode)
 	if mode == "" {
 		mode = "arg"
 	}
 
 	tempPromptPath := ""
+	promptValue := opts.Prompt
 	switch mode {
 	case "arg":
-		args = replacePromptPlaceholders(args, opts.Prompt)
+		flags = replacePromptPlaceholders(flags, opts.Prompt)
 	case "stdin":
-		args = replacePromptPlaceholders(args, opts.Prompt)
+		flags = replacePromptPlaceholders(flags, opts.Prompt)
 	case "file":
 		f, err := os.CreateTemp("", "cortex-tmux-prompt-*.txt")
 		if err != nil {
@@ -206,19 +207,28 @@ func buildTmuxCommand(cliCfg config.CLIConfig, opts DispatchOpts) (string, strin
 			_ = os.Remove(tempPromptPath)
 			return "", "", fmt.Errorf("tmux backend: close prompt file: %w", err)
 		}
-		args = replacePromptPathPlaceholders(args, tempPromptPath)
+		promptValue = tempPromptPath
+		flags = replacePromptPathPlaceholders(flags, tempPromptPath)
 	default:
 		return "", "", fmt.Errorf("tmux backend: unsupported prompt_mode %q", mode)
 	}
 
 	if strings.TrimSpace(cliCfg.ModelFlag) != "" && strings.TrimSpace(opts.Model) != "" {
-		args = append(args, cliCfg.ModelFlag, opts.Model)
+		flags = append(flags, cliCfg.ModelFlag, "{model}")
 	}
 	if len(cliCfg.ApprovalFlags) > 0 {
-		args = append(args, cliCfg.ApprovalFlags...)
+		flags = append(flags, cliCfg.ApprovalFlags...)
 	}
 
-	base := BuildShellCommand(cliCfg.Cmd, args...)
+	argv, err := defaultCommandBuilder(cliCfg.Cmd, opts.Model, promptValue, flags)
+	if err != nil {
+		if tempPromptPath != "" {
+			_ = os.Remove(tempPromptPath)
+		}
+		return "", "", fmt.Errorf("tmux backend: %w", err)
+	}
+
+	base := BuildShellCommand(argv[0], argv[1:]...)
 	if mode == "stdin" {
 		base = fmt.Sprintf("printf %%s %s | %s", ShellEscape(opts.Prompt), base)
 	}

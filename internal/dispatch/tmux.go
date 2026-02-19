@@ -192,45 +192,49 @@ func clearStaleLocks(agent string) {
 }
 
 func buildTmuxAgentCommand(scriptPath, msgPath, agentPath, thinkingPath, providerPath string) string {
-	// Execute a temp script file with all parameters passed via temp files 
-	// to completely avoid shell parsing issues with user content
-	return BuildShellCommand("sh", scriptPath, msgPath, agentPath, thinkingPath, providerPath)
+	argv, err := defaultCommandBuilder("sh", "", "", []string{scriptPath, msgPath, agentPath, thinkingPath, providerPath})
+	if err != nil {
+		// Fallback should never trigger because inputs are static and validated above.
+		return BuildShellCommand("sh", scriptPath, msgPath, agentPath, thinkingPath, providerPath)
+	}
+	// Execute a temp script file with all parameters passed via temp files
+	// to avoid shell parsing issues with user content.
+	return BuildShellCommand(argv[0], argv[1:]...)
 }
 
 // buildSafeShellScript creates a shell script that safely sets environment variables
 // and executes the given command without any shell parsing issues
 func buildSafeShellScript(agentCmd string, env map[string]string) (string, error) {
 	var script strings.Builder
-	
+
 	script.WriteString("#!/bin/bash\n")
 	script.WriteString("# Auto-generated safe shell script for tmux dispatch\n")
 	script.WriteString("set -e\n\n")
-	
+
 	// Set environment variables safely using printf to handle all special characters
 	for key, value := range env {
 		// Validate environment variable name (security)
 		if !isValidEnvVarName(key) {
 			return "", fmt.Errorf("invalid environment variable name: %s", key)
 		}
-		
+
 		// Use printf %s to safely output the value without interpretation
-		script.WriteString(fmt.Sprintf("export %s=\"$(printf %%s %s)\"\n", 
+		script.WriteString(fmt.Sprintf("export %s=\"$(printf %%s %s)\"\n",
 			key, ShellEscape(value)))
 	}
-	
+
 	if len(env) > 0 {
 		script.WriteString("\n")
 	}
-	
+
 	// Execute the command with exec to replace the shell process
 	// This ensures that the agent process gets the correct PID and signals
 	script.WriteString("exec ")
 	script.WriteString(agentCmd)
 	script.WriteString("\n")
-	
+
 	return script.String(), nil
 }
-
 
 // Dispatch implements DispatcherInterface for tmux-based dispatching.
 func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt string, provider string, thinkingLevel string, workDir string) (int, error) {
@@ -269,7 +273,7 @@ func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt stri
 		os.Remove(scriptPath)
 		return 0, fmt.Errorf("tmux dispatch: create agent temp file: %w", err)
 	}
-	
+
 	thinkingPath, err := writeToTempFile(thinking, "cortex-thinking-*.txt")
 	if err != nil {
 		os.Remove(promptPath)
@@ -277,7 +281,7 @@ func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt stri
 		os.Remove(agentPath)
 		return 0, fmt.Errorf("tmux dispatch: create thinking temp file: %w", err)
 	}
-	
+
 	providerPath, err := writeToTempFile(provider, "cortex-provider-*.txt")
 	if err != nil {
 		os.Remove(promptPath)
@@ -289,7 +293,7 @@ func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt stri
 
 	// Build agent command with all parameters passed via temp files
 	agentCmd := buildTmuxAgentCommand(scriptPath, promptPath, agentPath, thinkingPath, providerPath)
-	
+
 	// Collect all temp files for cleanup
 	tempFiles := []string{promptPath, scriptPath, agentPath, thinkingPath, providerPath}
 
@@ -327,7 +331,7 @@ func (d *TmuxDispatcher) Dispatch(ctx context.Context, agent string, prompt stri
 		d.mu.Lock()
 		delete(d.metadata, sessionName)
 		d.mu.Unlock()
-		
+
 		cleanupSessionResources(agent, sessionName)
 		for _, tf := range tempFiles {
 			os.Remove(tf)
@@ -379,12 +383,12 @@ func (d *TmuxDispatcher) dispatchWithRetry(ctx context.Context, sessionName, age
 func (d *TmuxDispatcher) startupCleanup(sessionName, scriptPath string) {
 	// Kill the session if it was created
 	KillSession(sessionName)
-	
+
 	// Remove the temporary script file
 	if scriptPath != "" {
 		os.Remove(scriptPath)
 	}
-	
+
 	// Remove session from internal tracking
 	d.mu.Lock()
 	delete(d.metadata, sessionName)
@@ -413,13 +417,13 @@ func (d *TmuxDispatcher) DispatchToSession(
 		return fmt.Errorf("create temp script file: %w", err)
 	}
 	scriptPath := scriptFile.Name()
-	
+
 	if _, err := scriptFile.WriteString(scriptContent); err != nil {
 		scriptFile.Close()
 		os.Remove(scriptPath)
 		return fmt.Errorf("write temp script file: %w", err)
 	}
-	
+
 	if err := scriptFile.Close(); err != nil {
 		os.Remove(scriptPath)
 		return fmt.Errorf("close temp script file: %w", err)
@@ -646,10 +650,10 @@ func (d *TmuxDispatcher) CleanupSession(sessionName string) error {
 
 	// Perform cleanup operations
 	go cleanupSessionResources(agentID, sessionName)
-	
+
 	// Remove from metadata tracking
 	d.RemoveSession(sessionName)
-	
+
 	return nil
 }
 
@@ -756,7 +760,7 @@ func SessionStatus(sessionName string) (status string, exitCode int) {
 					return "exited", code
 				}
 			}
-			
+
 			// Pane is dead but no valid exit status - retry unless this is the last attempt
 			if attempt < maxRetries-1 {
 				time.Sleep(retryDelay)
@@ -766,11 +770,11 @@ func SessionStatus(sessionName string) (status string, exitCode int) {
 				return "exited", -1
 			}
 		}
-		
+
 		// Pane is not dead yet
 		return "running", 0
 	}
-	
+
 	return "running", 0
 }
 

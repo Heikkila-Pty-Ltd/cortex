@@ -267,7 +267,7 @@ func (b *HeadlessBackend) resolveLogPath(opts DispatchOpts) (string, error) {
 }
 
 func buildHeadlessArgs(cliCfg config.CLIConfig, opts DispatchOpts) ([]string, string, error) {
-	args := append([]string{}, cliCfg.Args...)
+	flags := append([]string{}, cliCfg.Args...)
 
 	mode := strings.TrimSpace(cliCfg.PromptMode)
 	if mode == "" {
@@ -275,11 +275,12 @@ func buildHeadlessArgs(cliCfg config.CLIConfig, opts DispatchOpts) ([]string, st
 	}
 
 	tempPromptPath := ""
+	promptValue := opts.Prompt
 	switch mode {
 	case "stdin":
-		args = replacePromptPlaceholders(args, opts.Prompt)
+		flags = replacePromptPlaceholders(flags, opts.Prompt)
 	case "arg":
-		args = replacePromptPlaceholders(args, opts.Prompt)
+		flags = replacePromptPlaceholders(flags, opts.Prompt)
 	case "file":
 		f, err := os.CreateTemp("", "cortex-prompt-*.txt")
 		if err != nil {
@@ -295,18 +296,27 @@ func buildHeadlessArgs(cliCfg config.CLIConfig, opts DispatchOpts) ([]string, st
 			_ = os.Remove(tempPromptPath)
 			return nil, "", fmt.Errorf("headless backend: close prompt file: %w", err)
 		}
-		args = replacePromptPathPlaceholders(args, tempPromptPath)
+		promptValue = tempPromptPath
+		flags = replacePromptPathPlaceholders(flags, tempPromptPath)
 	default:
 		return nil, "", fmt.Errorf("headless backend: unsupported prompt_mode %q", mode)
 	}
 
 	if strings.TrimSpace(cliCfg.ModelFlag) != "" && strings.TrimSpace(opts.Model) != "" {
-		args = append(args, cliCfg.ModelFlag, opts.Model)
+		flags = append(flags, cliCfg.ModelFlag, "{model}")
 	}
 	if len(cliCfg.ApprovalFlags) > 0 {
-		args = append(args, cliCfg.ApprovalFlags...)
+		flags = append(flags, cliCfg.ApprovalFlags...)
 	}
-	return args, tempPromptPath, nil
+
+	argv, err := defaultCommandBuilder(cliCfg.Cmd, opts.Model, promptValue, flags)
+	if err != nil {
+		if tempPromptPath != "" {
+			_ = os.Remove(tempPromptPath)
+		}
+		return nil, "", fmt.Errorf("headless backend: %w", err)
+	}
+	return argv[1:], tempPromptPath, nil
 }
 
 func replacePromptPlaceholders(args []string, prompt string) []string {
