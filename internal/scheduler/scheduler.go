@@ -122,6 +122,7 @@ const (
 	// Completion verification settings
 	completionCheckInterval = 2 * time.Hour // Check for completed beads every 2 hours
 	completionLookbackDays  = 7             // Look back 7 days in git commits
+	orphanedCommitLogSample = 5
 
 	nightModeStartHour = 22
 	nightModeEndHour   = 7
@@ -751,6 +752,13 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 	// Dispatch up to maxPerTick
 	dispatched := 0
 	for _, item := range allReady {
+		select {
+		case <-ctx.Done():
+			s.logger.Info("tick complete", "dispatched", dispatched, "ready", len(allReady), "aborted", "context_cancelled")
+			return
+		default:
+		}
+
 		if gatewayCircuitOpen {
 			break
 		}
@@ -767,6 +775,11 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		// Skip if already dispatched
 		already, err := s.store.IsBeadDispatched(item.bead.ID)
 		if err != nil {
+			if ctx.Err() != nil || isStoreUnavailableError(err) {
+				s.logger.Debug("aborting tick due to store unavailability", "bead", item.bead.ID, "error", err)
+				s.logger.Info("tick complete", "dispatched", dispatched, "ready", len(allReady), "aborted", "store_unavailable")
+				return
+			}
 			s.logger.Error("failed to check dispatch status", "bead", item.bead.ID, "error", err)
 			continue
 		}
@@ -3075,13 +3088,22 @@ func (s *Scheduler) runCompletionVerification(ctx context.Context) {
 			s.logger.Warn("found orphaned commits referencing non-existent beads",
 				"project", result.Project,
 				"count", len(result.OrphanedCommits))
-
-			for _, orphaned := range result.OrphanedCommits {
-				s.logger.Warn("orphaned commit",
+			sampleCount := len(result.OrphanedCommits)
+			if sampleCount > orphanedCommitLogSample {
+				sampleCount = orphanedCommitLogSample
+			}
+			for i := 0; i < sampleCount; i++ {
+				orphaned := result.OrphanedCommits[i]
+				s.logger.Debug("orphaned commit sample",
 					"project", result.Project,
 					"bead", orphaned.BeadID,
 					"commit", orphaned.Commit.Hash[:8],
 					"message", orphaned.Commit.Message)
+			}
+			if suppressed := len(result.OrphanedCommits) - sampleCount; suppressed > 0 {
+				s.logger.Debug("orphaned commit logs suppressed",
+					"project", result.Project,
+					"suppressed", suppressed)
 			}
 		}
 
@@ -3328,7 +3350,7 @@ func (s *Scheduler) reconcileProjectClaimHealth(ctx context.Context, projectName
 			}
 
 			s.logClaimAnomalyOnce(
-				"claimed_no_dispatch:"+projectName+":"+bead.ID,
+				"claimed_no_dispatch:"+projectName,
 				"claimed_no_dispatch",
 				fmt.Sprintf("project %s bead %s is claimed with no dispatch history; manual review required", projectName, bead.ID),
 				0,
@@ -3430,6 +3452,18 @@ func isTerminalDispatchStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func isStoreUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is closed") ||
+		strings.Contains(msg, "connection is already closed")
 }
 
 func isSchedulerManagedAssignee(projectName, assignee string) bool {

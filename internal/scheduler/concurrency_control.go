@@ -526,6 +526,12 @@ func (cc *ConcurrencyController) LogCapacityDispatch(role, beadID, project strin
 // Returns (hasWarning, hasCritical, category) where category indicates the
 // most severe alert category ("coders", "reviewers", or "total").
 func (cc *ConcurrencyController) CheckUtilizationAlerts(snapshot ConcurrencySnapshot) (bool, bool, string) {
+	// Full utilization without backlog is expected under strict WIP settings.
+	// Alert only when queued work is actually waiting.
+	if snapshot.QueueDepth <= 0 {
+		return false, false, ""
+	}
+
 	codersPct, reviewersPct, totalPct := snapshot.Utilization()
 	warningPct := cc.cfg.Health.ConcurrencyWarningPct
 	criticalPct := cc.cfg.Health.ConcurrencyCriticalPct
@@ -555,10 +561,11 @@ func (cc *ConcurrencyController) CheckUtilizationAlerts(snapshot ConcurrencySnap
 			// Edge-triggered: only log if we haven't alerted recently
 			if lastAlert, ok := cc.lastCriticalAlert[cat.name]; !ok || now.Sub(lastAlert) >= alertCooldown {
 				cc.lastCriticalAlert[cat.name] = now
-				cc.logger.Error("concurrency_critical",
+				cc.logger.Warn("concurrency_critical",
 					"category", cat.name,
 					"utilization_pct", cat.pct*100,
 					"threshold_pct", criticalPct*100,
+					"queue_depth", snapshot.QueueDepth,
 				)
 				if cc.store != nil {
 					_ = cc.store.RecordHealthEvent("concurrency_critical",
@@ -578,6 +585,7 @@ func (cc *ConcurrencyController) CheckUtilizationAlerts(snapshot ConcurrencySnap
 					"category", cat.name,
 					"utilization_pct", cat.pct*100,
 					"threshold_pct", warningPct*100,
+					"queue_depth", snapshot.QueueDepth,
 				)
 				if cc.store != nil {
 					_ = cc.store.RecordHealthEvent("concurrency_warning",

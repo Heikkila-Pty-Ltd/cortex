@@ -578,6 +578,7 @@ func TestCheckUtilizationAlerts(t *testing.T) {
 				MaxCoders:       10,
 				MaxReviewers:    5,
 				MaxTotal:        20,
+				QueueDepth:      2,
 			},
 			wantWarning:  true,
 			wantCritical: false,
@@ -591,9 +592,24 @@ func TestCheckUtilizationAlerts(t *testing.T) {
 				MaxCoders:       10,
 				MaxReviewers:    5,
 				MaxTotal:        20,
+				QueueDepth:      3,
 			},
 			wantWarning:  true,
 			wantCritical: true,
+		},
+		{
+			name: "critical_no_queue_depth",
+			snapshot: ConcurrencySnapshot{
+				ActiveCoders:    10, // 100%
+				ActiveReviewers: 5,  // 100%
+				ActiveTotal:     19, // 95%
+				MaxCoders:       10,
+				MaxReviewers:    5,
+				MaxTotal:        20,
+				QueueDepth:      0,
+			},
+			wantWarning:  false,
+			wantCritical: false,
 		},
 	}
 

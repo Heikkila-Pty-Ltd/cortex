@@ -29,16 +29,20 @@ type HealthStatus struct {
 
 // Monitor runs periodic health checks.
 type Monitor struct {
-	healthCfg    config.Health
-	general      config.General
-	dispatchCfg  config.Dispatch
-	projects     map[string]config.Project
-	providers    map[string]config.Provider
-	store        *store.Store
-	dispatcher   dispatch.DispatcherInterface
-	logger       *slog.Logger
-	lastCLICheck time.Time
+	healthCfg                config.Health
+	general                  config.General
+	dispatchCfg              config.Dispatch
+	projects                 map[string]config.Project
+	providers                map[string]config.Provider
+	store                    *store.Store
+	dispatcher               dispatch.DispatcherInterface
+	logger                   *slog.Logger
+	lastCLICheck             time.Time
+	lastGatewayCriticalLog   time.Time
+	lastGatewayCriticalCount int
 }
+
+const gatewayCriticalLogInterval = 15 * time.Minute
 
 // NewMonitor creates a new health monitor.
 func NewMonitor(cfg *config.Config, s *store.Store, dispatcher dispatch.DispatcherInterface, logger *slog.Logger) *Monitor {
@@ -98,6 +102,7 @@ func (m *Monitor) checkDispatchHealth() {
 // CheckGateway checks the gateway service and restarts if needed.
 func (m *Monitor) CheckGateway(ctx context.Context) HealthStatus {
 	status := HealthStatus{GatewayUp: true}
+	now := time.Now()
 
 	active, err := isUnitActive(ctx, m.healthCfg.GatewayUnit, m.healthCfg.GatewayUserService)
 	if err != nil {
@@ -157,12 +162,38 @@ func (m *Monitor) CheckGateway(ctx context.Context) HealthStatus {
 		status.RestartsInHr = restartFailures
 		if restartFailures >= 3 {
 			status.Critical = true
-			m.logger.Error("gateway critical: 3+ restart failures in 1h", "restart_failures", restartFailures)
-			_ = m.store.RecordHealthEvent("gateway_critical", fmt.Sprintf("%d restart failures in 1h", restartFailures))
+			if m.shouldLogGatewayCritical(now, restartFailures) {
+				m.logger.Error("gateway critical: 3+ restart failures in 1h", "restart_failures", restartFailures)
+				_ = m.store.RecordHealthEvent("gateway_critical", fmt.Sprintf("%d restart failures in 1h", restartFailures))
+			}
+		} else {
+			m.lastGatewayCriticalCount = restartFailures
 		}
 	}
 
 	return status
+}
+
+func (m *Monitor) shouldLogGatewayCritical(now time.Time, restartFailures int) bool {
+	if restartFailures < 3 {
+		m.lastGatewayCriticalCount = restartFailures
+		return false
+	}
+	if m.lastGatewayCriticalLog.IsZero() {
+		m.lastGatewayCriticalLog = now
+		m.lastGatewayCriticalCount = restartFailures
+		return true
+	}
+	if restartFailures > m.lastGatewayCriticalCount {
+		m.lastGatewayCriticalLog = now
+		m.lastGatewayCriticalCount = restartFailures
+		return true
+	}
+	if now.Sub(m.lastGatewayCriticalLog) >= gatewayCriticalLogInterval {
+		m.lastGatewayCriticalLog = now
+		return true
+	}
+	return false
 }
 
 func (m *Monitor) runSystemHealthChecks(ctx context.Context, startup bool) {
