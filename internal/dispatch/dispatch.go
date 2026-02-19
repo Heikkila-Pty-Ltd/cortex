@@ -5,12 +5,16 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
 
 const MaxCLIArgSize = 128 * 1024
+
+var maxCLIArgSize = discoverMaxCLIArgSize()
 
 // openclawShellScript is shared between PID and tmux dispatchers so model/provider
 // handling stays consistent. This script reads all parameters from files to avoid
@@ -21,7 +25,28 @@ const MaxCLIArgSize = 128 * 1024
 // Cortex hardening in cortex-46d.7.3 explicitly targets CLI headless/tmux
 // command construction, not this legacy openclaw PID/legacy path.
 func openclawShellScript() string {
-	return `#!/bin/bash
+	return openclawShellScriptWithPromptInlineLimit(maxCLIArgSize)
+}
+
+func discoverMaxCLIArgSize() int {
+	// Use system ARG_MAX where available so we stay within the actual shell
+	// argument limit instead of a hard-coded constant.
+	out, err := exec.Command("getconf", "ARG_MAX").Output()
+	if err != nil {
+		return MaxCLIArgSize
+	}
+
+	val := strings.TrimSpace(string(out))
+	maxArgSize, err := strconv.Atoi(val)
+	if err != nil || maxArgSize <= 0 {
+		return MaxCLIArgSize
+	}
+
+	return maxArgSize
+}
+
+func openclawShellScriptWithPromptInlineLimit(promptInlineLimit int) string {
+	return fmt.Sprintf(`#!/bin/bash
 # Read all parameters from temp files to avoid shell parsing issues
 msg_file="$1"
 agent_file="$2"
@@ -36,7 +61,7 @@ fi
 
 session_id="ctx-$$-$(date +%s)"
 err_file=$(mktemp)
-prompt_inline_limit=131072
+prompt_inline_limit=%d
 inline_message=1
 
 prompt_bytes="$(wc -c < "$msg_file" 2>/dev/null || echo 0)"
@@ -119,7 +144,7 @@ fi
 
 cat "$err_file" >&2
 rm -f "$err_file"
-exit $status`
+exit $status`, promptInlineLimit)
 }
 
 // writeToTempFile creates a temporary file and writes content to it
