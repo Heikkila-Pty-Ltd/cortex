@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/antigravity-dev/cortex/internal/config"
 	"github.com/antigravity-dev/cortex/internal/dispatch"
 	"github.com/antigravity-dev/cortex/internal/store"
 	tmuxstate "github.com/antigravity-dev/cortex/internal/tmux"
@@ -71,6 +72,17 @@ func newTestLogger() *slog.Logger {
 
 func TestCheckStuckDispatches_QueuesPendingRetry(t *testing.T) {
 	s := newTestStore(t)
+	cfg := &config.Config{
+		General: config.General{
+			RetryPolicy: config.RetryPolicy{
+				MaxRetries:    3,
+				InitialDelay:  config.Duration{Duration: 5 * time.Minute},
+				BackoffFactor: 2.0,
+				MaxDelay:      config.Duration{Duration: 30 * time.Minute},
+				EscalateAfter: 2,
+			},
+		},
+	}
 
 	id, err := s.RecordDispatch("bead-retry", "proj", "agent", "provider", "fast", 123, "", "prompt", "", "", "")
 	if err != nil {
@@ -80,7 +92,7 @@ func TestCheckStuckDispatches_QueuesPendingRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: false}, 30*time.Minute, 2, newTestLogger())
+	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: false}, 30*time.Minute, cfg, newTestLogger())
 	if len(actions) != 1 {
 		t.Fatalf("expected 1 action, got %d", len(actions))
 	}
@@ -98,11 +110,17 @@ func TestCheckStuckDispatches_QueuesPendingRetry(t *testing.T) {
 	if d.Retries != 1 {
 		t.Fatalf("expected retries=1, got %d", d.Retries)
 	}
-	if d.Tier != "balanced" {
-		t.Fatalf("expected tier escalation to balanced, got %s", d.Tier)
+	if d.Tier != "fast" {
+		t.Fatalf("expected no tier escalation before threshold, got %s", d.Tier)
 	}
 	if d.Stage != "failed" {
 		t.Fatalf("expected stage failed after stuck transition, got %s", d.Stage)
+	}
+	if !d.NextRetryAt.Valid {
+		t.Fatal("expected next_retry_at to be set")
+	}
+	if d.NextRetryAt.Time.Before(time.Now()) {
+		t.Fatalf("expected next_retry_at in the future, got %v", d.NextRetryAt.Time)
 	}
 }
 
@@ -135,7 +153,7 @@ func TestCheckStuckDispatches_TmuxLiveSession_QueuesRetryAndKillsSession(t *test
 		return nil
 	}
 
-	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: false}, 30*time.Minute, 2, newTestLogger())
+	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: false}, 30*time.Minute, &config.Config{}, newTestLogger())
 	if len(actions) != 1 {
 		t.Fatalf("expected 1 action, got %d", len(actions))
 	}
@@ -176,7 +194,7 @@ func TestCheckStuckDispatches_TmuxMissingSession_TransitionsRecovery(t *testing.
 		return nil
 	}
 
-	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: true}, 30*time.Minute, 2, newTestLogger())
+	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: true}, 30*time.Minute, &config.Config{}, newTestLogger())
 	if len(actions) != 1 {
 		t.Fatalf("expected 1 action, got %d", len(actions))
 	}
@@ -216,7 +234,7 @@ func TestCheckStuckDispatches_TmuxUnknownSession_DoesNotTransition(t *testing.T)
 		return nil
 	}
 
-	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: false}, 30*time.Minute, 2, newTestLogger())
+	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: false}, 30*time.Minute, &config.Config{}, newTestLogger())
 	if len(actions) != 0 {
 		t.Fatalf("expected no actions for unknown liveness, got %d", len(actions))
 	}
@@ -232,6 +250,17 @@ func TestCheckStuckDispatches_TmuxUnknownSession_DoesNotTransition(t *testing.T)
 
 func TestCheckStuckDispatches_FailsPermanentlyAtMaxRetries(t *testing.T) {
 	s := newTestStore(t)
+	cfg := &config.Config{
+		General: config.General{
+			RetryPolicy: config.RetryPolicy{
+				MaxRetries:    2,
+				InitialDelay:  config.Duration{Duration: 5 * time.Minute},
+				BackoffFactor: 2.0,
+				MaxDelay:      config.Duration{Duration: 30 * time.Minute},
+				EscalateAfter: 2,
+			},
+		},
+	}
 
 	id, err := s.RecordDispatch("bead-fail", "proj", "agent", "provider", "balanced", 124, "", "prompt", "", "", "")
 	if err != nil {
@@ -241,7 +270,7 @@ func TestCheckStuckDispatches_FailsPermanentlyAtMaxRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: false}, 30*time.Minute, 2, newTestLogger())
+	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: false}, 30*time.Minute, cfg, newTestLogger())
 	if len(actions) != 1 {
 		t.Fatalf("expected 1 action, got %d", len(actions))
 	}
@@ -261,6 +290,45 @@ func TestCheckStuckDispatches_FailsPermanentlyAtMaxRetries(t *testing.T) {
 	}
 	if d.Stage != "failed" {
 		t.Fatalf("expected stage failed, got %s", d.Stage)
+	}
+}
+
+func TestCheckStuckDispatches_UsesEscalationThreshold(t *testing.T) {
+	s := newTestStore(t)
+	cfg := &config.Config{
+		General: config.General{
+			RetryPolicy: config.RetryPolicy{
+				MaxRetries:    5,
+				InitialDelay:  config.Duration{Duration: time.Minute},
+				BackoffFactor: 2.0,
+				MaxDelay:      config.Duration{Duration: 30 * time.Minute},
+				EscalateAfter: 1,
+			},
+		},
+	}
+
+	id, err := s.RecordDispatch("bead-escalate", "proj", "agent", "provider", "fast", 900, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec(`UPDATE dispatches SET retries = 1, dispatched_at = datetime('now', '-2 hours') WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	actions := CheckStuckDispatches(s, &fakeDispatcher{alive: false}, 30*time.Minute, cfg, newTestLogger())
+	if len(actions) != 1 {
+		t.Fatalf("expected 1 action, got %d", len(actions))
+	}
+	if actions[0].Action != "retried" {
+		t.Fatalf("expected retried action, got %s", actions[0].Action)
+	}
+
+	d, err := s.GetDispatchByID(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Tier != "balanced" {
+		t.Fatalf("expected tier escalation to balanced, got %s", d.Tier)
 	}
 }
 

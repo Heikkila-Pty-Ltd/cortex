@@ -102,6 +102,7 @@ set -eu
 capture="${OPENCLAW_CAPTURE_PATH:?}"
 state="${OPENCLAW_STATE_PATH:?}"
 mode="${OPENCLAW_TEST_MODE:-}"
+require_stdin="${OPENCLAW_REQUIRE_STDIN:-}"
 
 if [ "${1:-}" != "agent" ]; then
   echo "unexpected subcommand: ${1:-}" >&2
@@ -118,6 +119,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --message)
       [ "$#" -ge 2 ] || { echo "missing value for --message" >&2; exit 2; }
+      if [ "$require_stdin" = "1" ]; then
+        echo "inline --message not expected for large prompt" >&2
+        exit 2
+      fi
       msg="$2"
       shift 2
       ;;
@@ -150,6 +155,10 @@ printf '%s' "$msg" > "$capture"
 
 func runOpenclawShellScriptWithStub(t *testing.T, prompt string, mode string) (captured string, combinedOutput string, fallbackTriggered bool) {
 	t.Helper()
+	requireStdin := "0"
+	if mode == "require_stdin" {
+		requireStdin = "1"
+	}
 
 	binDir := t.TempDir()
 	capturePath, statePath := writeFakeOpenclawBinary(t, binDir)
@@ -176,6 +185,7 @@ func runOpenclawShellScriptWithStub(t *testing.T, prompt string, mode string) (c
 		"PATH="+binDir+":"+os.Getenv("PATH"),
 		"OPENCLAW_CAPTURE_PATH="+capturePath,
 		"OPENCLAW_STATE_PATH="+statePath,
+		"OPENCLAW_REQUIRE_STDIN="+requireStdin,
 		"OPENCLAW_TEST_MODE="+mode,
 	)
 
@@ -191,6 +201,20 @@ func runOpenclawShellScriptWithStub(t *testing.T, prompt string, mode string) (c
 
 	_, statErr := os.Stat(statePath)
 	return string(capturedBytes), string(out), statErr == nil
+}
+
+func TestOpenclawShellScript_LargePromptSkipsInlineMessage(t *testing.T) {
+	prompt := strings.Repeat("x", MaxCLIArgSize+1)
+	captured, output, fallbackTriggered := runOpenclawShellScriptWithStub(t, prompt, "require_stdin")
+	if fallbackTriggered {
+		t.Fatal("did not expect fallback when large prompt uses stdin")
+	}
+	if captured != prompt {
+		t.Fatalf("captured prompt mismatch: got %d bytes want %d bytes", len(captured), len(prompt))
+	}
+	if strings.Contains(output, "Syntax error") {
+		t.Fatalf("shell emitted syntax error for large prompt: %s", output)
+	}
 }
 
 func TestOpenclawShellScript_UsesExplicitSessionID(t *testing.T) {

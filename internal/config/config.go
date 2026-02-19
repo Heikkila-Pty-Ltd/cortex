@@ -55,6 +55,8 @@ type General struct {
 	MaxRetries             int      `toml:"max_retries"`
 	RetryBackoffBase       Duration `toml:"retry_backoff_base"`
 	RetryMaxDelay          Duration `toml:"retry_max_delay"`
+	RetryPolicy            RetryPolicy `toml:"retry_policy"`
+	RetryTiers             map[string]RetryPolicy `toml:"retry_tiers"`
 	DispatchCooldown       Duration `toml:"dispatch_cooldown"`
 	LogLevel               string   `toml:"log_level"`
 	StateDB                string   `toml:"state_db"`
@@ -94,6 +96,16 @@ type Project struct {
 
 	// Definition of Done configuration
 	DoD DoDConfig `toml:"dod"`
+
+	RetryPolicy RetryPolicy `toml:"retry_policy"`
+}
+
+type RetryPolicy struct {
+	MaxRetries    int      `toml:"max_retries"`
+	InitialDelay  Duration `toml:"initial_delay"`
+	BackoffFactor float64  `toml:"backoff_factor"`
+	MaxDelay      Duration `toml:"max_delay"`
+	EscalateAfter int      `toml:"escalate_after"`
 }
 
 // DoDConfig defines the Definition of Done configuration for a project
@@ -265,6 +277,8 @@ func (cfg *Config) Clone() *Config {
 	}
 
 	cloned := *cfg
+	cloned.General.RetryPolicy = cloneRetryPolicy(cfg.General.RetryPolicy)
+	cloned.General.RetryTiers = cloneRetryPolicyMap(cfg.General.RetryTiers)
 	cloned.Projects = cloneProjects(cfg.Projects)
 	cloned.RateLimits.Budget = cloneStringIntMap(cfg.RateLimits.Budget)
 	cloned.Providers = cloneProviders(cfg.Providers)
@@ -288,9 +302,32 @@ func cloneProjects(in map[string]Project) map[string]Project {
 	for key, project := range in {
 		project.DoD.Checks = cloneStringSlice(project.DoD.Checks)
 		project.PostMergeChecks = cloneStringSlice(project.PostMergeChecks)
+		project.RetryPolicy = cloneRetryPolicy(project.RetryPolicy)
 		out[key] = project
 	}
 	return out
+}
+
+func cloneRetryPolicyMap(in map[string]RetryPolicy) map[string]RetryPolicy {
+	if in == nil {
+		return nil
+	}
+
+	out := make(map[string]RetryPolicy, len(in))
+	for key, policy := range in {
+		out[strings.ToLower(strings.TrimSpace(key))] = cloneRetryPolicy(policy)
+	}
+	return out
+}
+
+func cloneRetryPolicy(in RetryPolicy) RetryPolicy {
+	return RetryPolicy{
+		MaxRetries:    in.MaxRetries,
+		InitialDelay:  in.InitialDelay,
+		BackoffFactor: in.BackoffFactor,
+		MaxDelay:      in.MaxDelay,
+		EscalateAfter: in.EscalateAfter,
+	}
 }
 
 func cloneStringIntMap(in map[string]int) map[string]int {
@@ -404,13 +441,32 @@ func applyDefaults(cfg *Config) {
 		cfg.General.MaxPerTick = 3
 	}
 	if cfg.General.MaxRetries == 0 {
-		cfg.General.MaxRetries = 2
+		cfg.General.MaxRetries = 3
 	}
 	if cfg.General.RetryBackoffBase.Duration == 0 {
-		cfg.General.RetryBackoffBase.Duration = 2 * time.Minute
+		cfg.General.RetryBackoffBase.Duration = 5 * time.Minute
 	}
 	if cfg.General.RetryMaxDelay.Duration == 0 {
 		cfg.General.RetryMaxDelay.Duration = 30 * time.Minute
+	}
+	if cfg.General.RetryPolicy.MaxRetries == 0 {
+		cfg.General.RetryPolicy.MaxRetries = cfg.General.MaxRetries
+	}
+	if cfg.General.RetryPolicy.InitialDelay.Duration == 0 {
+		cfg.General.RetryPolicy.InitialDelay = cfg.General.RetryBackoffBase
+	}
+	if cfg.General.RetryPolicy.MaxDelay.Duration == 0 {
+		cfg.General.RetryPolicy.MaxDelay = cfg.General.RetryMaxDelay
+	}
+	if cfg.General.RetryPolicy.BackoffFactor == 0 {
+		cfg.General.RetryPolicy.BackoffFactor = 2.0
+	}
+	if cfg.General.RetryPolicy.EscalateAfter == 0 {
+		cfg.General.RetryPolicy.EscalateAfter = 2
+	}
+	cfg.General.RetryTiers = normalizeRetryPolicyMap(cfg.General.RetryTiers)
+	if cfg.General.RetryTiers == nil {
+		cfg.General.RetryTiers = map[string]RetryPolicy{}
 	}
 	if cfg.General.DispatchCooldown.Duration == 0 {
 		cfg.General.DispatchCooldown.Duration = 5 * time.Minute
@@ -592,6 +648,86 @@ func applyDefaults(cfg *Config) {
 	}
 }
 
+// RetryPolicyFor computes the effective retry policy for a project and tier.
+func (cfg *Config) RetryPolicyFor(projectName, tier string) RetryPolicy {
+	if cfg == nil {
+		return RetryPolicy{
+			MaxRetries:    3,
+			InitialDelay:  Duration{Duration: 5 * time.Minute},
+			BackoffFactor: 2.0,
+			MaxDelay:      Duration{Duration: 30 * time.Minute},
+			EscalateAfter: 2,
+		}
+	}
+
+	policy := cfg.General.RetryPolicy
+	if tierPolicy, ok := cfg.General.RetryTiers[strings.ToLower(strings.TrimSpace(tier))]; ok {
+		policy = mergeRetryPolicy(policy, tierPolicy)
+	}
+
+	// If the project exists, merge its override.
+	if _, ok := cfg.Projects[projectName]; ok {
+		policy = mergeRetryPolicy(policy, cfg.Projects[projectName].RetryPolicy)
+	}
+
+	return ensureRetryPolicyDefaults(policy)
+}
+
+// ensureRetryPolicyDefaults applies final fallback values in case this config
+// was constructed manually and defaults were not applied.
+func ensureRetryPolicyDefaults(policy RetryPolicy) RetryPolicy {
+	if policy.MaxRetries <= 0 {
+		policy.MaxRetries = 3
+	}
+	if policy.InitialDelay.Duration <= 0 {
+		policy.InitialDelay.Duration = 5 * time.Minute
+	}
+	if policy.BackoffFactor <= 0 {
+		policy.BackoffFactor = 2.0
+	}
+	if policy.MaxDelay.Duration <= 0 {
+		policy.MaxDelay.Duration = 30 * time.Minute
+	}
+	if policy.EscalateAfter <= 0 {
+		policy.EscalateAfter = 2
+	}
+	return policy
+}
+
+func mergeRetryPolicy(base RetryPolicy, override RetryPolicy) RetryPolicy {
+	if override.MaxRetries != 0 {
+		base.MaxRetries = override.MaxRetries
+	}
+	if override.InitialDelay.Duration != 0 {
+		base.InitialDelay = override.InitialDelay
+	}
+	if override.BackoffFactor != 0 {
+		base.BackoffFactor = override.BackoffFactor
+	}
+	if override.MaxDelay.Duration != 0 {
+		base.MaxDelay = override.MaxDelay
+	}
+	if override.EscalateAfter != 0 {
+		base.EscalateAfter = override.EscalateAfter
+	}
+	return base
+}
+
+func normalizeRetryPolicyMap(in map[string]RetryPolicy) map[string]RetryPolicy {
+	if len(in) == 0 {
+		return map[string]RetryPolicy{}
+	}
+	out := make(map[string]RetryPolicy, len(in))
+	for raw, policy := range in {
+		key := strings.ToLower(strings.TrimSpace(raw))
+		if key == "" {
+			continue
+		}
+		out[key] = policy
+	}
+	return out
+}
+
 // normalizePaths expands "~" and trims whitespace for configured filesystem paths.
 func normalizePaths(cfg *Config) {
 	if cfg == nil {
@@ -659,6 +795,9 @@ func validate(cfg *Config) error {
 		if err := validateDoDConfig(projectName, p.DoD); err != nil {
 			return fmt.Errorf("project %q DoD config: %w", projectName, err)
 		}
+		if err := validateRetryPolicy(fmt.Sprintf("projects.%s.retry_policy", projectName), p.RetryPolicy); err != nil {
+			return fmt.Errorf("project %q retry policy: %w", projectName, err)
+		}
 		if err := validateProjectMergeConfig(projectName, p); err != nil {
 			return fmt.Errorf("project %q merge config: %w", projectName, err)
 		}
@@ -669,6 +808,18 @@ func validate(cfg *Config) error {
 
 	if err := validateCadenceConfig(cfg.Cadence); err != nil {
 		return fmt.Errorf("cadence config: %w", err)
+	}
+
+	if err := validateRetryPolicy("general.retry_policy", cfg.General.RetryPolicy); err != nil {
+		return fmt.Errorf("general retry policy: %w", err)
+	}
+	for tier, policy := range cfg.General.RetryTiers {
+		if _, ok := map[string]struct{}{"fast": {}, "balanced": {}, "premium": {}}[tier]; !ok {
+			return fmt.Errorf("general.retry_tiers.%s: unknown tier %q", tier, tier)
+		}
+		if err := validateRetryPolicy(fmt.Sprintf("general.retry_tiers.%s", tier), policy); err != nil {
+			return fmt.Errorf("general retry tier %q: %w", tier, err)
+		}
 	}
 
 	if cfg.Workflows != nil {
@@ -1036,6 +1187,25 @@ func validateDoDConfig(projectName string, dod DoDConfig) error {
 	// Note: Empty checks array is valid - DoD can be coverage-only or flags-only
 	// Note: All string commands in checks are valid - we can't validate arbitrary commands
 
+	return nil
+}
+
+func validateRetryPolicy(fieldPath string, policy RetryPolicy) error {
+	if policy.MaxRetries < 0 {
+		return fmt.Errorf("%s.max_retries cannot be negative: %d", fieldPath, policy.MaxRetries)
+	}
+	if policy.InitialDelay.Duration < 0 {
+		return fmt.Errorf("%s.initial_delay cannot be negative: %s", fieldPath, policy.InitialDelay)
+	}
+	if policy.MaxDelay.Duration < 0 {
+		return fmt.Errorf("%s.max_delay cannot be negative: %s", fieldPath, policy.MaxDelay)
+	}
+	if policy.BackoffFactor < 0 {
+		return fmt.Errorf("%s.backoff_factor cannot be negative: %f", fieldPath, policy.BackoffFactor)
+	}
+	if policy.EscalateAfter < 0 {
+		return fmt.Errorf("%s.escalate_after cannot be negative: %d", fieldPath, policy.EscalateAfter)
+	}
 	return nil
 }
 

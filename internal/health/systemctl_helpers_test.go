@@ -168,6 +168,37 @@ exit 1
 	}
 }
 
+func TestRunSystemctlFallsBackToUserScopeWhenSystemUnitMissing(t *testing.T) {
+	dir := t.TempDir()
+	systemctlPath := filepath.Join(dir, "systemctl")
+	script := `#!/bin/sh
+if [ "$1" = "--user" ]; then
+  echo active
+  exit 0
+fi
+echo "Unit $2 could not be found."
+exit 1
+`
+	if err := os.WriteFile(systemctlPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake systemctl: %v", err)
+	}
+
+	t.Setenv("PATH", dir)
+	t.Setenv("CORTEX_SYSTEMCTL_USER", "")
+	t.Setenv("SUDO_USER", "")
+	t.Setenv("LOGNAME", "")
+	t.Setenv("USER", "ubuntu")
+	t.Setenv("HOME", "/home/ubuntu")
+
+	output, err := runSystemctl(context.Background(), false, "is-active", "openclaw-gateway.service")
+	if err != nil {
+		t.Fatalf("runSystemctl error: %v (output=%q)", err, output)
+	}
+	if strings.TrimSpace(output) != "active" {
+		t.Fatalf("unexpected output: %q", output)
+	}
+}
+
 func envMap(env []string) map[string]string {
 	out := make(map[string]string, len(env))
 	for _, entry := range env {

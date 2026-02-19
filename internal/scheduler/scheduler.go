@@ -2276,24 +2276,38 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 						}
 					}
 				}
-				if err := s.store.MarkDispatchPendingRetry(d.ID, nextTier); err != nil {
-					s.logger.Warn("failed to queue gateway retry; leaving dispatch failed", "dispatch_id", d.ID, "bead", d.BeadID, "error", err)
+				policy := resolveRetryPolicy(s.cfg, d.Project, nextTier)
+				delay, nextAttemptTier, shouldRetry := policy.NextRetry(d.Retries, nextTier)
+				if !shouldRetry {
+					s.logger.Warn("max retries exceeded, marking failed after transient completion failure",
+						"bead", d.BeadID,
+						"retries", d.Retries,
+						"max_retries", policy.MaxRetries)
 					finalStage = "failed_needs_check"
 				} else {
-					status = "pending_retry"
-					finalStage = "pending_retry"
-					eventType := "dispatch_retry_queued_gateway"
-					details := fmt.Sprintf("bead %s dispatch %d queued for retry due to transient gateway closure", d.BeadID, d.ID)
-					if retryReason == "cli_broken" {
-						eventType = "dispatch_retry_queued_cli_fallback"
-						details = fmt.Sprintf("bead %s dispatch %d queued for CLI fallback retry in tier %s", d.BeadID, d.ID, nextTier)
+					var nextRetryAt time.Time
+					if delay > 0 {
+						nextRetryAt = s.now().Add(delay)
 					}
-					_ = s.store.RecordHealthEventWithDispatch(
-						eventType,
-						details,
-						d.ID,
-						d.BeadID,
-					)
+					if err := s.store.MarkDispatchPendingRetry(d.ID, nextAttemptTier, nextRetryAt); err != nil {
+						s.logger.Warn("failed to queue gateway retry; leaving dispatch failed", "dispatch_id", d.ID, "bead", d.BeadID, "error", err)
+						finalStage = "failed_needs_check"
+					} else {
+						status = "pending_retry"
+						finalStage = "pending_retry"
+						eventType := "dispatch_retry_queued_gateway"
+						details := fmt.Sprintf("bead %s dispatch %d queued for retry due to transient gateway closure", d.BeadID, d.ID)
+						if retryReason == "cli_broken" {
+							eventType = "dispatch_retry_queued_cli_fallback"
+							details = fmt.Sprintf("bead %s dispatch %d queued for CLI fallback retry in tier %s", d.BeadID, d.ID, nextAttemptTier)
+						}
+						_ = s.store.RecordHealthEventWithDispatch(
+							eventType,
+							details,
+							d.ID,
+							d.BeadID,
+						)
+					}
 				}
 			}
 
@@ -3065,21 +3079,13 @@ func (s *Scheduler) processPendingRetries(ctx context.Context) {
 			s.logger.Debug("failed to heartbeat claim lease for pending retry", "bead", retry.BeadID, "dispatch_id", retry.ID, "error", err)
 		}
 
-		// Check if enough time has passed for retry using backoff logic
-		if !dispatch.ShouldRetry(retry.CompletedAt.Time, retry.Retries,
-			s.cfg.General.RetryBackoffBase.Duration, s.cfg.General.RetryMaxDelay.Duration) {
-			s.logger.Debug("retry backoff not elapsed",
-				"bead", retry.BeadID,
-				"retries", retry.Retries,
-				"next_retry_in", dispatch.BackoffDelay(retry.Retries,
-					s.cfg.General.RetryBackoffBase.Duration, s.cfg.General.RetryMaxDelay.Duration)-time.Since(retry.CompletedAt.Time))
-			continue
-		}
+		policy := resolveRetryPolicy(s.cfg, retry.Project, retry.Tier)
+		_, _, shouldRetry := policy.NextRetry(retry.Retries, retry.Tier)
 
 		// Check if we've exceeded max retries
-		if retry.Retries >= s.cfg.General.MaxRetries {
+		if !shouldRetry {
 			s.logger.Warn("max retries exceeded, marking as failed",
-				"bead", retry.BeadID, "retries", retry.Retries, "max_retries", s.cfg.General.MaxRetries)
+				"bead", retry.BeadID, "retries", retry.Retries, "max_retries", policy.MaxRetries)
 
 			// Update status to failed permanently
 			duration := time.Since(retry.DispatchedAt).Seconds()
@@ -3380,7 +3386,7 @@ func (s *Scheduler) runHealthChecks() {
 		s.store,
 		s.dispatcher,
 		s.cfg.General.StuckTimeout.Duration,
-		s.cfg.General.MaxRetries,
+		s.cfg,
 		s.logger.With("scope", "stuck"),
 	)
 	if len(actions) > 0 {
@@ -3391,6 +3397,21 @@ func (s *Scheduler) runHealthChecks() {
 	killed := health.CleanZombies(s.store, s.dispatcher, s.logger.With("scope", "zombie"))
 	if killed > 0 {
 		s.logger.Info("zombie cleanup complete", "killed", killed)
+	}
+}
+
+func resolveRetryPolicy(cfg *config.Config, project string, tier string) dispatch.RetryPolicy {
+	if cfg == nil {
+		return dispatch.DefaultPolicy()
+	}
+
+	policy := cfg.RetryPolicyFor(project, tier)
+	return dispatch.RetryPolicy{
+		MaxRetries:    policy.MaxRetries,
+		InitialDelay:  policy.InitialDelay.Duration,
+		BackoffFactor: policy.BackoffFactor,
+		MaxDelay:      policy.MaxDelay.Duration,
+		EscalateAfter: policy.EscalateAfter,
 	}
 }
 

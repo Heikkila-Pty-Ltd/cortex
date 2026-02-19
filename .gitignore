@@ -6,3 +6,10 @@
 
 # Lock files
 .beads/.bv.lock
+
+# Local config (do not commit)
+cortex.toml
+
+# Local state
+*.db
+.local/
