@@ -765,6 +765,10 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			s.logger.Debug("failed to heartbeat claim lease after dispatch attach", "bead", item.bead.ID, "dispatch_id", dispatchID, "error", err)
 		}
 
+		if IsDispatchableRole(role) {
+			s.concurrencyController.RemoveFromQueueByBeadRole(item.bead.ID, role)
+		}
+
 		// Record authed usage
 		if provider.Authed {
 			s.rateLimiter.RecordAuthedDispatch(provider.Model, agent, item.bead.ID)
@@ -1405,9 +1409,19 @@ func (s *Scheduler) processOverflowQueue(ctx context.Context) {
 
 	s.logger.Debug("overflow queue items ready for dispatch", "count", len(dequeued))
 
+	snapshot, err := s.concurrencyController.GetSnapshot()
+	if err != nil {
+		s.logger.Warn("failed to get concurrency snapshot for overflow dispatch", "error", err)
+		return
+	}
+
+	for _, item := range dequeued {
+		s.concurrencyController.LogCapacityDispatch(item.Role, item.BeadID, item.Project, snapshot)
+	}
+
 	// Note: The dequeued items will be picked up in the normal dispatch loop
-	// since they remain in the ready beads list. The dequeue just removes them
-	// from the overflow queue to prevent duplicate tracking.
+	// since they remain represented in the ready beads list. The dequeue just
+	// removes them from the overflow queue to prevent duplicate tracking.
 	// If we wanted direct dispatch from overflow, we'd need to add that logic here.
 }
 
