@@ -185,6 +185,28 @@ merge_method = ""
 	}
 }
 
+func TestLoadProjectMergeConfigMergeMethodCanonicalization(t *testing.T) {
+	cfg := validConfig + `
+
+[projects.merge-canonical]
+enabled = true
+beads_dir = "/tmp/merge-canonical/.beads"
+workspace = "/tmp/merge-canonical"
+priority = 1
+merge_method = "REBASE"
+`
+	path := writeTestConfig(t, cfg)
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	project := loaded.Projects["merge-canonical"]
+	if project.MergeMethod != "rebase" {
+		t.Errorf("merge_method = %q, want rebase", project.MergeMethod)
+	}
+}
+
 func TestLoadProjectMergeConfigCustom(t *testing.T) {
 	cfg := validConfig + `
 
