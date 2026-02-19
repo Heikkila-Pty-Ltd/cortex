@@ -1,6 +1,6 @@
 # Cortex Launch Evidence Bundle
 
-As-of date: 2026-02-19T20:08:43+10:00  
+As-of date: 2026-02-19T20:04:45+10:00  
 Decision status: `NO-GO` (external launch)  
 Scope: formal launch evidence package for Cortex orchestration
 
@@ -19,9 +19,9 @@ Current measured blockers:
 
 | Area | Priority | Gate | Status | Threshold | Measured | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| Launch Contract | P0 | Open P1 bugs | **FAIL** | `0` | `1` (`cortex-cin`) | [decision log](evidence/go-no-go-decision-record.md), [readiness matrix](evidence/launch-readiness-matrix.md), `bd list --status=open --json` |
-| Launch Contract | P0 | Open P2 bugs | **PASS** | `<= 3` | `1` (`cortex-up7`) | [decision log](evidence/go-no-go-decision-record.md), [readiness matrix](evidence/launch-readiness-matrix.md), `bd list --status=open --json` |
-| Launch Contract | P0 | `failed_needs_check` unresolved >24h | **PASS** | `0` | `0` | [readiness matrix](evidence/launch-readiness-matrix.md), `~/.local/share/cortex/cortex.db` (`dispatches` table) |
+| Launch Contract | P0 | Open P1 bugs | **FAIL** | `0` | `1` (`cortex-cin`) | `bd list --status=open --json` |
+| Launch Contract | P0 | Open P2 bugs | **PASS** | `<= 3` | `1` (`cortex-up7`) | `bd list --status=open --json` |
+| Launch Contract | P0 | `failed_needs_check` unresolved >24h | **PASS** | `0` | `0` | `~/.local/share/cortex/cortex.db` (`dispatches` table) |
 | Operational Evidence | P1 | Security gate (implementation + scans) | **CONDITIONAL** | Scan artifact required | Authn/authz and audit code present; `security/scan-results.json` missing | [`evidence/launch-readiness-matrix.md`](evidence/launch-readiness-matrix.md), [`internal/scheduler/scheduler.go`](internal/scheduler/scheduler.go), [`internal/dispatch/ratelimit.go`](internal/dispatch/ratelimit.go) |
 | Reliability | P0 | Self-healing reliability | **FAIL** | Stuck/retry recovery works without manual intervention | `failed_needs_check` and stuck/zombie activity remain elevated | [`evidence/launch-readiness-matrix.md`](evidence/launch-readiness-matrix.md), [`artifacts/launch/runbooks/stuck-dispatch-tabletop-drill-20260218.md`](artifacts/launch/runbooks/stuck-dispatch-tabletop-drill-20260218.md) |
 | Reliability | P0 | Burn-in stability | **FAIL** | Unknown/disappeared <=1%, intervention <=5%, critical=0 over 7 days | Unknown/disappeared `0.20%`, intervention `1.67%`, critical `113` | [`artifacts/launch/burnin/burnin-final-2026-02-18.json`](artifacts/launch/burnin/burnin-final-2026-02-18.json), [`artifacts/launch/burnin/burnin-final-2026-02-18.md`](artifacts/launch/burnin/burnin-final-2026-02-18.md) |

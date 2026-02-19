@@ -29,9 +29,9 @@ Keep implementation costs low by moving decision-making into plan-space:
 
 ## Readiness Definition
 
-The `stage:ready` gate is a hard preflight with two enforcement points:
+The `stage:ready` gate is a hard preflight:
 
-- `lint-beads` must pass with all `stage:ready` requirements (acceptance + test + DoD + design notes + estimate)
+- `lint-beads` must pass with all `stage:ready` requirements
 - scheduler preflight auto-reverts any invalid `stage:ready` bead back to `stage:planning`
 
 A bead is executable only when all are true:
