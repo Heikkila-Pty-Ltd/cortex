@@ -767,6 +767,74 @@ func newRunTickScenarioScheduler(t *testing.T, cfg *config.Config, lister *MockB
 	return sched, st, mockBackend
 }
 
+func TestRunTick_CorePathPaths(t *testing.T) {
+	t.Run("happy path dispatches two ready beads", func(t *testing.T) {
+		lister := NewMockBeadsLister()
+		project := config.Project{Enabled: true, Priority: 1, Workspace: "/tmp/ws-core", BeadsDir: "/tmp/p-core"}
+		cfg := newRunTickScenarioConfig(5, map[string]config.Project{"test-project": project})
+		logBuf := &bytes.Buffer{}
+		sched, _, backend := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+		lister.SetBeads(project.BeadsDir, []beads.Bead{
+			func() beads.Bead {
+				b := createTestBead("core-ready-1", "first", "task", "open", 1)
+				b.Labels = []string{"stage:ready"}
+				return b
+			}(),
+			func() beads.Bead {
+				b := createTestBead("core-review-1", "second", "task", "open", 2)
+				b.Labels = []string{"stage:review"}
+				return b
+			}(),
+		})
+
+		sched.RunTick(context.Background())
+
+		if got := len(backend.Dispatches()); got != 2 {
+			t.Fatalf("dispatch count = %d, want 2", got)
+		}
+	})
+
+	t.Run("already dispatched bead is skipped", func(t *testing.T) {
+		lister := NewMockBeadsLister()
+		project := config.Project{Enabled: true, Priority: 1, Workspace: "/tmp/ws-core", BeadsDir: "/tmp/p-core-2"}
+		cfg := newRunTickScenarioConfig(5, map[string]config.Project{"test-project": project})
+		logBuf := &bytes.Buffer{}
+		sched, st, backend := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+		lister.SetBeads(project.BeadsDir, []beads.Bead{
+			createTestBead("already-running-core", "already running", "task", "open", 1),
+		})
+		if _, err := st.RecordDispatch("already-running-core", "test-project", "test-project-coder", "authed-model", "balanced", 123, "sess", "prompt", "", "", "mock"); err != nil {
+			t.Fatalf("seed running dispatch: %v", err)
+		}
+
+		sched.RunTick(context.Background())
+
+		if got := len(backend.Dispatches()); got != 0 {
+			t.Fatalf("dispatch count = %d, want 0", got)
+		}
+	})
+
+	t.Run("epic bead is skipped", func(t *testing.T) {
+		lister := NewMockBeadsLister()
+		project := config.Project{Enabled: true, Priority: 1, Workspace: "/tmp/ws-core", BeadsDir: "/tmp/p-core-3"}
+		cfg := newRunTickScenarioConfig(5, map[string]config.Project{"test-project": project})
+		logBuf := &bytes.Buffer{}
+		sched, _, backend := newRunTickScenarioScheduler(t, cfg, lister, logBuf)
+
+		lister.SetBeads(project.BeadsDir, []beads.Bead{
+			createTestBead("epic-core", "epic", "epic", "open", 1),
+		})
+
+		sched.RunTick(context.Background())
+
+		if got := len(backend.Dispatches()); got != 0 {
+			t.Fatalf("dispatch count = %d, want 0", got)
+		}
+	})
+}
+
 func TestRunTick_EndToEndScenarios(t *testing.T) {
 	t.Run("happy path dispatches two ready beads", func(t *testing.T) {
 		lister := NewMockBeadsLister()
@@ -969,6 +1037,7 @@ func TestRunTick_EndToEndScenarios(t *testing.T) {
 			t.Fatalf("dispatch count = %d, want 1", got)
 		}
 	})
+
 
 	t.Run("agent busy skips dispatch", func(t *testing.T) {
 		lister := NewMockBeadsLister()
