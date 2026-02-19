@@ -13,15 +13,31 @@ func TestRWMutexManagerGetSet(t *testing.T) {
 	initial := &Config{General: General{LogLevel: "info"}}
 	mgr := NewRWMutexManager(initial)
 
-	if got := mgr.Get(); got != initial {
-		t.Fatalf("expected initial config pointer")
+	got := mgr.Get()
+	if got == nil {
+		t.Fatal("expected initial config snapshot")
+	}
+	if got == initial {
+		t.Fatal("expected manager to store cloned config")
+	}
+	if got.General.LogLevel != "info" {
+		t.Fatalf("unexpected initial log level: %q", got.General.LogLevel)
+	}
+	got.General.LogLevel = "trace"
+	if after := mgr.Get(); after.General.LogLevel != "info" {
+		t.Fatalf("snapshot mutation leaked into manager state: %q", after.General.LogLevel)
 	}
 
 	next := &Config{General: General{LogLevel: "debug"}}
 	mgr.Set(next)
+	next.General.LogLevel = "error"
 
-	if got := mgr.Get(); got != next {
-		t.Fatalf("expected updated config pointer")
+	updated := mgr.Get()
+	if updated == next {
+		t.Fatal("expected manager to clone Set input")
+	}
+	if updated.General.LogLevel != "debug" {
+		t.Fatalf("expected updated config value, got %q", updated.General.LogLevel)
 	}
 }
 
@@ -120,6 +136,30 @@ func TestRWMutexManagerSetUsesExclusiveLock(t *testing.T) {
 	case <-done:
 	case <-time.After(1 * time.Second):
 		t.Fatal("writer did not complete after releasing reader lock")
+	}
+}
+
+func TestRWMutexManagerGetUsesReadLock(t *testing.T) {
+	mgr := NewRWMutexManager(&Config{General: General{LogLevel: "info"}})
+	mgr.mu.Lock()
+
+	done := make(chan struct{})
+	go func() {
+		_ = mgr.Get()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("reader completed while writer lock held; expected blocking")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	mgr.mu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("reader did not complete after releasing writer lock")
 	}
 }
 

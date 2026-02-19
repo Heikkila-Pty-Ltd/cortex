@@ -20,7 +20,7 @@ type RWMutexManager struct {
 
 // NewManager constructs a manager with an initial config.
 func NewManager(initial *Config) *RWMutexManager {
-	return &RWMutexManager{cfg: initial}
+	return &RWMutexManager{cfg: initial.Clone()}
 }
 
 // NewRWMutexManager constructs a manager with an initial config.
@@ -32,14 +32,14 @@ func NewRWMutexManager(initial *Config) *RWMutexManager {
 func (m *RWMutexManager) Get() *Config {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.cfg
+	return m.cfg.Clone()
 }
 
 // Set updates the current config pointer under an exclusive lock.
 func (m *RWMutexManager) Set(cfg *Config) {
 	m.mu.Lock()
-	m.cfg = cfg
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+	m.cfg = cfg.Clone()
 }
 
 // Reload loads config from path and atomically swaps it into place.
