@@ -10,9 +10,16 @@ import (
 	"time"
 )
 
+const MaxCLIArgSize = 128 * 1024
+
 // openclawShellScript is shared between PID and tmux dispatchers so model/provider
 // handling stays consistent. This script reads all parameters from files to avoid
 // shell parsing issues with special characters in user input.
+//
+// NOTE: This is a legacy openclaw execution path and intentionally retains
+// shell execution to preserve existing compatibility behavior.
+// Cortex hardening in cortex-46d.7.3 explicitly targets CLI headless/tmux
+// command construction, not this legacy openclaw PID/legacy path.
 func openclawShellScript() string {
 	return `#!/bin/bash
 # Read all parameters from temp files to avoid shell parsing issues
@@ -29,15 +36,32 @@ fi
 
 session_id="ctx-$$-$(date +%s)"
 err_file=$(mktemp)
+prompt_inline_limit=131072
+inline_message=1
+
+prompt_bytes="$(wc -c < "$msg_file" 2>/dev/null || echo 0)"
+if [ "$prompt_bytes" -gt "$prompt_inline_limit" ]; then
+  inline_message=0
+fi
 
 # Execute openclaw with all parameters safely passed via file arguments
-# Using exec style to avoid shell interpretation of content
-openclaw agent \
-  --agent "$(cat "$agent_file")" \
-  --session-id "$session_id" \
-  --message "$(cat "$msg_file")" \
-  --thinking "$(cat "$thinking_file")" \
-  2>"$err_file"
+# For small prompts keep existing --message mode for compatibility.
+# For large prompts, stream input from the temp file to avoid oversized argv values.
+if [ "$inline_message" -eq 1 ]; then
+  openclaw agent \
+    --agent "$(cat "$agent_file")" \
+    --session-id "$session_id" \
+    --message "$(cat "$msg_file")" \
+    --thinking "$(cat "$thinking_file")" \
+    2>"$err_file"
+else
+  openclaw agent \
+    --agent "$(cat "$agent_file")" \
+    --session-id "$session_id" \
+    --thinking "$(cat "$thinking_file")" \
+    2>"$err_file" \
+    < "$msg_file"
+fi
 status=$?
 
 if [ $status -eq 0 ]; then
@@ -65,25 +89,25 @@ fi
 
 if [ "$should_fallback" -eq 1 ]; then
   fallback_err=$(mktemp)
+
   # Try stdin fallback first
-  cat "$msg_file" | openclaw agent \
+  openclaw agent \
     --agent "$(cat "$agent_file")" \
     --session-id "$session_id" \
     --thinking "$(cat "$thinking_file")" \
-    2>"$fallback_err"
+    2>"$fallback_err" \
+    < "$msg_file"
   status=$?
   
-  # If that fails, try with explicit --message flag again
-  if [ "$status" -ne 0 ]; then
-    if grep -Fqi "required option '-m, --message" "$fallback_err" || grep -Eqi 'required option.*--message' "$fallback_err"; then
-      openclaw agent \
-        --agent "$(cat "$agent_file")" \
-        --session-id "$session_id" \
-        --message "$(cat "$msg_file")" \
-        --thinking "$(cat "$thinking_file")" \
-        2>"$fallback_err"
-      status=$?
-    fi
+  # If that fails, try with explicit --message flag again for small prompts.
+  if [ "$status" -ne 0 ] && [ "$inline_message" -eq 1 ]; then
+    openclaw agent \
+      --agent "$(cat "$agent_file")" \
+      --session-id "$session_id" \
+      --message "$(cat "$msg_file")" \
+      --thinking "$(cat "$thinking_file")" \
+      2>"$fallback_err"
+    status=$?
   fi
   
   if [ "$status" -ne 0 ]; then
@@ -209,6 +233,10 @@ func ThinkingLevel(tier string) string {
 
 // Dispatch starts an openclaw agent process in the background and returns its PID.
 func (d *Dispatcher) Dispatch(ctx context.Context, agent string, prompt string, provider string, thinkingLevel string, workDir string) (pid int, err error) {
+	if len(agent) > MaxCLIArgSize {
+		return 0, fmt.Errorf("dispatch: agent configuration too large for CLI execution")
+	}
+
 	thinking := normalizeThinkingLevel(thinkingLevel)
 
 	// Write prompt to temp file to avoid shell escaping issues.
@@ -235,7 +263,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, agent string, prompt string, 
 		return 0, fmt.Errorf("dispatch: build command args: %w", err)
 	}
 
-	// Use a shell helper to read all parameters from temp files
+	// Legacy compatibility boundary: openclaw execution intentionally remains
+	// a shell-based helper path in this ticket.
 	// Use context.Background() so the child process survives if cortex
 	// exits in --once mode (the parent context gets cancelled on exit).
 	cmd := exec.Command("sh", args...)

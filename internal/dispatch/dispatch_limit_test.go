@@ -1,0 +1,61 @@
+package dispatch
+
+import (
+	"context"
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestDispatch_ArgumentLimits(t *testing.T) {
+	d := NewDispatcher()
+	ctx := context.Background()
+
+	// Create a prompt larger than the CLI arg-safe threshold.
+	const limit = 128 * 1024
+	largePrompt := strings.Repeat("a", limit+100)
+	binDir := t.TempDir()
+	capturePath, statePath := writeFakeOpenclawBinary(t, binDir)
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	t.Setenv("OPENCLAW_CAPTURE_PATH", capturePath)
+	t.Setenv("OPENCLAW_STATE_PATH", statePath)
+
+	pid, err := d.Dispatch(ctx, "agent", largePrompt, "provider", "low", t.TempDir())
+	if err != nil {
+		t.Fatalf("dispatch with large prompt should succeed: %v", err)
+	}
+	waitForProcessCompletion(t, d, pid, 5*time.Second)
+
+	state := d.GetProcessState(pid)
+	if state.ExitCode != 0 {
+		var output string
+		if state.OutputPath != "" {
+			if out, readErr := os.ReadFile(state.OutputPath); readErr == nil {
+				output = string(out)
+			}
+		}
+		t.Fatalf("dispatch with large prompt should exit 0, got %d (output: %q)", state.ExitCode, output)
+	}
+	d.CleanupProcess(pid)
+
+	capturedPrompt, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("failed to read captured prompt: %v", err)
+	}
+	if len(capturedPrompt) != len(largePrompt) {
+		t.Fatalf("captured prompt length mismatch: got %d want %d", len(capturedPrompt), len(largePrompt))
+	}
+	if string(capturedPrompt) != largePrompt {
+		t.Fatal("captured prompt content mismatch")
+	}
+
+	// Create an agent config slightly larger than the limit
+	largeAgent := strings.Repeat("b", limit+100)
+	_, err = d.Dispatch(ctx, largeAgent, "prompt", "provider", "low", ".")
+	if err == nil {
+		t.Error("Dispatch with large agent string should fail")
+	} else if !strings.Contains(err.Error(), "agent configuration too large") {
+		t.Errorf("expected 'agent configuration too large' error, got: %v", err)
+	}
+}

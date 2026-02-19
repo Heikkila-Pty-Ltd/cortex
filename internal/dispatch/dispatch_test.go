@@ -261,12 +261,33 @@ func TestOpenclawCommandArgs_PassesSessionID(t *testing.T) {
 	}
 }
 
+func TestOpenclawCommandArgs_IsLegacyShellExecutionShape(t *testing.T) {
+	args, _, err := openclawCommandArgs("/tmp/prompt.txt", "cortex-coder", "low", "gpt-5")
+	if err != nil {
+		t.Fatalf("openclawCommandArgs failed: %v", err)
+	}
+
+	if len(args) != 7 {
+		t.Fatalf("expected 7 args, got %d", len(args))
+	}
+	if args[0] != "-c" {
+		t.Fatalf("expected legacy shell wrapper invocation, got first arg %q", args[0])
+	}
+	if !strings.Contains(args[1], "#!/bin/bash") {
+		t.Fatalf("expected inline legacy shell script as second arg, got %q", args[1])
+	}
+	if args[2] != "_" {
+		t.Fatalf("expected shell separator arg _, got %q", args[2])
+	}
+}
+
 func TestOpenclawShellScript_RetriesMessageAfterFallbackRequiredOption(t *testing.T) {
 	script := openclawShellScript()
 	checks := []string{
 		`fallback_err=$(mktemp)`,
-		`cat "$msg_file" | openclaw agent`,
-		`grep -Fqi "required option '-m, --message" "$fallback_err"`,
+		`openclaw agent \`,
+		`< "$msg_file"`,
+		`grep -Fqi 'message (--message)' "$err_file"`,
 		`--message "$(cat "$msg_file")"`,
 	}
 	for _, check := range checks {
