@@ -5,7 +5,7 @@ Production-ready Go project following [Standard Go Project Layout](https://githu
 ```
 cortex/
 ├── README.md                 # Project overview and quick start
-├── AGENTS.md                 # Agent/coding instructions
+├── docs/                     # Documentation (including AI agent instructions)
 ├── Makefile                  # Build automation with helpful targets
 ├── go.mod, go.sum            # Go module dependencies
 ├── VERSION                   # Current version
@@ -168,7 +168,7 @@ Test utilities, fixtures, and integration tests.
 | `cortex.toml` | Your local configuration (gitignored) |
 | `slo-thresholds.json` | Service Level Objective definitions |
 | `VERSION` | Current release version |
-| `AGENTS.md` | Instructions for AI coding agents |
+| `docs/development/AI_AGENTS.md` | Instructions for AI coding agents |
 
 ## Make Targets
 

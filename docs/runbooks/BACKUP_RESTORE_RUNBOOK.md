@@ -14,14 +14,14 @@ This runbook provides tested procedures for backing up and restoring the Cortex 
 
 ```bash
 # Create backup
-cd /home/ubuntu/projects/cortex
+cd /path/to/cortex
 go run tools/db-backup.go --db ~/.local/share/cortex/cortex.db
 
 # Restore from backup  
-go run tools/db-restore.go --backup cortex-backup-20260218-143022.db --db ~/.local/share/cortex/cortex.db --force
+go run tools/db-restore.go --backup cortex-backup-<YYYYMMDD>-<HHMMSS>.db --db ~/.local/share/cortex/cortex.db --force
 
 # Verify backup without restoring
-go run tools/db-restore.go --backup cortex-backup-20260218-143022.db --db ~/.local/share/cortex/cortex.db --dry-run
+go run tools/db-restore.go --backup cortex-backup-<YYYYMMDD>-<HHMMSS>.db --db ~/.local/share/cortex/cortex.db --dry-run
 ```
 
 ## Recovery Time/Point Objectives (RTO/RPO)
@@ -53,7 +53,7 @@ go run tools/db-restore.go --backup cortex-backup-20260218-143022.db --db ~/.loc
 
 ```bash
 # Basic backup
-cd /home/ubuntu/projects/cortex
+cd /path/to/cortex
 go run tools/db-backup.go --db ~/.local/share/cortex/cortex.db
 
 # Backup with custom location  
@@ -66,8 +66,8 @@ go run tools/db-backup.go --db ~/.local/share/cortex/cortex.db --verify=false
 **Expected Output:**
 ```
 SQLite Backup Tool
-Source: /home/ubuntu/.local/share/cortex/cortex.db
-Destination: cortex-backup-20260218-143022.db
+Source: ~/.local/share/cortex/cortex.db
+Destination: cortex-backup-<YYYYMMDD>-<HHMMSS>.db
 Running WAL checkpoint...
 Creating backup...
 Backup completed in 1.2s
@@ -90,11 +90,11 @@ Backup size: 2912256 bytes (2.78 MB)
 systemctl stop cortex  # or kill cortex process
 
 # Verify backup before restore
-cd /home/ubuntu/projects/cortex
-go run tools/db-restore.go --backup cortex-backup-20260218-143022.db --db ~/.local/share/cortex/cortex.db --dry-run
+cd /path/to/cortex
+go run tools/db-restore.go --backup cortex-backup-<YYYYMMDD>-<HHMMSS>.db --db ~/.local/share/cortex/cortex.db --dry-run
 
 # Perform restore (creates safety backup automatically)
-go run tools/db-restore.go --backup cortex-backup-20260218-143022.db --db ~/.local/share/cortex/cortex.db --force
+go run tools/db-restore.go --backup cortex-backup-<YYYYMMDD>-<HHMMSS>.db --db ~/.local/share/cortex/cortex.db --force
 
 # Restart Cortex service
 systemctl start cortex  # or restart cortex process
@@ -103,11 +103,11 @@ systemctl start cortex  # or restart cortex process
 **Expected Output:**
 ```
 SQLite Restore Tool
-Backup: cortex-backup-20260218-143022.db
-Target: /home/ubuntu/.local/share/cortex/cortex.db
+Backup: cortex-backup-<YYYYMMDD>-<HHMMSS>.db
+Target: ~/.local/share/cortex/cortex.db
 Verifying backup integrity...
 Backup verification passed: map[integrity:ok schema_version:42 table_counts:map[dispatches:1021 health_events:245]]
-Creating safety backup: /home/ubuntu/.local/share/cortex/cortex.db.pre-restore-20260218-143530
+Creating safety backup: ~/.local/share/cortex/cortex.db.pre-restore-<YYYYMMDD>-<HHMMSS>
 Restoring database...
 Restore completed in 800ms
 Verifying restored database...
@@ -127,8 +127,8 @@ Create automated backup script:
 # /usr/local/bin/cortex-backup.sh
 
 BACKUP_DIR="/backup/cortex"
-DB_PATH="/home/ubuntu/.local/share/cortex/cortex.db" 
-PROJECT_DIR="/home/ubuntu/projects/cortex"
+DB_PATH="~/.local/share/cortex/cortex.db" 
+PROJECT_DIR="/path/to/cortex"
 
 # Create backup directory
 mkdir -p "$BACKUP_DIR/hourly" "$BACKUP_DIR/daily" "$BACKUP_DIR/weekly"
@@ -179,8 +179,8 @@ fi
    # Copy latest backup file to new system
    
    mkdir -p ~/.local/share/cortex
-   cd /home/ubuntu/projects/cortex
-   go run tools/db-restore.go --backup /path/to/latest-backup.db --db ~/.local/share/cortex/cortex.db
+cd /path/to/cortex
+go run tools/db-restore.go --backup /path/to/latest-backup.db --db ~/.local/share/cortex/cortex.db
    ```
 
 2. **Verify data integrity:**
@@ -242,7 +242,7 @@ fi
 
 ```bash
 # Create test data
-cd /home/ubuntu/projects/cortex
+cd /path/to/cortex
 sqlite3 ~/.local/share/cortex/cortex.db "INSERT INTO health_events (event_type, details) VALUES ('test_event', 'backup_test')"
 
 # Backup
@@ -307,5 +307,5 @@ rm perf-test.db perf-test-restore.db
 
 ## Change Log
 
-- 2026-02-18: Initial runbook creation with automated tools
+- <YYYY-MM-DD>: Initial runbook creation with automated tools
 - Future: Add compression, encryption, remote storage support

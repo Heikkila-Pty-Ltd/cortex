@@ -74,10 +74,10 @@ func TestIsUserBusUnavailableError(t *testing.T) {
 
 func TestSystemctlMachineUser_PrecedenceAndFallback(t *testing.T) {
 	t.Setenv("CORTEX_SYSTEMCTL_USER", "opsbot")
-	t.Setenv("SUDO_USER", "ubuntu")
-	t.Setenv("LOGNAME", "ubuntu")
-	t.Setenv("USER", "ubuntu")
-	t.Setenv("HOME", "/home/ubuntu")
+	t.Setenv("SUDO_USER", "tester")
+	t.Setenv("LOGNAME", "tester")
+	t.Setenv("USER", "tester")
+	t.Setenv("HOME", "/home/tester")
 
 	if got := systemctlMachineUser(); got != "opsbot" {
 		t.Fatalf("expected CORTEX_SYSTEMCTL_USER to win, got %q", got)
@@ -89,9 +89,9 @@ func TestSystemctlMachineUser_UsesHomeWhenUserIsRoot(t *testing.T) {
 	t.Setenv("SUDO_USER", "")
 	t.Setenv("LOGNAME", "root")
 	t.Setenv("USER", "root")
-	t.Setenv("HOME", "/home/ubuntu")
+	t.Setenv("HOME", "/home/tester")
 
-	if got := systemctlMachineUser(); got != "ubuntu" {
+	if got := systemctlMachineUser(); got != "tester" {
 		t.Fatalf("expected HOME-derived username ubuntu, got %q", got)
 	}
 }
@@ -153,7 +153,7 @@ exit 1
 	}
 
 	t.Setenv("PATH", dir)
-	t.Setenv("SUDO_USER", "ubuntu")
+	t.Setenv("SUDO_USER", "tester")
 	t.Setenv("CORTEX_SYSTEMCTL_USER", "")
 	t.Setenv("USER", "root")
 	t.Setenv("LOGNAME", "root")
@@ -187,8 +187,8 @@ exit 1
 	t.Setenv("CORTEX_SYSTEMCTL_USER", "")
 	t.Setenv("SUDO_USER", "")
 	t.Setenv("LOGNAME", "")
-	t.Setenv("USER", "ubuntu")
-	t.Setenv("HOME", "/home/ubuntu")
+	t.Setenv("USER", "tester")
+	t.Setenv("HOME", "/home/tester")
 
 	output, err := runSystemctl(context.Background(), false, "is-active", "openclaw-gateway.service")
 	if err != nil {

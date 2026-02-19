@@ -34,7 +34,7 @@ Execute rollback immediately if any of these conditions are met:
 
 1. **Create Current State Backup**
    ```bash
-   cd /home/ubuntu/projects/cortex
+   cd /path/to/cortex
    
    # Backup database
    go run tools/db-backup.go --db ~/.local/share/cortex/cortex.db --backup rollback-safety-$(date +%Y%m%d-%H%M%S).db
@@ -66,7 +66,7 @@ Execute rollback immediately if any of these conditions are met:
 **When to use:** For configuration issues, code regressions, or recent deployments
 
 ```bash
-cd /home/ubuntu/projects/cortex
+cd /path/to/cortex
 
 # 1. Identify target commit (last known good)
 git log --oneline -10
@@ -94,7 +94,7 @@ systemctl --user start cortex.service
 **When to use:** For targeted binary issues with config preservation
 
 ```bash
-cd /home/ubuntu/projects/cortex
+cd /path/to/cortex
 
 # 1. Restore binary from known good build
 # (Assumes you have a rollback-binary/ directory with previous versions)
@@ -116,7 +116,7 @@ systemctl --user start cortex.service
 **When to use:** For database corruption or data integrity issues
 
 ```bash
-cd /home/ubuntu/projects/cortex
+cd /path/to/cortex
 
 # 1. Restore from git (as in Option A)
 git reset --hard [KNOWN_GOOD_COMMIT]
@@ -208,7 +208,7 @@ ps aux | grep cortex
    journalctl --user -u cortex.service --since "1 hour ago"
    
    # Try manual start to see immediate errors
-   cd /home/ubuntu/projects/cortex
+   cd /path/to/cortex
    ./cortex --config cortex.toml --dev
    ```
 
@@ -243,8 +243,8 @@ state_db = "~/.local/share/cortex/cortex.db"
 
 [projects.cortex]
 enabled = true
-beads_dir = "~/projects/cortex/.beads"
-workspace = "~/projects/cortex" 
+beads_dir = "/path/to/cortex/.beads"
+workspace = "/path/to/cortex" 
 priority = 0
 
 [rate_limits]
@@ -301,7 +301,7 @@ Next Update: [When next update will be provided]
 1. **Regular Backup Verification**
    ```bash
    # Weekly backup drill
-   cd /home/ubuntu/projects/cortex
+   cd /path/to/cortex
    go run tools/db-backup.go --db ~/.local/share/cortex/cortex.db --backup weekly-drill-$(date +%Y%m%d).db
    go run tools/db-restore.go --backup weekly-drill-$(date +%Y%m%d).db --db /tmp/test-restore.db
    rm weekly-drill-$(date +%Y%m%d).db /tmp/test-restore.db

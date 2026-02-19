@@ -26,19 +26,19 @@ The rollout monitor runs every 10-15 minutes and performs:
 
 ### One-time Check
 ```bash
-cd /home/ubuntu/projects/cortex
+cd /path/to/cortex
 go run tools/rollout-monitor.go cortex.toml --once
 ```
 
 ### Continuous Monitoring
 ```bash
-cd /home/ubuntu/projects/cortex
+cd /path/to/cortex
 go run tools/rollout-monitor.go cortex.toml
 ```
 
 ### Background Monitoring (recommended)
 ```bash
-cd /home/ubuntu/projects/cortex
+cd /path/to/cortex
 nohup go run tools/rollout-monitor.go cortex.toml > rollout-monitor.log 2>&1 &
 ```
 
@@ -105,7 +105,7 @@ The rollout is considered complete when:
 ### Checking Completion Status
 ```bash
 # Manual check of completion criteria
-cd /home/ubuntu/projects/cortex
+cd /path/to/cortex
 go run tools/rollout-monitor.go cortex.toml --once | grep -E "(✅|🚨|⚠️)"
 
 # Check recent monitor history
@@ -124,13 +124,13 @@ When the monitor detects high-severity signatures:
 ### 2. Triage Process
 ```bash
 # Check current bead status to avoid collisions
-BEADS_DIR=/home/ubuntu/projects/cortex/.beads bd list --status in_progress
+BEADS_DIR=/path/to/cortex/.beads bd list --status in_progress
 
 # View specific signature evidence
 cat ~/.cortex/monitor-states/monitor-latest.json | jq '.detected_signatures[]'
 
 # Create new child bead (example)
-BEADS_DIR=/home/ubuntu/projects/cortex/.beads bd create \
+BEADS_DIR=/path/to/cortex/.beads bd create \
   --title "Fix <signature> failure pattern" \
   --type bug \
   --parent cortex-46d \
