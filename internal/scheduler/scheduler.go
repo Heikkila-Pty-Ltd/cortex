@@ -160,6 +160,7 @@ const (
 	mergeGateRateLimit    = 20 * time.Second
 	mergeGateMaxPerTick   = 1
 	mergeGateCooldownKey  = "merge-gate"
+	defaultLeaderLockTTL   = 30 * time.Second
 )
 
 var (
@@ -181,6 +182,10 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 // NewWithConfigManager creates a new Scheduler with a config manager for
 // snapshot-based runtime reconfiguration.
 func NewWithConfigManager(cfgManager config.ConfigManager, s *store.Store, rl *dispatch.RateLimiter, d dispatch.DispatcherInterface, logger *slog.Logger, dryRun bool) *Scheduler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	cfg := &config.Config{}
 	if cfgManager != nil {
 		if fromManager := cfgManager.Get(); fromManager != nil {
@@ -243,6 +248,14 @@ func NewWithConfigManager(cfgManager config.ConfigManager, s *store.Store, rl *d
 	scheduler.getBacklogBeads = scheduler.store.GetBacklogBeadsCtx
 	scheduler.runSprintPlanning = scheduler.ceremonyScheduler.runMultiTeamPlanningCeremony
 
+	if s != nil {
+		instanceID := os.Getenv("CORTEX_SCHEDULER_INSTANCE_ID")
+		if instanceID == "" {
+			instanceID = defaultSchedulerInstanceID()
+		}
+		scheduler.leaderLock = NewLeaderLock(s, instanceID, defaultLeaderLockTTL, logger)
+	}
+
 	// Initialize completion verifier
 	scheduler.completionVerifier = NewCompletionVerifier(s, logger.With("component", "completion_verifier"))
 	scheduler.completionVerifier.SetProjects(cfg.Projects)
@@ -262,6 +275,14 @@ func NewWithConfigManager(cfgManager config.ConfigManager, s *store.Store, rl *d
 	}
 
 	return scheduler
+}
+
+func defaultSchedulerInstanceID() string {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		return fmt.Sprintf("cortex-scheduler-%d", os.Getpid())
+	}
+	return fmt.Sprintf("cortex-scheduler-%s-%d", hostname, os.Getpid())
 }
 
 func workflowExecutionMode() string {
@@ -589,6 +610,25 @@ func (s *Scheduler) ensureTeamSafe(project, workspace, model string, roles []str
 
 // Start runs the scheduler tick loop until the context is cancelled.
 func (s *Scheduler) Start(ctx context.Context) {
+	s.logger.Info("starting scheduler")
+
+	// Acquire leadership blockingly before starting the main loop.
+	// If leader election cannot be configured, run without coordination.
+	if s.leaderLock != nil {
+		s.logger.Info("waiting to acquire leadership lock...")
+		if err := s.leaderLock.Acquire(ctx); err != nil {
+			if errors.Is(err, context.Canceled) {
+				s.logger.Info("scheduler stopped while waiting for leadership lock")
+				return
+			}
+			s.logger.Error("failed to acquire leadership, shutting down scheduler", "error", err)
+			return
+		}
+		s.logger.Info("leadership acquired successfully, starting scheduler loops")
+	} else {
+		s.logger.Warn("running scheduler without leadership lock")
+	}
+
 	s.startDoDWorker(ctx)
 
 	ticker := time.NewTicker(s.cfg.General.TickInterval.Duration)
