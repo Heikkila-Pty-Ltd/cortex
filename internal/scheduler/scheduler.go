@@ -50,10 +50,10 @@ type Scheduler struct {
 // New creates a Scheduler that reads config from cfgMgr on each tick.
 func New(cfgMgr config.ConfigManager, tc client.Client, logger *slog.Logger) *Scheduler {
 	return &Scheduler{
-		cfgMgr: cfgMgr,
-		tc:     tc,
-		logger: logger,
-		lock:   noopLeaderLock{},
+		cfgMgr:     cfgMgr,
+		tc:         tc,
+		logger:     logger,
+		lock:       noopLeaderLock{},
 		beadLister: beads.ListBeadsCtx,
 	}
 }
@@ -100,7 +100,6 @@ func (s *Scheduler) tick(ctx context.Context) {
 		s.logger.Error("scheduler tick: failed to list running workflows", "error", err)
 		return
 	}
-
 	openWFs, err = s.cleanStaleWorkflows(ctx, cfg, openWFs)
 	if err != nil {
 		s.logger.Error("scheduler tick: skipping dispatch after janitor failure", "error", err)
@@ -144,9 +143,9 @@ func (s *Scheduler) tick(ctx context.Context) {
 
 	// Gather ready beads across all enabled projects, sorted by priority.
 	type candidate struct {
-		bead    beads.Bead
-		project string
-		workDir string
+		bead     beads.Bead
+		project  string
+		workDir  string
 		deferred bool
 	}
 	var candidates []candidate
@@ -177,9 +176,9 @@ func (s *Scheduler) tick(ctx context.Context) {
 
 		for _, b := range ready {
 			candidates = append(candidates, candidate{
-				bead:    b,
-				project: name,
-				workDir: config.ExpandHome(strings.TrimSpace(proj.Workspace)),
+				bead:     b,
+				project:  name,
+				workDir:  config.ExpandHome(strings.TrimSpace(proj.Workspace)),
 				deferred: isStrategicDeferredBead(b),
 			})
 		}
@@ -331,13 +330,14 @@ func (s *Scheduler) cleanStaleWorkflows(ctx context.Context, cfg *config.Config,
 	beadStatusByID, fullyListed, lookupErr := s.buildBeadStatusLookup(ctx, cfg)
 	if lookupErr != nil {
 		if !fullyListed && len(beadStatusByID) == 0 {
-			// Total failure: no project data at all — unsafe to classify, abort janitor.
+			// Total failure: no project bead data at all — unsafe to classify, abort janitor.
 			s.logger.Error("scheduler janitor: unable to build reliable bead status lookup", "error", lookupErr)
 			return running, lookupErr
 		}
-		// Partial failure: some projects succeeded. Unknown beads are conservatively
-		// retained (only timeout check applies for known-open beads).
-		s.logger.Warn("scheduler janitor: partial bead status data; unknown beads will be conservatively retained", "error", lookupErr)
+		// Partial failure: some projects succeeded. Unknown workflows are
+		// conservatively retained (no status-based termination and no timeout
+		// termination for those unknown workflows).
+		s.logger.Warn("scheduler janitor: partial bead status data; unknown workflows retained conservatively", "error", lookupErr)
 	}
 	partialData := lookupErr != nil
 
@@ -355,14 +355,15 @@ func (s *Scheduler) cleanStaleWorkflows(ctx context.Context, cfg *config.Config,
 			cleaned = append(cleaned, wf)
 			continue
 		}
+		staleReason := reason
 
-		if termErr := s.tc.TerminateWorkflow(ctx, wf.workflowID, wf.runID, reason); termErr != nil {
+		if termErr := s.tc.TerminateWorkflow(ctx, wf.workflowID, wf.runID, staleReason); termErr != nil {
 			s.logger.Error(
 				"scheduler janitor: failed to terminate stale workflow",
 				"workflow_id", wf.workflowID,
 				"run_id", wf.runID,
 				"bead_id", beadID,
-				"reason", reason,
+				"reason", staleReason,
 				"error", termErr,
 			)
 			cleaned = append(cleaned, wf)
@@ -373,9 +374,9 @@ func (s *Scheduler) cleanStaleWorkflows(ctx context.Context, cfg *config.Config,
 			"workflow_id", wf.workflowID,
 			"run_id", wf.runID,
 			"bead_id", beadID,
-			"reason", reason,
+			"reason", staleReason,
 		}
-		if reason == staleReasonTimeout {
+		if staleReason == staleReasonTimeout {
 			fields = append(fields, "age", age)
 		}
 		s.logger.Info("scheduler janitor: terminated stale workflow", fields...)
@@ -434,8 +435,8 @@ func (s *Scheduler) listOpenAgentWorkflows(ctx context.Context) ([]openWorkflowE
 	executions := make([]openWorkflowExecution, 0, 200)
 	for {
 		resp, err := s.tc.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
-			Query:    query,
-			PageSize: 200,
+			Query:         query,
+			PageSize:      200,
 			NextPageToken: pageToken,
 		})
 		if err != nil {
@@ -482,13 +483,24 @@ func (s *Scheduler) buildBeadStatusLookup(ctx context.Context, cfg *config.Confi
 		return statuses, true, nil
 	}
 
-	var errs []string
+	var (
+		errs                []string
+		beadStatusByProject = make(map[string]map[string]string)
+	)
 	fullyListed := true
 
+	projectNames := make([]string, 0, len(cfg.Projects))
 	for projectName, proj := range cfg.Projects {
 		if !proj.Enabled {
 			continue
 		}
+		projectNames = append(projectNames, projectName)
+	}
+	sort.Strings(projectNames)
+
+	for _, projectName := range projectNames {
+		proj := cfg.Projects[projectName]
+
 		beadsDir := strings.TrimSpace(config.ExpandHome(proj.BeadsDir))
 		if beadsDir == "" {
 			fullyListed = false
@@ -503,9 +515,20 @@ func (s *Scheduler) buildBeadStatusLookup(ctx context.Context, cfg *config.Confi
 			continue
 		}
 
+		projectStatuses := make(map[string]string, len(listed))
 		for _, bead := range listed {
-			statuses[bead.ID] = strings.ToLower(strings.TrimSpace(bead.Status))
+			status := strings.ToLower(strings.TrimSpace(bead.Status))
+			projectStatuses[bead.ID] = status
+			statuses[bead.ID] = status
 		}
+		beadStatusByProject[projectName] = projectStatuses
+	}
+
+	if !fullyListed {
+		s.logger.Debug(
+			"scheduler janitor: bead status lookup completed partially",
+			"projects_count", len(beadStatusByProject),
+		)
 	}
 
 	if len(errs) > 0 {
