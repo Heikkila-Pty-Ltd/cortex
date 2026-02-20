@@ -272,8 +272,7 @@ func spawnCHUMWorkflows(ctx workflow.Context, logger log.Logger, req TaskRequest
 	learnerOpts := chumOpts
 	learnerOpts.WorkflowID = fmt.Sprintf("learner-%s-%d", req.BeadID, workflow.Now(ctx).Unix())
 	learnerCtx := workflow.WithChildOptions(ctx, learnerOpts)
-	workflow.ExecuteChildWorkflow(learnerCtx, ContinuousLearnerWorkflow, learnerReq)
-	logger.Info("CHUM: Learner spawned", "WorkflowID", learnerOpts.WorkflowID)
+	learnerFut := workflow.ExecuteChildWorkflow(learnerCtx, ContinuousLearnerWorkflow, learnerReq)
 
 	// --- Spawn TacticalGroomWorkflow ---
 	groomReq := TacticalGroomRequest{
@@ -286,8 +285,22 @@ func spawnCHUMWorkflows(ctx workflow.Context, logger log.Logger, req TaskRequest
 	groomOpts := chumOpts
 	groomOpts.WorkflowID = fmt.Sprintf("groom-%s-%d", req.BeadID, workflow.Now(ctx).Unix())
 	groomCtx := workflow.WithChildOptions(ctx, groomOpts)
-	workflow.ExecuteChildWorkflow(groomCtx, TacticalGroomWorkflow, groomReq)
-	logger.Info("CHUM: TacticalGroom spawned", "WorkflowID", groomOpts.WorkflowID)
+	groomFut := workflow.ExecuteChildWorkflow(groomCtx, TacticalGroomWorkflow, groomReq)
+
+	// CRITICAL: Wait for both children to actually start before the parent returns.
+	// Without this, Temporal kills the children when the parent completes — the
+	// ABANDON policy only protects children that have already started executing.
+	var learnerExec, groomExec workflow.Execution
+	if err := learnerFut.GetChildWorkflowExecution().Get(ctx, &learnerExec); err != nil {
+		logger.Warn("CHUM: Learner failed to start", "error", err)
+	} else {
+		logger.Info("CHUM: Learner started", "WorkflowID", learnerExec.ID, "RunID", learnerExec.RunID)
+	}
+	if err := groomFut.GetChildWorkflowExecution().Get(ctx, &groomExec); err != nil {
+		logger.Warn("CHUM: TacticalGroom failed to start", "error", err)
+	} else {
+		logger.Info("CHUM: TacticalGroom started", "WorkflowID", groomExec.ID, "RunID", groomExec.RunID)
+	}
 }
 
 // resolveBeadsDir derives the beads directory from workDir.
