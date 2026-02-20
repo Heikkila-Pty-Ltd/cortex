@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,7 +21,45 @@ import (
 	"github.com/antigravity-dev/cortex/internal/matrix"
 	"github.com/antigravity-dev/cortex/internal/scheduler"
 	"github.com/antigravity-dev/cortex/internal/store"
+	"github.com/antigravity-dev/cortex/internal/temporal"
 )
+
+func configureLogger(logLevel string, useDev bool) *slog.Logger {
+	level := slog.LevelInfo
+	switch strings.ToLower(strings.TrimSpace(logLevel)) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	}
+
+	opts := &slog.HandlerOptions{Level: level}
+	if useDev {
+		return slog.New(slog.NewTextHandler(os.Stderr, opts))
+	}
+	return slog.New(slog.NewJSONHandler(os.Stderr, opts))
+}
+
+func validateRuntimeConfigReload(oldCfg, newCfg *config.Config) error {
+	if oldCfg == nil || newCfg == nil {
+		return fmt.Errorf("invalid config state during reload")
+	}
+
+	oldStateDB := strings.TrimSpace(oldCfg.General.StateDB)
+	newStateDB := strings.TrimSpace(newCfg.General.StateDB)
+	if oldStateDB != newStateDB {
+		return fmt.Errorf("state_db changed (%q -> %q) and requires restart", oldStateDB, newStateDB)
+	}
+
+	oldAPIBind := strings.TrimSpace(oldCfg.API.Bind)
+	newAPIBind := strings.TrimSpace(newCfg.API.Bind)
+	if oldAPIBind != newAPIBind {
+		return fmt.Errorf("api.bind changed (%q -> %q) and requires restart", oldAPIBind, newAPIBind)
+	}
+	return nil
+}
 
 func main() {
 	configPath := flag.String("config", "cortex.toml", "path to config file")
@@ -34,7 +74,6 @@ func main() {
 	normalizeBeadsDryRun := flag.Bool("normalize-beads-dry-run", false, "preview normalize-beads changes without writing files")
 	flag.Parse()
 
-	// Bootstrap logger (text, info) for early startup
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
@@ -59,7 +98,6 @@ func main() {
 		return
 	}
 
-	// Load config via manager for refreshable runtime snapshots.
 	cfgManager, err := config.LoadManager(*configPath)
 	if err != nil {
 		logger.Error("failed to load config", "error", err)
@@ -70,6 +108,7 @@ func main() {
 		logger.Error("failed to load config snapshot", "config", *configPath)
 		os.Exit(1)
 	}
+
 	if projectName := strings.TrimSpace(*normalizeBeadsProject); projectName != "" {
 		projectCfg, ok := cfg.Projects[projectName]
 		if !ok {
@@ -99,29 +138,13 @@ func main() {
 		)
 		return
 	}
+
 	for _, project := range cfg.MissingProjectRoomRouting() {
 		logger.Warn("project has no matrix_room and reporter.default_room is unset",
 			"project", project)
 	}
 
-	// Configure logger from config
-	var level slog.Level
-	switch cfg.General.LogLevel {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
-	}
-	opts := &slog.HandlerOptions{Level: level}
-	if *dev {
-		logger = slog.New(slog.NewTextHandler(os.Stderr, opts))
-	} else {
-		logger = slog.New(slog.NewJSONHandler(os.Stderr, opts))
-	}
+	logger = configureLogger(cfg.General.LogLevel, *dev)
 	slog.SetDefault(logger)
 
 	// Acquire single-instance lock
@@ -136,7 +159,33 @@ func main() {
 	}
 	defer health.ReleaseFlock(lockFile)
 
-	// Open store
+	var schedulerRef *scheduler.Scheduler
+	var rateLimiter *dispatch.RateLimiter
+	var healthMonitor *health.Monitor
+	var dispatcher dispatch.DispatcherInterface
+	var cfgMu sync.RWMutex
+	applyReload := func() error {
+		cfgMu.Lock()
+		defer cfgMu.Unlock()
+
+		updatedCfg, err := config.Reload(*configPath)
+		if err != nil {
+			return err
+		}
+		if err := validateRuntimeConfigReload(cfg, updatedCfg); err != nil {
+			return err
+		}
+		cfgManager.Set(updatedCfg)
+		cfg = updatedCfg
+		logger = configureLogger(cfg.General.LogLevel, *dev)
+		slog.SetDefault(logger)
+
+		schedulerRef.SetConfig(cfg)
+		rateLimiter.SetConfig(cfg.RateLimits)
+		healthMonitor.SetConfig(cfg)
+		return nil
+	}
+
 	dbPath := config.ExpandHome(cfg.General.StateDB)
 	st, err := store.Open(dbPath)
 	if err != nil {
@@ -146,45 +195,39 @@ func main() {
 	defer st.Close()
 
 	// Create components
-	rl := dispatch.NewRateLimiter(st, cfg.RateLimits)
+	rateLimiter = dispatch.NewRateLimiter(st, cfg.RateLimits)
 
-	// Create dispatcher using config-driven resolver
 	resolver := scheduler.NewDispatcherResolver(cfg)
-
-	// Validate dispatcher configuration before proceeding
 	if err := resolver.ValidateConfiguration(); err != nil {
-		logger.Error("dispatcher configuration validation failed", "error", err)
+		logger.Error("dispatcher configuration failed", "error", err)
 		os.Exit(1)
 	}
-
-	d, err := resolver.CreateDispatcher()
+	dispatcher, err = resolver.CreateDispatcher()
 	if err != nil {
 		logger.Error("failed to create dispatcher", "error", err)
 		os.Exit(1)
 	}
 
-	logger.Info("dispatcher created", "type", d.GetHandleType())
-
-	sched := scheduler.NewWithConfigManager(cfgManager, st, rl, d, logger.With("component", "scheduler"), *dryRun)
+	schedulerRef = scheduler.NewWithConfigManager(cfgManager, st, rateLimiter, dispatcher, logger.With("component", "scheduler"), *dryRun)
+	healthMonitor = health.NewMonitor(cfg, st, dispatcher, logger.With("component", "health"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	if *once {
 		logger.Info("running single tick (--once mode)")
-		sched.RunTick(ctx)
+		schedulerRef.RunTick(ctx)
 		logger.Info("single tick complete, waiting for dispatched agents to finish")
-		sched.WaitForRunningDispatches(ctx, 1*time.Second)
+		schedulerRef.WaitForRunningDispatches(ctx, 1*time.Second)
 		logger.Info("single tick complete, exiting")
 		return
 	}
 
 	// Start scheduler
-	go sched.Start(ctx)
+	go schedulerRef.Start(ctx)
 
 	// Start health monitor
-	hm := health.NewMonitor(cfg, st, d, logger.With("component", "health"))
-	go hm.Start(ctx)
+	go healthMonitor.Start(ctx)
 
 	// Start learner cycle worker
 	lw := learner.NewCycleWorker(cfg.Learner, st, logger.With("component", "learner"))
@@ -197,17 +240,29 @@ func main() {
 			logger.Warn("matrix polling enabled but no room mapping is configured")
 		}
 		matrixClient := matrix.NewOpenClawClient(nil, cfg.Matrix.ReadLimit)
+		matrixPollerSender := matrix.NewOpenClawSender(nil, cfg.Reporter.MatrixBotAccount)
 		matrixPoller := matrix.NewPoller(matrix.PollerConfig{
 			Enabled:       cfg.Matrix.Enabled,
 			PollInterval:  cfg.Matrix.PollInterval.Duration,
 			BotUser:       cfg.Matrix.BotUser,
 			RoomToProject: roomMap,
-		}, matrixClient, d, logger.With("component", "matrix"))
+			Projects:      cfg.Projects,
+			Sender:        matrixPollerSender,
+			Store:         st,
+			Canceler:      schedulerRef,
+		}, matrixClient, dispatcher, logger.With("component", "matrix"))
 		go matrixPoller.Run(ctx)
 	}
 
-	// Start API server with scheduler reference
-	apiSrv, err := api.NewServer(cfg, st, rl, sched, d, logger.With("component", "api"))
+	// Start Temporal worker
+	go func() {
+		logger.Info("starting temporal worker")
+		if err := temporal.StartWorker(); err != nil {
+			logger.Error("temporal worker error", "error", err)
+		}
+	}()
+
+	apiSrv, err := api.NewServer(cfg, st, rateLimiter, schedulerRef, dispatcher, logger.With("component", "api"))
 	if err != nil {
 		logger.Error("failed to create api server", "error", err)
 		os.Exit(1)
@@ -226,28 +281,38 @@ func main() {
 		"max_per_tick", cfg.General.MaxPerTick,
 	)
 
-	// Block on signal
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
 
-	sig := <-sigCh
-	shutdownStart := time.Now()
-	logger.Info("received signal, shutting down", "signal", sig)
-	cancel()
+	for {
+		sig := <-sigCh
+		switch sig {
+		case syscall.SIGHUP:
+			if err := applyReload(); err != nil {
+				logger.Error(fmt.Sprintf("config reload failed: %v", err))
+				continue
+			}
+			logger.Info("config reloaded")
+		case syscall.SIGINT, syscall.SIGTERM:
+			shutdownStart := time.Now()
+			logger.Info("received signal, shutting down", "signal", sig)
+			cancel()
 
-	// Graceful shutdown: drain dispatches if using tmux
-	if d.GetHandleType() == "session" {
-		logger.Info("draining tmux sessions", "timeout", "30s")
-		dispatch.GracefulShutdown(30 * time.Second)
+			interrupted, err := st.InterruptRunningDispatches()
+			if err != nil {
+				logger.Error("failed to interrupt running dispatches", "error", err)
+			} else if interrupted > 0 {
+				logger.Info("interrupted running dispatches", "count", interrupted)
+			}
+
+			logger.Info("cortex stopped", "shutdown_duration", time.Since(shutdownStart).String())
+			return
+		default:
+			shutdownStart := time.Now()
+			logger.Info("received unexpected signal, shutting down", "signal", sig)
+			cancel()
+			logger.Info("cortex stopped", "shutdown_duration", time.Since(shutdownStart).String())
+			return
+		}
 	}
-
-	// Mark all remaining running dispatches as interrupted
-	interrupted, err := st.InterruptRunningDispatches()
-	if err != nil {
-		logger.Error("failed to interrupt running dispatches", "error", err)
-	} else if interrupted > 0 {
-		logger.Info("interrupted running dispatches", "count", interrupted)
-	}
-
-	logger.Info("cortex stopped", "shutdown_duration", time.Since(shutdownStart).String())
 }

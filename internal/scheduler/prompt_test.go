@@ -71,7 +71,7 @@ func TestBuildPromptWithRole(t *testing.T) {
 		},
 		{
 			role:     "scrum",
-			contains: []string{"Scrum Master", "acceptance criteria", "stage:planning", "Unassign"},
+			contains: []string{"Scrum Master", "acceptance criteria", "stage:planning", "Unassign", "priority <bead-id> <p0|p1|p2|p3|p4>"},
 		},
 		{
 			role:     "planner",

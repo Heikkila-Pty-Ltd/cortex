@@ -104,7 +104,7 @@ Bead spec guardrail (required, token-light):
 - Scope sentence present in description (what is in/out).
 - Acceptance includes one explicit test line.
 - Acceptance includes one explicit DoD line.
-- Estimate is set (` + "`--estimate`" + ` > 0, minutes).
+- Estimate is set (`+"`--estimate`"+` > 0, minutes).
 
 Quality bar:
 - Acceptance criteria must be explicit and testable with clear pass/fail outcomes.
@@ -223,6 +223,19 @@ Use this exact structure in your final output:
 5. Break down if too large — create sub-tasks with bd create
 6. Transition to planning: bd update %s --set-labels stage:planning
 7. Unassign yourself: bd update %s --assignee=""
+
+## Matrix Command Handling (manual control)
+When you receive a direct Matrix command for this project, support these commands:
+
+- status
+- priority <bead-id> <p0|p1|p2|p3|p4>
+- cancel <dispatch-id>
+- create task "<title>" "<description>"
+
+Status response should be a brief project summary with key metrics.
+Priority response should confirm the priority change.
+Cancel response should confirm cancellation or provide an error message.
+Create response should include the new bead ID.
 `, b.ID, b.ID, b.ID, b.ID)
 	},
 	"planner": func(b beads.Bead, useBranches bool, prDiff string) string {

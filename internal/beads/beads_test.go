@@ -334,6 +334,43 @@ func TestListBeadsCtxFallsBackWhenAllUnsupported(t *testing.T) {
 	}
 }
 
+func TestUpdatePriorityCtx(t *testing.T) {
+	projectDir := t.TempDir()
+	beadsDir := filepath.Join(projectDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+	logPath := filepath.Join(projectDir, "args.log")
+
+	fakeBin := t.TempDir()
+	bdPath := filepath.Join(fakeBin, "bd")
+	script := "#!/bin/sh\n" +
+		"echo \"$@\" >> \"$BD_ARGS_LOG\"\n" +
+		"echo \"ok\"\n"
+	if err := os.WriteFile(bdPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake bd: %v", err)
+	}
+
+	t.Setenv("BD_ARGS_LOG", logPath)
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+	if err := UpdatePriorityCtx(context.Background(), beadsDir, "cortex-123", 2); err != nil {
+		t.Fatalf("UpdatePriorityCtx failed: %v", err)
+	}
+	args, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	got := string(args)
+	if !strings.Contains(got, "update cortex-123 --priority 2 --silent") {
+		t.Fatalf("unexpected bd args: %q", got)
+	}
+
+	if err := UpdatePriority("", "cortex-123", 2); err == nil {
+		t.Fatalf("expected error for empty beads dir")
+	}
+}
+
 func TestListBeadsCtxRecoversFromOutOfSyncDatabase(t *testing.T) {
 	projectDir := t.TempDir()
 	beadsDir := filepath.Join(projectDir, ".beads")

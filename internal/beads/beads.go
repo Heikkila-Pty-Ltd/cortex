@@ -121,6 +121,33 @@ func CreateIssueCtx(ctx context.Context, beadsDir, title, issueType string, prio
 	return issueID, nil
 }
 
+// UpdatePriority updates a bead priority.
+func UpdatePriority(beadsDir, beadID string, priority int) error {
+	return UpdatePriorityCtx(context.Background(), beadsDir, beadID, priority)
+}
+
+// UpdatePriorityCtx is the context-aware version of UpdatePriority.
+func UpdatePriorityCtx(ctx context.Context, beadsDir, beadID string, priority int) error {
+	beadsDir = strings.TrimSpace(beadsDir)
+	beadID = strings.TrimSpace(beadID)
+	if beadsDir == "" {
+		return fmt.Errorf("project beads dir is required")
+	}
+	if beadID == "" {
+		return fmt.Errorf("bead id is required")
+	}
+	if priority < 0 || priority > 4 {
+		return fmt.Errorf("priority must be between p0 and p4")
+	}
+
+	root := projectRoot(beadsDir)
+	_, err := runBD(ctx, root, "update", beadID, "--priority", strconv.Itoa(priority), "--silent")
+	if err != nil {
+		return fmt.Errorf("updating priority for %s: %w", beadID, err)
+	}
+	return nil
+}
+
 // ListBeads runs bd list --json --quiet in the project root and returns parsed beads.
 func ListBeads(beadsDir string) ([]Bead, error) {
 	return ListBeadsCtx(context.Background(), beadsDir)
