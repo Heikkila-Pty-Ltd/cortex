@@ -158,6 +158,115 @@ func TestHandleMetrics(t *testing.T) {
 	}
 }
 
+func TestHandleSafetyBlocks(t *testing.T) {
+	srv := setupTestServer(t)
+
+	// Empty — no active blocks.
+	req := httptest.NewRequest(http.MethodGet, "/safety/blocks", nil)
+	w := httptest.NewRecorder()
+	srv.handleSafetyBlocks(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["total"] != float64(0) {
+		t.Fatalf("expected total=0, got %v", resp["total"])
+	}
+
+	// Create blocks.
+	if err := srv.store.SetBlock("proj-a", "churn_block", time.Now().Add(5*time.Minute), "high failure rate"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.SetBlock("bead-xyz", "quarantine", time.Now().Add(10*time.Minute), "consecutive failures"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.SetBlockWithMetadata("system", "circuit_breaker", time.Now().Add(15*time.Minute), "gateway tripped", map[string]interface{}{"failures": 5}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Query again.
+	req = httptest.NewRequest(http.MethodGet, "/safety/blocks", nil)
+	w = httptest.NewRecorder()
+	srv.handleSafetyBlocks(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	resp = nil
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["total"] != float64(3) {
+		t.Fatalf("expected total=3, got %v", resp["total"])
+	}
+
+	countsByType, ok := resp["counts_by_type"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected counts_by_type map, got %T", resp["counts_by_type"])
+	}
+	if countsByType["churn_block"] != float64(1) {
+		t.Fatalf("expected 1 churn_block, got %v", countsByType["churn_block"])
+	}
+	if countsByType["quarantine"] != float64(1) {
+		t.Fatalf("expected 1 quarantine, got %v", countsByType["quarantine"])
+	}
+	if countsByType["circuit_breaker"] != float64(1) {
+		t.Fatalf("expected 1 circuit_breaker, got %v", countsByType["circuit_breaker"])
+	}
+
+	blocks, ok := resp["blocks"].([]any)
+	if !ok {
+		t.Fatalf("expected blocks array, got %T", resp["blocks"])
+	}
+	if len(blocks) != 3 {
+		t.Fatalf("expected 3 blocks, got %d", len(blocks))
+	}
+
+	// Method not allowed for POST.
+	req = httptest.NewRequest(http.MethodPost, "/safety/blocks", nil)
+	w = httptest.NewRecorder()
+	srv.handleSafetyBlocks(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 for POST, got %d", w.Code)
+	}
+}
+
+func TestHandleMetricsSafetyBlocks(t *testing.T) {
+	srv := setupTestServer(t)
+
+	// Create safety blocks.
+	if err := srv.store.SetBlock("proj-a", "churn_block", time.Now().Add(5*time.Minute), "high failure rate"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.SetBlock("bead-xyz", "quarantine", time.Now().Add(10*time.Minute), "consecutive failures"); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	w := httptest.NewRecorder()
+	srv.handleMetrics(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "cortex_safety_blocks_active") {
+		t.Fatal("missing cortex_safety_blocks_active metric")
+	}
+	if !strings.Contains(body, `cortex_safety_blocks_active{block_type="churn_block"} 1`) {
+		t.Fatalf("missing churn_block metric in:\n%s", body)
+	}
+	if !strings.Contains(body, `cortex_safety_blocks_active{block_type="quarantine"} 1`) {
+		t.Fatalf("missing quarantine metric in:\n%s", body)
+	}
+	if !strings.Contains(body, "cortex_safety_blocks_total 2") {
+		t.Fatalf("missing cortex_safety_blocks_total metric in:\n%s", body)
+	}
+}
+
 func TestServerStartStop(t *testing.T) {
 	srv := setupTestServer(t)
 	srv.cfg.API.Bind = "127.0.0.1:0" // random port

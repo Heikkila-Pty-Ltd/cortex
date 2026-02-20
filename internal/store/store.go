@@ -1321,6 +1321,70 @@ func (s *Store) RemoveBlock(scope, blockType string) error {
 	return nil
 }
 
+// GetActiveBlocks returns all safety blocks whose blocked_until is in the future.
+func (s *Store) GetActiveBlocks() ([]SafetyBlock, error) {
+	rows, err := s.db.Query(
+		`SELECT scope, block_type, blocked_until, reason, metadata, created_at, updated_at
+		 FROM safety_blocks
+		 WHERE blocked_until > datetime('now')
+		 ORDER BY block_type, scope`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: get active blocks: %w", err)
+	}
+	defer rows.Close()
+
+	var blocks []SafetyBlock
+	for rows.Next() {
+		var (
+			b            SafetyBlock
+			metadataJSON sql.NullString
+		)
+		if err := rows.Scan(&b.Scope, &b.BlockType, &b.BlockedUntil, &b.Reason, &metadataJSON, &b.CreatedAt, &b.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("store: scan active block: %w", err)
+		}
+		b.Metadata = make(map[string]interface{})
+		if metadataJSON.Valid && strings.TrimSpace(metadataJSON.String) != "" {
+			if err := json.Unmarshal([]byte(metadataJSON.String), &b.Metadata); err != nil {
+				return nil, fmt.Errorf("store: decode active block metadata: %w", err)
+			}
+		}
+		blocks = append(blocks, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate active blocks: %w", err)
+	}
+	return blocks, nil
+}
+
+// GetBlockCountsByType returns counts of active safety blocks grouped by block_type.
+func (s *Store) GetBlockCountsByType() (map[string]int, error) {
+	rows, err := s.db.Query(
+		`SELECT block_type, COUNT(*) FROM safety_blocks
+		 WHERE blocked_until > datetime('now')
+		 GROUP BY block_type
+		 ORDER BY block_type`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: get block counts by type: %w", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var blockType string
+		var count int
+		if err := rows.Scan(&blockType, &count); err != nil {
+			return nil, fmt.Errorf("store: scan block count: %w", err)
+		}
+		counts[blockType] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate block counts: %w", err)
+	}
+	return counts, nil
+}
+
 // IsBeadValidating returns whether a bead is currently marked validating.
 func (s *Store) IsBeadValidating(beadID string) (bool, error) {
 	block, err := s.GetBlock(strings.TrimSpace(beadID), "bead_validating")

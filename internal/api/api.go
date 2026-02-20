@@ -65,6 +65,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/recommendations", s.handleRecommendations)
 	mux.HandleFunc("/dispatches/", s.handleDispatchDetail)
+	mux.HandleFunc("/safety/blocks", s.handleSafetyBlocks)
 
 	// Temporal workflow endpoints
 	mux.HandleFunc("/workflows/start", s.authMiddleware.RequireAuth(s.handleWorkflowStart))
@@ -236,11 +237,83 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Safety block metrics
+	blockCounts, err := s.store.GetBlockCountsByType()
+	if err != nil {
+		s.logger.Warn("failed to get safety block counts", "error", err)
+	} else {
+		fmt.Fprintf(&b, "# HELP cortex_safety_blocks_active Active safety blocks by type\n")
+		fmt.Fprintf(&b, "# TYPE cortex_safety_blocks_active gauge\n")
+
+		types := make([]string, 0, len(blockCounts))
+		for bt := range blockCounts {
+			types = append(types, bt)
+		}
+		sort.Strings(types)
+		for _, bt := range types {
+			fmt.Fprintf(&b, "cortex_safety_blocks_active{block_type=%q} %d\n", bt, blockCounts[bt])
+		}
+
+		var total int
+		for _, c := range blockCounts {
+			total += c
+		}
+		fmt.Fprintf(&b, "# HELP cortex_safety_blocks_total Total active safety blocks\n")
+		fmt.Fprintf(&b, "# TYPE cortex_safety_blocks_total gauge\n")
+		fmt.Fprintf(&b, "cortex_safety_blocks_total %d\n", total)
+	}
+
 	fmt.Fprintf(&b, "# HELP cortex_uptime_seconds Uptime in seconds\n")
 	fmt.Fprintf(&b, "# TYPE cortex_uptime_seconds gauge\n")
 	fmt.Fprintf(&b, "cortex_uptime_seconds %.0f\n", time.Since(s.startTime).Seconds())
 
 	w.Write([]byte(b.String()))
+}
+
+// GET /safety/blocks — active safety blocks with counts
+func (s *Server) handleSafetyBlocks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	blocks, err := s.store.GetActiveBlocks()
+	if err != nil {
+		s.logger.Error("failed to get active blocks", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to query active blocks")
+		return
+	}
+
+	type blockResponse struct {
+		Scope        string         `json:"scope"`
+		BlockType    string         `json:"block_type"`
+		BlockedUntil string         `json:"blocked_until"`
+		Reason       string         `json:"reason"`
+		Metadata     map[string]any `json:"metadata,omitempty"`
+		CreatedAt    string         `json:"created_at"`
+	}
+
+	countsByType := make(map[string]int)
+	var items []blockResponse
+	for _, b := range blocks {
+		countsByType[b.BlockType]++
+		items = append(items, blockResponse{
+			Scope:        b.Scope,
+			BlockType:    b.BlockType,
+			BlockedUntil: b.BlockedUntil.Format(time.RFC3339),
+			Reason:       b.Reason,
+			Metadata:     b.Metadata,
+			CreatedAt:    b.CreatedAt.Format(time.RFC3339),
+		})
+	}
+
+	resp := map[string]any{
+		"total":          len(items),
+		"counts_by_type": countsByType,
+		"blocks":         items,
+	}
+
+	writeJSON(w, resp)
 }
 
 // GET /dispatches/{bead_id} — dispatch history for a bead

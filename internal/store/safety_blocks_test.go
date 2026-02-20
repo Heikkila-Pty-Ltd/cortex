@@ -86,6 +86,101 @@ func TestGetMissingBlockReturnsNil(t *testing.T) {
 	}
 }
 
+func TestSafetyMetrics(t *testing.T) {
+	s := tempSafetyStore(t)
+
+	// No blocks yet — counts should be empty.
+	counts, err := s.GetBlockCountsByType()
+	if err != nil {
+		t.Fatalf("GetBlockCountsByType (empty): %v", err)
+	}
+	if len(counts) != 0 {
+		t.Fatalf("expected empty counts, got %v", counts)
+	}
+
+	active, err := s.GetActiveBlocks()
+	if err != nil {
+		t.Fatalf("GetActiveBlocks (empty): %v", err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("expected no active blocks, got %d", len(active))
+	}
+
+	// Create blocks of different types.
+	if err := s.SetBlock("proj-a", "churn_block", time.Now().Add(5*time.Minute), "high failure rate"); err != nil {
+		t.Fatalf("SetBlock churn: %v", err)
+	}
+	if err := s.SetBlock("proj-b", "churn_block", time.Now().Add(5*time.Minute), "high failure rate b"); err != nil {
+		t.Fatalf("SetBlock churn 2: %v", err)
+	}
+	if err := s.SetBlock("bead-xyz", "quarantine", time.Now().Add(10*time.Minute), "consecutive failures"); err != nil {
+		t.Fatalf("SetBlock quarantine: %v", err)
+	}
+	if err := s.SetBlockWithMetadata("system", "circuit_breaker", time.Now().Add(15*time.Minute), "gateway tripped", map[string]interface{}{
+		"failures": 5,
+	}); err != nil {
+		t.Fatalf("SetBlock circuit_breaker: %v", err)
+	}
+
+	// Also insert an expired block — should NOT appear in active.
+	if err := s.SetBlock("old-scope", "expired_type", time.Now().Add(-time.Minute), "already expired"); err != nil {
+		t.Fatalf("SetBlock expired: %v", err)
+	}
+
+	// Verify counts by type.
+	counts, err = s.GetBlockCountsByType()
+	if err != nil {
+		t.Fatalf("GetBlockCountsByType: %v", err)
+	}
+	if counts["churn_block"] != 2 {
+		t.Fatalf("expected 2 churn_block, got %d", counts["churn_block"])
+	}
+	if counts["quarantine"] != 1 {
+		t.Fatalf("expected 1 quarantine, got %d", counts["quarantine"])
+	}
+	if counts["circuit_breaker"] != 1 {
+		t.Fatalf("expected 1 circuit_breaker, got %d", counts["circuit_breaker"])
+	}
+	if _, exists := counts["expired_type"]; exists {
+		t.Fatal("expired block should not appear in counts")
+	}
+
+	// Verify active blocks list.
+	active, err = s.GetActiveBlocks()
+	if err != nil {
+		t.Fatalf("GetActiveBlocks: %v", err)
+	}
+	if len(active) != 4 {
+		t.Fatalf("expected 4 active blocks, got %d", len(active))
+	}
+
+	// Verify circuit breaker metadata round-trips.
+	var foundCB bool
+	for _, b := range active {
+		if b.BlockType == "circuit_breaker" {
+			foundCB = true
+			if b.Metadata["failures"] == nil {
+				t.Fatal("expected circuit_breaker metadata to include failures")
+			}
+		}
+	}
+	if !foundCB {
+		t.Fatal("circuit_breaker block not found in active blocks")
+	}
+
+	// Remove a block and verify counts decrease.
+	if err := s.RemoveBlock("proj-a", "churn_block"); err != nil {
+		t.Fatalf("RemoveBlock: %v", err)
+	}
+	counts, err = s.GetBlockCountsByType()
+	if err != nil {
+		t.Fatalf("GetBlockCountsByType after remove: %v", err)
+	}
+	if counts["churn_block"] != 1 {
+		t.Fatalf("expected 1 churn_block after removal, got %d", counts["churn_block"])
+	}
+}
+
 func TestBeadValidatingRoundTrip(t *testing.T) {
 	s := tempSafetyStore(t)
 	beadID := "bead-validate"
