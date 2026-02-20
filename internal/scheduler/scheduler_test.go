@@ -1451,6 +1451,68 @@ func TestRunTick_MergeWorkflow(t *testing.T) {
 	})
 }
 
+func TestRenderPromptFormattingAndOrphans(t *testing.T) {
+	bead := beads.Bead{
+		ID:          "gold-001",
+		Title:       "Implement complex review workflow",
+		Description: "Update internal/scheduler/prompt.go, adjust internal/scheduler/templates/generic.tmpl, and refactor internal/scheduler/templates/generic.tmpl",
+		Acceptance:  "It is complete when all tests pass.\nIt is done when all docs are updated.",
+		Design:      "Use branch-aware prompts and validate the workflow with scheduler integration tests.",
+	}
+	proj := config.Project{
+		Workspace: "/tmp/workspace/cortex",
+	}
+
+	prompt := BuildPromptWithRoleBranches(bead, proj, "reviewer", true, "diff --git a/internal/scheduler/prompt.go b/internal/scheduler/prompt.go\n+// updated branch-aware rendering path\n")
+
+	if strings.Contains(prompt, "{{") || strings.Contains(prompt, "}}") {
+		t.Fatal("prompt contains raw template syntax")
+	}
+
+	if strings.Contains(prompt, "\n\n\n") {
+		t.Fatalf("prompt contains triple newline")
+	}
+
+	lines := strings.Split(prompt, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "## ") || strings.HasPrefix(line, "### ") {
+			blankBefore := 0
+			for j := i - 1; j >= 0 && strings.TrimSpace(lines[j]) == ""; j-- {
+				blankBefore++
+			}
+			if blankBefore != 1 {
+				t.Fatalf("header spacing incorrect for %q: expected 1 blank line before, got %d", line, blankBefore)
+			}
+		}
+	}
+}
+
+func TestRenderPromptGoldMaster(t *testing.T) {
+	bead := beads.Bead{
+		ID:          "gold-002",
+		Title:       "Refactor scheduler prompt formatting and docs",
+		Description: "Refactor internal/scheduler/prompt.go and update templates/generic.tmpl plus scripts/checks.sh",
+		Acceptance:  "1) Tests pass\n2) Manual review completed",
+		Design:      "Split prompt role instructions into templates with template rendering and branch-friendly paths.",
+	}
+	proj := config.Project{
+		Workspace: "/tmp/workspace/cortex",
+	}
+
+	prompt := BuildPromptWithRoleBranches(bead, proj, "coder", true, "diff --git a/internal/scheduler/prompt.go b/internal/scheduler/prompt.go\n+updated\n")
+	outputPath := "/tmp/cortex-goldmaster-prompt.txt"
+
+	if err := os.WriteFile(outputPath, []byte(prompt), 0o644); err != nil {
+		t.Fatalf("write gold master prompt failed: %v", err)
+	}
+
+	if !strings.Contains(prompt, bead.ID) || !strings.Contains(prompt, bead.Title) {
+		t.Fatalf("gold master prompt missing key bead metadata")
+	}
+
+	t.Logf("Gold master prompt written to %s", outputPath)
+}
+
 func stringContainsLinePrefix(lines []string, prefix string) bool {
 	for _, line := range lines {
 		if strings.HasPrefix(strings.TrimSpace(line), prefix) {

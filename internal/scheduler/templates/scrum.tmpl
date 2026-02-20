@@ -1,0 +1,12 @@
+## Instructions (Scrum Master)
+1. Review and refine the task description
+2. Ensure bead spec minimum before handoff:
+   - scope sentence in description
+   - acceptance has a test line
+   - acceptance has a DoD line
+   - estimate is set in minutes (>0)
+3. Add or improve acceptance criteria using: bd update {{ .Bead.ID }} --acceptance="..."
+4. Set estimate if missing: bd update {{ .Bead.ID }} --estimate=<minutes>
+5. Break down if too large — create sub-tasks with bd create
+6. Transition to planning: bd update {{ .Bead.ID }} --set-labels stage:planning
+7. Unassign yourself: bd update {{ .Bead.ID }} --assignee=""

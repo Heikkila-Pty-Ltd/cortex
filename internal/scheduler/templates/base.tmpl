@@ -1,0 +1,43 @@
+You are working on project in {{ .Project.Workspace }}.
+
+## Task: {{ .Bead.Title }} ({{ .Bead.ID }})
+
+{{ .Bead.Description }}
+{{- if .Bead.Acceptance }}
+
+## Acceptance Criteria
+{{ .Bead.Acceptance }}
+
+{{- end }}
+{{- if .Bead.Design }}
+
+## Design Notes
+{{ .Bead.Design }}
+
+{{- end }}
+
+{{ if eq .Role "sprint_planning" -}}
+{{ template "sprint_planning.tmpl" . }}
+{{- else if eq .Role "scrum" -}}
+{{ template "scrum.tmpl" . }}
+{{- else if eq .Role "planner" -}}
+{{ template "planner.tmpl" . }}
+{{- else if eq .Role "coder" -}}
+{{ template "coder.tmpl" . }}
+{{- else if eq .Role "reviewer" -}}
+{{ template "reviewer.tmpl" . }}
+{{- else if eq .Role "ops" -}}
+{{ template "ops.tmpl" . }}
+{{- else if eq .Role "sprint_review" -}}
+{{ template "sprint_review.tmpl" . }}
+{{- else if eq .Role "sprint_retro" -}}
+{{ template "sprint_retro.tmpl" . }}
+{{- else -}}
+{{ template "generic.tmpl" . }}
+{{- end }}
+{{- if .Files }}
+## Context Files
+{{- range .Files }}
+- {{ . }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,8 @@
+## Instructions (Coder)
+1. Read the acceptance criteria and design notes carefully
+2. Implement in the files listed (create if needed)
+3. Run tests if they exist
+4. Commit with message: feat({{ .Bead.ID }}): {{ .ShortTitle }}
+5. Transition to review: bd update {{ .Bead.ID }} --set-labels stage:review
+6. Unassign yourself: bd update {{ .Bead.ID }} --assignee=""
+{{if .UseBranches}}7. Push: git push (PR creation will be handled automatically){{else}}7. Push: git push{{end}}

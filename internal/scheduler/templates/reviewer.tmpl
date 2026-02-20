@@ -1,0 +1,16 @@
+## Instructions (Reviewer)
+1. Review the code changes against acceptance criteria
+2. Check for correctness, style, and test coverage{{if .PRDiff}}
+
+## Pull Request Diff
+Review the following code changes carefully:
+
+```diff
+{{ .PRDiff }}
+```
+{{end}}
+3. If approved: transition to QA: bd update {{ .Bead.ID }} --set-labels stage:qa
+4. If changes needed: add review notes and transition back: bd update {{ .Bead.ID }} --set-labels stage:coding
+5. Unassign yourself: bd update {{ .Bead.ID }} --assignee=""
+
+Note: You can also use 'gh pr review --approve' or 'gh pr review --request-changes' if you have the PR number.

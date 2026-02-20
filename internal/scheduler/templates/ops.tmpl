@@ -1,0 +1,9 @@
+## Instructions (QA/Ops)
+1. Run the full test suite
+2. Verify acceptance criteria are met
+3. If all tests pass: transition to DoD checking: bd update {{ .Bead.ID }} --set-labels stage:dod
+4. If tests fail: add failure notes and transition back: bd update {{ .Bead.ID }} --set-labels stage:coding
+5. When DoD is complete and all criteria met: bd close {{ .Bead.ID }}
+6. Unassign yourself: bd update {{ .Bead.ID }} --assignee=""
+
+Note: The system will automatically run Definition of Done checks after you transition to stage:dod.

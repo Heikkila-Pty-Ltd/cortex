@@ -55,7 +55,6 @@ type Scheduler struct {
 	systemPauseReason       string
 	systemPauseSince        time.Time
 	quarantine              map[string]time.Time
-	churnBlock              map[string]time.Time
 	epicBreakup             map[string]time.Time
 	claimAnomaly            map[string]time.Time
 	dispatchBlockAnomaly    map[string]time.Time
@@ -90,11 +89,15 @@ type Scheduler struct {
 
 	// Async DoD processing queue to avoid blocking scheduler ticks.
 	dodWorkerOnce sync.Once
+	// Background DoD evaluation locking
 	dodQueue      chan dodQueueItem
 	dodMu         sync.Mutex
 	dodQueued     map[string]struct{}
 	dodInFlight   map[string]struct{}
 	dodActive     dodExecutionState
+
+	// Multi-node safety
+	leaderLock *LeaderLock
 }
 
 type dodQueueItem struct {
@@ -207,8 +210,6 @@ func NewWithConfigManager(cfgManager config.ConfigManager, s *store.Store, rl *d
 		},
 		logger:                    logger,
 		dryRun:                    dryRun,
-		quarantine:                make(map[string]time.Time),
-		churnBlock:                make(map[string]time.Time),
 		epicBreakup:               make(map[string]time.Time),
 		claimAnomaly:              make(map[string]time.Time),
 		dispatchBlockAnomaly:      make(map[string]time.Time),
@@ -589,6 +590,21 @@ func (s *Scheduler) ensureTeamSafe(project, workspace, model string, roles []str
 
 // Start runs the scheduler tick loop until the context is cancelled.
 func (s *Scheduler) Start(ctx context.Context) {
+	s.logger.Info("starting scheduler")
+
+	// Acquire leadership blockingly before starting the main loop
+	// We use a graceful context so if the scheduler is stopping before acquiring, it cancels cleanly.
+	s.logger.Info("waiting to acquire leadership lock...")
+	if err := s.leaderLock.Acquire(ctx); err != nil {
+		if errors.Is(err, context.Canceled) {
+			s.logger.Info("scheduler stopped while waiting for leadership lock")
+			return
+		}
+		s.logger.Error("failed to acquire leadership, shutting down scheduler", "error", err)
+		return
+	}
+	s.logger.Info("leadership acquired successfully, starting scheduler loops")
+
 	s.startDoDWorker(ctx)
 
 	ticker := time.NewTicker(s.cfg.General.TickInterval.Duration)
@@ -3223,7 +3239,9 @@ func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, project
 
 	key := projectName + ":" + bead.ID
 	if recentFailureLike < churnDispatchThreshold && recentAll < churnTotalDispatchThreshold {
-		delete(s.churnBlock, key)
+		if err := s.store.RemoveBlock(key, "churn"); err != nil {
+			s.logger.Warn("failed to remove churn block after recovery", "error", err)
+		}
 		return false
 	}
 
@@ -3236,8 +3254,10 @@ func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, project
 		triggerMode = "all_status"
 	}
 
-	last, seen := s.churnBlock[key]
-	if seen && now.Sub(last) < churnBlockInterval {
+	block, err := s.store.GetBlock(key, "churn")
+	if err != nil {
+		s.logger.Warn("failed to check database for churn block", "error", err)
+	} else if block != nil && now.Sub(block.CreatedAt) < churnBlockInterval {
 		s.logger.Warn("bead blocked by churn guard",
 			"project", projectName,
 			"bead", bead.ID,
@@ -3306,7 +3326,12 @@ func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, project
 	_ = s.store.RecordHealthEventWithDispatch("bead_churn_blocked",
 		fmt.Sprintf("project %s bead %s blocked by churn guard mode=%s failure_like=%d/%d all_status=%d/%d in %s", projectName, bead.ID, triggerMode, recentFailureLike, churnDispatchThreshold, recentAll, churnTotalDispatchThreshold, churnWindow),
 		0, bead.ID)
-	s.churnBlock[key] = now
+		
+	metadata := map[string]interface{}{"failure_like": recentFailureLike, "all_status": recentAll}	
+	if err := s.store.SetBlockWithMetadata(key, "churn", now.Add(churnBlockInterval), "churn guard triggered", metadata); err != nil {
+		s.logger.Warn("failed to record churn block in database", "error", err)
+	}
+	
 	return true
 }
 
@@ -3350,14 +3375,17 @@ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
 		return false
 	}
 	if !quarantined {
-		delete(s.quarantine, beadID)
+		if err := s.store.RemoveBlock(beadID, "quarantine"); err != nil {
+			s.logger.Warn("failed to remove quarantine block", "error", err)
+		}
 		return false
 	}
 
 	now := time.Now()
-	last, seen := s.quarantine[beadID]
-	if !seen || now.Sub(last) >= failureQuarantineLogInterval {
-		s.quarantine[beadID] = now
+	block, err := s.store.GetBlock(beadID, "quarantine")
+	if err != nil {
+		s.logger.Warn("failed to check database for quarantine block", "error", err)
+	} else if block == nil || now.Sub(block.CreatedAt) >= failureQuarantineLogInterval {
 		s.logger.Warn("bead quarantined due to repeated failures",
 			"bead", beadID,
 			"threshold", failureQuarantineThreshold,
@@ -3366,6 +3394,10 @@ func (s *Scheduler) isFailureQuarantined(beadID string) bool {
 		_ = s.store.RecordHealthEvent("bead_quarantined",
 			fmt.Sprintf("bead %s quarantined after %d consecutive failures in %s",
 				beadID, failureQuarantineThreshold, failureQuarantineWindow))
+
+		if err := s.store.SetBlock(beadID, "quarantine", now.Add(failureQuarantineWindow), "repeated failures"); err != nil {
+			s.logger.Warn("failed to record quarantine block in database", "error", err)
+		}
 	}
 	return true
 }

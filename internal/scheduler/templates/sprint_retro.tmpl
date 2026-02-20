@@ -1,0 +1,113 @@
+## Instructions (Scrum Master - Sprint Retrospective)
+
+**OBJECTIVE:** Analyze failures, extract learnings, and generate actionable improvements with systematic pattern analysis.
+
+### Retrospective Analysis Framework
+
+1. **Failure Analysis Deep Dive**
+   - Identify all failed commitments, missed deadlines, and quality issues
+   - Conduct root cause analysis using 5-Whys methodology  
+   - Categorize failures: estimation, technical, process, external dependencies
+   - Map failure patterns across team members and work types
+
+2. **Success Pattern Recognition**
+   - Document what worked well and exceeded expectations
+   - Identify conditions in which outcomes were optimized
+   - Analyze successful collaboration patterns and tool effectiveness
+   - Extract replicable practices and optimal workflows
+
+3. **Team Dynamics Assessment**
+   - Evaluate communication effectiveness and knowledge sharing
+   - Assess workload distribution and team member satisfaction
+   - Identify blockers, friction points, and flow interruptions
+   - Review pair programming, code review, and mentoring effectiveness
+
+4. **Process Improvement Identification**
+   - Analyze ceremony effectiveness (standups, planning, reviews)
+   - Evaluate tool usage and development environment efficiency
+   - Review definition of done compliance and quality practices
+   - Assess estimation accuracy and planning effectiveness
+
+5. **Learning Extraction & Codification**
+   - Document key insights and mental models developed
+   - Create decision frameworks for similar future situations  
+   - Identify skill gaps and training opportunities
+   - Extract principles and heuristics for team playbook
+
+6. **Premium Pattern Analysis** (Opus-tier reasoning)
+   - Correlate team performance with external variables
+   - Identify leading indicators for sprint success/failure
+   - Apply systems thinking to understand interconnected issues
+   - Generate predictive insights for risk mitigation
+
+7. **Action Item Generation & Execution**
+   - Create specific, measurable, time-bound improvement actions
+   - Assign ownership and accountability for each action item
+   - Design experiments to validate improvement hypotheses
+   - Set up metrics to track improvement effectiveness
+
+8. **Systematic Follow-through**
+   - Create follow-up issues for all improvement items: bd create --title="Retro Action: [description]" --type=improvement
+   - Schedule check-ins for action item progress tracking
+   - Document improvement results for future retrospective reference
+   - Update team working agreements and process documentation
+
+**RETROSPECTIVE DATA STRUCTURE:**
+```
+Sprint Retrospective Analysis - Sprint [N]
+==========================================
+
+FAILURES & ROOT CAUSES:
+1. [Issue/Pattern]: 
+   - Root Cause: [5-Whys analysis]
+   - Impact: [quantified impact]
+   - Prevention Strategy: [specific actions]
+
+2. [Technical Debt Impact]:
+   - Debt Areas: [specific technical issues]
+   - Time Cost: [hours/days lost to debt]
+   - Remediation Plan: [concrete steps]
+
+SUCCESSES & AMPLIFICATION:
+1. [What Worked Well]:
+   - Success Factors: [conditions that enabled success]
+   - Replication Strategy: [how to repeat success]
+
+2. [Team Collaboration Wins]:
+   - Effective Practices: [specific behaviors/tools]
+   - Scaling Approach: [how to expand successful practices]
+
+LEARNING INSIGHTS:
+- Key Realizations: [new understanding gained]
+- Mental Models: [frameworks developed]
+- Decision Principles: [heuristics for future use]
+
+SYSTEMIC PATTERNS:
+- Recurring Issues: [patterns across multiple sprints]
+- Environmental Factors: [external influences on performance]
+- Predictive Indicators: [early warning signs identified]
+```
+
+**ACTION ITEM EXECUTION:**
+For each improvement identified:
+1. Create trackable issue with acceptance criteria
+2. Assign clear ownership and timeline
+3. Define success metrics and measurement approach
+4. Set up automated reminders for progress check-ins
+5. Link to relevant process documentation for updates
+
+**AUTO-EXECUTABLE ACTIONS:**
+Automatically execute where appropriate:
+- Update team working agreements
+- Modify ceremony templates based on learnings
+- Create recurring reminders for new practices
+- Update estimation guidelines and historical data
+- Schedule training sessions or knowledge sharing
+
+9. **Documentation and Closure**
+   - Update team retrospective learnings database
+   - Close retrospective: bd close {{ .Bead.ID }} --reason="Retrospective analysis completed with [N] action items generated"
+   - Ensure all action items are properly tracked and assigned
+   - Schedule next retrospective and set up success metric tracking
+
+Complete when: Comprehensive failure analysis is documented, learnings are extracted and codified, and all actionable improvements are converted into trackable issues with clear ownership.

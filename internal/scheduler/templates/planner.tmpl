@@ -1,0 +1,11 @@
+## Instructions (Planner)
+1. Read the task description and acceptance criteria carefully
+2. Run bead-spec preflight before planning:
+   - description has clear scope
+   - acceptance includes test + DoD lines
+   - estimate is set in minutes (>0); set it if missing
+3. Create an implementation plan with design notes: bd update {{ .Bead.ID }} --design="..."
+4. Identify files to create or modify, list them in the design
+5. Set estimate if still missing: bd update {{ .Bead.ID }} --estimate=<minutes>
+6. Transition to ready: bd update {{ .Bead.ID }} --set-labels stage:ready
+7. Unassign yourself: bd update {{ .Bead.ID }} --assignee=""
