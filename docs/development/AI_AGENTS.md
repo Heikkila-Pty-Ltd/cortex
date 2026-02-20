@@ -2,6 +2,21 @@
 
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 
+## Branch and Worktree Onboarding
+
+Before coding in Cortex, enforce the branch workflow:
+
+1. Install the local hook:
+   - `./scripts/hooks/install.sh`
+2. Start from clean `master`, then create one of:
+   - `feature/*`, `chore/*`, `fix/*`, `refactor/*`
+3. Optionally create a worktree when running multiple tasks:
+   - `git worktree add -b feature/your-feature ../cortex-feature`
+4. Run the worktree training checklist in:
+   - `docs/development/GIT_WORKTREE_WORKFLOW.md`
+
+For all code changes, keep PRs on branches only (never direct `master` commits), and include reviewable commits before finishing a bead.
+
 ## Quick Reference
 
 ```bash

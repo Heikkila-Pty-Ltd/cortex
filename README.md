@@ -67,6 +67,23 @@ Recommend running in `--dev` mode for visible logs:
 ./cortex --config cortex.toml --dev
 ```
 
+## Branch and Worktree Workflow
+
+We do not allow direct commits to `master`.
+
+- Start all work on one of these branch types: `feature/*`, `chore/*`, `fix/*`, `refactor/*`.
+- Use `git worktree` for parallel development (one feature per worktree).
+- Install the local hook guard:
+
+```bash
+./scripts/hooks/install.sh
+```
+
+### Enforcement references
+
+- `CONTRIBUTING.md` for branch naming and PR flow.
+- `docs/development/GIT_WORKTREE_WORKFLOW.md` for safe parallel worktree setup.
+
 ### 4. Feed It
 In another terminal, go to your project and create a task:
 ```bash
