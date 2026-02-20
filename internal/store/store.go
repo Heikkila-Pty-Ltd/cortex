@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -137,6 +138,17 @@ type ClaimLease struct {
 	HeartbeatAt time.Time
 }
 
+// SafetyBlock represents a persisted throttling or coordination guard.
+type SafetyBlock struct {
+	Scope        string
+	BlockType    string
+	BlockedUntil time.Time
+	Reason       string
+	Metadata     map[string]interface{}
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
 const schema = `
 CREATE TABLE IF NOT EXISTS dispatches (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -251,6 +263,17 @@ CREATE TABLE IF NOT EXISTS claim_leases (
 	heartbeat_at DATETIME NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS safety_blocks (
+	scope TEXT NOT NULL,
+	block_type TEXT NOT NULL,
+	blocked_until DATETIME NOT NULL,
+	reason TEXT NOT NULL DEFAULT '',
+	metadata TEXT NOT NULL DEFAULT '{}',
+	created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+	updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
+	PRIMARY KEY(scope, block_type)
+);
+
 CREATE TABLE IF NOT EXISTS sprint_boundaries (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	sprint_number INTEGER NOT NULL UNIQUE,
@@ -276,6 +299,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_overflow_queue_bead_role ON overflow_queue
 CREATE INDEX IF NOT EXISTS idx_overflow_queue_priority_enqueued_at ON overflow_queue(priority, enqueued_at);
 CREATE INDEX IF NOT EXISTS idx_claim_leases_project ON claim_leases(project);
 CREATE INDEX IF NOT EXISTS idx_claim_leases_heartbeat ON claim_leases(heartbeat_at);
+CREATE INDEX IF NOT EXISTS idx_safety_blocks_scope_type ON safety_blocks(scope, block_type);
+CREATE INDEX IF NOT EXISTS idx_safety_blocks_blocked_until ON safety_blocks(blocked_until);
 CREATE INDEX IF NOT EXISTS idx_sprint_boundaries_start ON sprint_boundaries(sprint_start);
 CREATE INDEX IF NOT EXISTS idx_sprint_boundaries_end ON sprint_boundaries(sprint_end);
 CREATE INDEX IF NOT EXISTS idx_execution_plan_gate_active ON execution_plan_gate(active_plan_id);
@@ -577,6 +602,25 @@ func migrate(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_overflow_queue_priority_enqueued_at ON overflow_queue(priority, enqueued_at)`); err != nil {
 		return fmt.Errorf("create overflow_queue priority index: %w", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS safety_blocks (
+			scope TEXT NOT NULL,
+			block_type TEXT NOT NULL,
+			blocked_until DATETIME NOT NULL,
+			reason TEXT NOT NULL DEFAULT '',
+			metadata TEXT NOT NULL DEFAULT '{}',
+			created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+			updated_at DATETIME NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY(scope, block_type)
+		)`); err != nil {
+		return fmt.Errorf("create safety_blocks table: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_safety_blocks_scope_type ON safety_blocks(scope, block_type)`); err != nil {
+		return fmt.Errorf("create safety blocks scope index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_safety_blocks_blocked_until ON safety_blocks(blocked_until)`); err != nil {
+		return fmt.Errorf("create safety blocks blocked_until index: %w", err)
 	}
 
 	if err := migrateBeadStagesTable(db); err != nil {
@@ -1087,6 +1131,134 @@ func (s *Store) RemoveOverflowItem(beadID string) (int64, error) {
 		return 0, fmt.Errorf("store: overflow rows affected: %w", err)
 	}
 	return affected, nil
+}
+
+// GetBlock returns a persisted safety block by scope and block type.
+func (s *Store) GetBlock(scope, blockType string) (*SafetyBlock, error) {
+	scope = strings.TrimSpace(scope)
+	blockType = strings.TrimSpace(blockType)
+	if scope == "" || blockType == "" {
+		return nil, nil
+	}
+
+	var (
+		blockedUntil time.Time
+		reason       string
+		metadataJSON sql.NullString
+		createdAt    time.Time
+		updatedAt    time.Time
+	)
+
+	if err := s.db.QueryRow(
+		`SELECT blocked_until, reason, metadata, created_at, updated_at FROM safety_blocks WHERE scope = ? AND block_type = ?`,
+		scope, blockType,
+	).Scan(&blockedUntil, &reason, &metadataJSON, &createdAt, &updatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("store: get block: %w", err)
+	}
+
+	metadata := make(map[string]interface{})
+	if metadataJSON.Valid && strings.TrimSpace(metadataJSON.String) != "" {
+		if err := json.Unmarshal([]byte(metadataJSON.String), &metadata); err != nil {
+			return nil, fmt.Errorf("store: decode block metadata: %w", err)
+		}
+	}
+
+	return &SafetyBlock{
+		Scope:        scope,
+		BlockType:    blockType,
+		BlockedUntil: blockedUntil,
+		Reason:       reason,
+		Metadata:     metadata,
+		CreatedAt:    createdAt,
+		UpdatedAt:    updatedAt,
+	}, nil
+}
+
+// SetBlock creates or updates a persisted safety block.
+func (s *Store) SetBlock(scope, blockType string, blockedUntil time.Time, reason string) error {
+	return s.SetBlockWithMetadata(scope, blockType, blockedUntil, reason, nil)
+}
+
+// SetBlockWithMetadata creates or updates a persisted safety block with metadata.
+func (s *Store) SetBlockWithMetadata(scope, blockType string, blockedUntil time.Time, reason string, metadata map[string]interface{}) error {
+	scope = strings.TrimSpace(scope)
+	blockType = strings.TrimSpace(blockType)
+	reason = strings.TrimSpace(reason)
+	if scope == "" || blockType == "" {
+		return fmt.Errorf("store: set block: scope and block_type are required")
+	}
+
+	if blockedUntil.IsZero() {
+		blockedUntil = time.Now()
+	}
+
+	if metadata == nil {
+		metadata = make(map[string]interface{})
+	}
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("store: encode block metadata: %w", err)
+	}
+
+	_, err = s.db.Exec(
+		`INSERT INTO safety_blocks (scope, block_type, blocked_until, reason, metadata, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+		 ON CONFLICT(scope, block_type) DO UPDATE SET
+		   blocked_until = excluded.blocked_until,
+		   reason = excluded.reason,
+		   metadata = excluded.metadata,
+		   created_at = excluded.created_at,
+		   updated_at = datetime('now')`,
+		scope,
+		blockType,
+		blockedUntil.UTC().Format(time.DateTime),
+		reason,
+		string(metadataJSON),
+	)
+	if err != nil {
+		return fmt.Errorf("store: set block: %w", err)
+	}
+
+	return nil
+}
+
+// RemoveBlock deletes a persisted safety block.
+func (s *Store) RemoveBlock(scope, blockType string) error {
+	scope = strings.TrimSpace(scope)
+	blockType = strings.TrimSpace(blockType)
+	if scope == "" || blockType == "" {
+		return nil
+	}
+
+	if _, err := s.db.Exec(`DELETE FROM safety_blocks WHERE scope = ? AND block_type = ?`, scope, blockType); err != nil {
+		return fmt.Errorf("store: remove block: %w", err)
+	}
+	return nil
+}
+
+// IsBeadValidating returns whether a bead is currently marked validating.
+func (s *Store) IsBeadValidating(beadID string) (bool, error) {
+	block, err := s.GetBlock(strings.TrimSpace(beadID), "bead_validating")
+	if err != nil {
+		return false, fmt.Errorf("store: check bead validating: %w", err)
+	}
+	if block == nil {
+		return false, nil
+	}
+	return time.Now().Before(block.BlockedUntil), nil
+}
+
+// SetBeadValidating sets a validating block for the given bead until the provided time.
+func (s *Store) SetBeadValidating(beadID string, until time.Time) error {
+	return s.SetBlock(strings.TrimSpace(beadID), "bead_validating", until, "bead validating")
+}
+
+// ClearBeadValidating removes the validating block for the given bead.
+func (s *Store) ClearBeadValidating(beadID string) error {
+	return s.RemoveBlock(strings.TrimSpace(beadID), "bead_validating")
 }
 
 // ListOverflowQueue returns all persisted overflow queue entries.
