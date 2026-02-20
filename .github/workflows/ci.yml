@@ -20,7 +20,7 @@ jobs:
           if [[ "$GITHUB_HEAD_REF" == "master" || "$GITHUB_HEAD_REF" == "main" ]]; then
             echo "::error::PRs must not originate from master/main."
             echo "::error::Branching workflow requires feature/*, chore/*, fix/*, or refactor/* source branches."
-            echo "::error::If this is a production hotfix, use an approved hotfix branch and PR path."
+            echo "::error::If this is a production hotfix, use a tracked `hotfix/*` PR path and include approval evidence."
             echo "::error::See CONTRIBUTING.md for the full process and docs/development/GIT_WORKTREE_WORKFLOW.md."
             exit 1
           fi
