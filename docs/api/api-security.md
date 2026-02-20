@@ -329,7 +329,10 @@ jq -r 'select(.method == "POST") | .duration' \
 
 ### Prometheus Metrics
 
-Cortex exposes a `/metrics` endpoint (no auth required). Key security-related metrics:
+> [!NOTE]
+> Prometheus metrics are **planned but not yet implemented**. The metric names below are the target schema. Today, monitoring relies on audit log queries (above) and the `/health` + `/status` JSON endpoints.
+
+Target metrics (once instrumented):
 
 | Metric | Type | Description |
 |--------|------|-------------|
@@ -341,7 +344,7 @@ Cortex exposes a `/metrics` endpoint (no auth required). Key security-related me
 
 ### Alerting Rules
 
-Example Prometheus alerting rules for production:
+Ready-to-use Prometheus alerting rules for when metrics are instrumented:
 
 ```yaml
 # prometheus/rules/cortex-security.yml

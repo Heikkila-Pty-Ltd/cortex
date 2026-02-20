@@ -197,6 +197,8 @@ curl localhost:8900/health     # Health check (200/503)
 curl localhost:8900/projects   # List managed projects
 ```
 
+> **Note:** There is no `/metrics` endpoint yet. Prometheus instrumentation is [planned](docs/api/api-security.md#prometheus-metrics). Today, use `/status` and audit logs for monitoring.
+
 See [`api-security.md`](docs/api/api-security.md) for token auth, audit logging, and deployment patterns.
 
 ---
@@ -252,6 +254,21 @@ CHUM executes code. Agents run with the same permissions as the process.
 | [`CHUM_BACKLOG.md`](docs/architecture/CHUM_BACKLOG.md) | Strategic roadmap + greenfield epics |
 | [`CONFIG.md`](docs/architecture/CONFIG.md) | Full configuration reference |
 | [`api-security.md`](docs/api/api-security.md) | Token auth, audit logging, deployment patterns |
+
+---
+
+## Known Limitations
+
+Cortex is alpha. These are real gaps, not features:
+
+| Gap | Impact | Status |
+|-----|--------|--------|
+| **No Prometheus metrics** | `/metrics` endpoint doesn't exist yet; monitoring uses `/status` + audit logs | Planned — metric schema defined in [api-security.md](docs/api/api-security.md) |
+| **No sandboxing** | Agents run with host process permissions; a hallucinated `rm -rf` is your problem | Planned — ephemeral Docker/Firecracker is on the [roadmap](docs/architecture/CHUM_BACKLOG.md) |
+| **Single-host SQLite** | No horizontal worker scaling; state DB is a local file | Acceptable for current throughput; Postgres migration path exists |
+| **No RBAC** | API auth is token-based, no role differentiation | Control vs read-only endpoint split is enforced; fine-grained roles are not |
+| **Test coverage** | Integration tests exist but edge-case coverage is thin | Improving via CHUM's own DoD requirements on every bead |
+| **No web UI** | All interaction via CLI, API, or Matrix commands | By design — Cortex is an engine, not a dashboard |
 
 ---
 
