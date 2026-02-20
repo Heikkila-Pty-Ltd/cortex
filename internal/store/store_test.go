@@ -1880,3 +1880,165 @@ WHERE id = ?
 		t.Fatalf("seed dispatch: %v", err)
 	}
 }
+
+func TestStoreTokenUsage(t *testing.T) {
+	s := tempStore(t)
+
+	// Create a dispatch to reference
+	dispatchID, err := s.RecordDispatch("bead-tok-1", "proj-a", "claude", "anthropic", "premium", 0, "", "test", "", "", "temporal")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Store per-activity token usage
+	err = s.StoreTokenUsage(dispatchID, "bead-tok-1", "proj-a", "execute", "claude", TokenUsage{
+		InputTokens:         1500,
+		OutputTokens:        800,
+		CacheReadTokens:     200,
+		CacheCreationTokens: 50,
+		CostUSD:             0.042,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.StoreTokenUsage(dispatchID, "bead-tok-1", "proj-a", "review", "codex", TokenUsage{
+		InputTokens:         500,
+		OutputTokens:        300,
+		CacheReadTokens:     0,
+		CacheCreationTokens: 0,
+		CostUSD:             0.01,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Query back
+	records, err := s.GetTokenUsageByDispatch(dispatchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(records))
+	}
+
+	// First record: execute
+	if records[0].ActivityName != "execute" {
+		t.Errorf("expected activity 'execute', got %q", records[0].ActivityName)
+	}
+	if records[0].InputTokens != 1500 {
+		t.Errorf("expected 1500 input tokens, got %d", records[0].InputTokens)
+	}
+	if records[0].OutputTokens != 800 {
+		t.Errorf("expected 800 output tokens, got %d", records[0].OutputTokens)
+	}
+	if records[0].CacheReadTokens != 200 {
+		t.Errorf("expected 200 cache read tokens, got %d", records[0].CacheReadTokens)
+	}
+	if records[0].CacheCreationTokens != 50 {
+		t.Errorf("expected 50 cache creation tokens, got %d", records[0].CacheCreationTokens)
+	}
+	if records[0].Agent != "claude" {
+		t.Errorf("expected agent 'claude', got %q", records[0].Agent)
+	}
+
+	// Second record: review
+	if records[1].ActivityName != "review" {
+		t.Errorf("expected activity 'review', got %q", records[1].ActivityName)
+	}
+	if records[1].InputTokens != 500 {
+		t.Errorf("expected 500 input tokens, got %d", records[1].InputTokens)
+	}
+}
+
+func TestGetTokenUsageSummary(t *testing.T) {
+	s := tempStore(t)
+
+	dispatchID, err := s.RecordDispatch("bead-sum-1", "proj-a", "claude", "anthropic", "premium", 0, "", "test", "", "", "temporal")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Store several records
+	s.StoreTokenUsage(dispatchID, "bead-sum-1", "proj-a", "execute", "claude", TokenUsage{
+		InputTokens:         1000,
+		OutputTokens:        500,
+		CacheReadTokens:     100,
+		CacheCreationTokens: 50,
+		CostUSD:             0.03,
+	})
+	s.StoreTokenUsage(dispatchID, "bead-sum-1", "proj-a", "review", "codex", TokenUsage{
+		InputTokens:         800,
+		OutputTokens:        400,
+		CacheReadTokens:     0,
+		CacheCreationTokens: 0,
+		CostUSD:             0.02,
+	})
+	s.StoreTokenUsage(dispatchID, "bead-sum-1", "proj-a", "execute", "claude", TokenUsage{
+		InputTokens:         600,
+		OutputTokens:        300,
+		CacheReadTokens:     50,
+		CacheCreationTokens: 0,
+		CostUSD:             0.015,
+	})
+
+	// Summary by agent
+	since := time.Now().Add(-1 * time.Hour)
+	summaries, err := s.GetTokenUsageSummary("agent", since)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should have 2 groups: claude and codex
+	if len(summaries) != 2 {
+		t.Fatalf("expected 2 summary groups, got %d", len(summaries))
+	}
+
+	// claude should be first (higher cost)
+	claudeFound := false
+	for _, s := range summaries {
+		if s.Key == "claude" {
+			claudeFound = true
+			if s.TotalInputTokens != 1600 {
+				t.Errorf("claude total input tokens = %d, want 1600", s.TotalInputTokens)
+			}
+			if s.TotalCacheReadTokens != 150 {
+				t.Errorf("claude total cache read tokens = %d, want 150", s.TotalCacheReadTokens)
+			}
+			if s.TotalCacheCreationTokens != 50 {
+				t.Errorf("claude total cache creation tokens = %d, want 50", s.TotalCacheCreationTokens)
+			}
+			if s.RecordCount != 2 {
+				t.Errorf("claude record count = %d, want 2", s.RecordCount)
+			}
+		}
+	}
+	if !claudeFound {
+		t.Error("expected claude in summary")
+	}
+
+	// Summary by activity_name
+	actSummaries, err := s.GetTokenUsageSummary("activity_name", since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(actSummaries) != 2 {
+		t.Fatalf("expected 2 activity groups, got %d", len(actSummaries))
+	}
+
+	// Invalid groupBy
+	_, err = s.GetTokenUsageSummary("invalid_column", since)
+	if err == nil {
+		t.Fatal("expected error for invalid groupBy")
+	}
+}
+
+func TestGetTokenUsageByDispatch_Empty(t *testing.T) {
+	s := tempStore(t)
+	records, err := s.GetTokenUsageByDispatch(9999)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Errorf("expected 0 records for nonexistent dispatch, got %d", len(records))
+	}
+}

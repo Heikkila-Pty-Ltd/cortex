@@ -69,6 +69,16 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 	if err := workflow.ExecuteActivity(planCtx, a.StructuredPlanActivity, req).Get(ctx, &plan); err != nil {
 		return fmt.Errorf("plan generation failed: %w", err)
 	}
+	if plan.TokenUsage.InputTokens > 0 || plan.TokenUsage.OutputTokens > 0 || plan.TokenUsage.CostUSD > 0 ||
+		plan.TokenUsage.CacheReadTokens > 0 || plan.TokenUsage.CacheCreationTokens > 0 {
+		logger.Info("Plan tokens recorded in workflow",
+			"InputTokens", plan.TokenUsage.InputTokens,
+			"OutputTokens", plan.TokenUsage.OutputTokens,
+			"CacheReadTokens", plan.TokenUsage.CacheReadTokens,
+			"CacheCreationTokens", plan.TokenUsage.CacheCreationTokens,
+			"CostUSD", plan.TokenUsage.CostUSD,
+		)
+	}
 
 	logger.Info("Plan generated",
 		"Summary", plan.Summary,
@@ -83,21 +93,47 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 
 	signalChan := workflow.GetSignalChannel(ctx, "human-approval")
 	var signalVal string
+
+	currentAgent := req.Agent
+	currentReviewer := req.Reviewer
+	var allFailures []string
+	var totalTokens TokenUsage
+	var activityTokens []ActivityTokenUsage
+
+	// Helper: reset per-attempt token tracking with plan tokens as baseline.
+	planHasTokens := plan.TokenUsage.InputTokens > 0 || plan.TokenUsage.OutputTokens > 0 || plan.TokenUsage.CostUSD > 0 ||
+		plan.TokenUsage.CacheReadTokens > 0 || plan.TokenUsage.CacheCreationTokens > 0
+	resetAttemptTokens := func() {
+		totalTokens = TokenUsage{}
+		totalTokens.Add(plan.TokenUsage)
+		activityTokens = nil
+		if planHasTokens {
+			activityTokens = append(activityTokens, ActivityTokenUsage{
+				ActivityName: "plan",
+				Agent:        req.Agent,
+				Tokens:       plan.TokenUsage,
+			})
+		}
+	}
+	resetAttemptTokens()
+
 	signalChan.Receive(ctx, &signalVal)
 
 	if signalVal == "REJECTED" {
-		recordOutcome(ctx, recordOpts, a, req, "rejected", 0, 0, false, "Plan rejected by human", startTime, 0)
+		recordOutcome(ctx, recordOpts, a, req, "rejected", 0, 0, false, "Plan rejected by human", startTime, 0,
+			totalTokens, activityTokens)
 		return fmt.Errorf("plan rejected by human")
 	}
 
 	// ===== PHASE 3-6: EXECUTE → REVIEW → DOD LOOP =====
-	currentAgent := req.Agent
-	currentReviewer := req.Reviewer
-	var allFailures []string
 	handoffCount := 0
 
 	for attempt := 0; attempt < maxDoDRetries; attempt++ {
 		logger.Info("Execution attempt", "Attempt", attempt+1, "Agent", currentAgent)
+
+		// Reset token tracking to plan baseline for each attempt.
+		// Only the last attempt's costs are reported in the outcome.
+		resetAttemptTokens()
 
 		// --- EXECUTE ---
 		execCtx := workflow.WithActivityOptions(ctx, execOpts)
@@ -106,6 +142,10 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 			allFailures = append(allFailures, fmt.Sprintf("Attempt %d execute error: %s", attempt+1, err.Error()))
 			continue
 		}
+		totalTokens.Add(execResult.Tokens)
+		activityTokens = append(activityTokens, ActivityTokenUsage{
+			ActivityName: "execute", Agent: execResult.Agent, Tokens: execResult.Tokens,
+		})
 
 		// --- CROSS-MODEL REVIEW LOOP ---
 		reviewPassed := false
@@ -122,6 +162,11 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 				reviewPassed = true // don't block on review infrastructure failures
 				break
 			}
+
+			totalTokens.Add(review.Tokens)
+			activityTokens = append(activityTokens, ActivityTokenUsage{
+				ActivityName: "review", Agent: review.ReviewerAgent, Tokens: review.Tokens,
+			})
 
 			if review.Approved {
 				logger.Info("Code review approved", "Reviewer", review.ReviewerAgent, "Handoff", handoff)
@@ -151,6 +196,10 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 				allFailures = append(allFailures, fmt.Sprintf("Handoff %d execute error: %s", handoffCount, err.Error()))
 				break
 			}
+			totalTokens.Add(reExecResult.Tokens)
+			activityTokens = append(activityTokens, ActivityTokenUsage{
+				ActivityName: "execute", Agent: reExecResult.Agent, Tokens: reExecResult.Tokens,
+			})
 			execResult = reExecResult
 		}
 
@@ -190,9 +239,15 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 
 		if dodResult.Passed {
 			// ===== SUCCESS — RECORD OUTCOME =====
-			logger.Info("DoD PASSED — recording outcome")
+			logger.Info("DoD PASSED — recording outcome",
+				"TotalInputTokens", totalTokens.InputTokens,
+				"TotalOutputTokens", totalTokens.OutputTokens,
+				"TotalCacheReadTokens", totalTokens.CacheReadTokens,
+				"TotalCacheCreationTokens", totalTokens.CacheCreationTokens,
+				"TotalCostUSD", totalTokens.CostUSD,
+			)
 			recordOutcome(ctx, recordOpts, a, req, "completed", 0,
-				handoffCount, true, "", startTime, attempt+1)
+				handoffCount, true, "", startTime, attempt+1, totalTokens, activityTokens)
 
 			// ===== CHUM LOOP — spawn async learner + groomer =====
 			spawnCHUMWorkflows(ctx, logger, req, plan)
@@ -222,7 +277,7 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 	}).Get(ctx, nil)
 
 	recordOutcome(ctx, recordOpts, a, req, "escalated", 1,
-		handoffCount, false, strings.Join(allFailures, "\n"), startTime, maxDoDRetries)
+		handoffCount, false, strings.Join(allFailures, "\n"), startTime, maxDoDRetries, totalTokens, activityTokens)
 
 	return fmt.Errorf("task escalated after %d attempts: %s", maxDoDRetries, strings.Join(allFailures, "; "))
 }
@@ -230,23 +285,27 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 // recordOutcome is a helper to persist the workflow outcome via RecordOutcomeActivity.
 func recordOutcome(ctx workflow.Context, opts workflow.ActivityOptions, a *Activities,
 	req TaskRequest, status string, exitCode int, handoffs int,
-	dodPassed bool, dodFailures string, startTime time.Time, attempts int) {
+	dodPassed bool, dodFailures string, startTime time.Time, attempts int,
+	tokens TokenUsage, activityTokens []ActivityTokenUsage) {
+	_ = attempts
 
 	recordCtx := workflow.WithActivityOptions(ctx, opts)
 	duration := workflow.Now(ctx).Sub(startTime).Seconds()
 
 	_ = workflow.ExecuteActivity(recordCtx, a.RecordOutcomeActivity, OutcomeRecord{
-		BeadID:      req.BeadID,
-		Project:     req.Project,
-		Agent:       req.Agent,
-		Reviewer:    req.Reviewer,
-		Provider:    req.Provider,
-		Status:      status,
-		ExitCode:    exitCode,
-		DurationS:   duration,
-		DoDPassed:   dodPassed,
-		DoDFailures: dodFailures,
-		Handoffs:    handoffs,
+		BeadID:         req.BeadID,
+		Project:        req.Project,
+		Agent:          req.Agent,
+		Reviewer:       req.Reviewer,
+		Provider:       req.Provider,
+		Status:         status,
+		ExitCode:       exitCode,
+		DurationS:      duration,
+		DoDPassed:      dodPassed,
+		DoDFailures:    dodFailures,
+		Handoffs:       handoffs,
+		TotalTokens:    tokens,
+		ActivityTokens: activityTokens,
 	}).Get(ctx, nil)
 }
 

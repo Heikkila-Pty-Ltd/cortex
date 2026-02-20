@@ -170,7 +170,7 @@ func main() {
 	// Start Temporal worker
 	go func() {
 		logger.Info("starting temporal worker")
-		if err := temporal.StartWorker(st); err != nil {
+		if err := temporal.StartWorker(st, cfg.Tiers); err != nil {
 			logger.Error("temporal worker error", "error", err)
 		}
 	}()
