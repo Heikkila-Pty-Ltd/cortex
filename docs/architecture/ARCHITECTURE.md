@@ -10,40 +10,39 @@ Cortex is a **durable, self-healing agent orchestrator** composed of three layer
 
 ```mermaid
 graph LR
-    subgraph Input["Input Layer"]
-        BD["Beads DAG<br/>(Git-backed JSONL)"]
-        API["HTTP API<br/>(:8900)"]
-        CRON["Cron Scheduler<br/>(5 AM daily)"]
+    subgraph Input
+        BD["Beads DAG"]
+        API["HTTP API :8900"]
+        CRON["Daily Cron"]
     end
 
-    subgraph Engine["Temporal Execution Engine"]
-        TW["Temporal Worker<br/>(cortex-task-queue)"]
-        CAW["CortexAgentWorkflow"]
-        PCW["PlanningCeremonyWorkflow"]
+    subgraph Engine["Temporal Engine"]
+        TW["Worker"]
+        CAW["AgentWorkflow"]
+        PCW["PlanningCeremony"]
     end
 
-    subgraph CHUM["CHUM Loop"]
-        CLW["ContinuousLearnerWorkflow"]
-        TGW["TacticalGroomWorkflow"]
-        SGW["StrategicGroomWorkflow"]
+    subgraph CHUM
+        CLW["Learner"]
+        TGW["TacticalGroom"]
+        SGW["StrategicGroom"]
     end
 
-    subgraph Storage["Persistence"]
-        SQL["SQLite<br/>(dispatches, outcomes)"]
-        FTS["SQLite FTS5<br/>(lessons search)"]
-        SEM[".semgrep/<br/>(generated rules)"]
-        BRF[".beads/morning_briefing.md"]
+    subgraph Storage
+        SQL["SQLite"]
+        FTS["FTS5 Lessons"]
+        SEM[".semgrep/"]
     end
 
     BD --> TW
     API --> TW
     CRON --> SGW
     TW --> CAW & PCW
-    CAW -->|success| CLW & TGW
+    CAW -->|pass| CLW & TGW
     CAW --> SQL
     CLW --> FTS & SEM
     TGW --> BD
-    SGW --> BRF & BD
+    SGW --> BD
 ```
 
 ---
@@ -120,31 +119,17 @@ CHUM implements a **dual-speed Kanban** system. Both speeds run as **abandoned c
 
 ```mermaid
 graph TB
-    subgraph Fast["⚡ Event-Driven (per bead)"]
-        direction TB
-        CL["ContinuousLearner"]
-        TG["TacticalGroom"]
-
-        CL --> EL["ExtractLessons<br/>(fast LLM)"]
-        EL --> SL["StoreLessons<br/>(SQLite FTS5)"]
-        SL --> GR["GenerateSemgrepRules<br/>(enforceable lessons only)"]
-
-        TG --> MB["MutateBeads<br/>(reprioritize, add deps, close stale)"]
+    subgraph Fast["Per-Bead"]
+        CL["Learner"] --> EL["ExtractLessons"] --> SL["StoreLessons"] --> GR["GenerateSemgrep"]
+        TG["TacticalGroom"] --> MB["MutateBeads"]
     end
 
-    subgraph Slow["🔬 Daily Cron (5 AM)"]
-        direction TB
-        SG["StrategicGroom"]
-
-        SG --> RM["GenerateRepoMap<br/>(go list + go doc)"]
-        RM --> BS["GetBeadStateSummary<br/>(compressed backlog)"]
-        BS --> SA["StrategicAnalysis<br/>(premium LLM)"]
-        SA --> AM["ApplyMutations<br/>(capped at 5)"]
-        AM --> BF["GenerateMorningBriefing<br/>(.beads/morning_briefing.md)"]
+    subgraph Slow["Daily Cron"]
+        SG["StrategicGroom"] --> RM["RepoMap"] --> BS["BeadSummary"] --> SA["Analysis"] --> AM["Mutations"] --> BF["Briefing"]
     end
 
-    DoD["DoD PASSED"] -->|"fire-and-forget<br/>PARENT_CLOSE_POLICY_ABANDON"| CL & TG
-    CRON["Cron 0 5 * * *"] --> SG
+    DoD["DoD PASSED"] -->|fire-and-forget| CL & TG
+    CRON["Cron 5 AM"] --> SG
 ```
 
 ### The Learning Feedback Loop (LATM)
@@ -153,12 +138,12 @@ This is the **Algorithmic Crystallization** loop — the system converts stochas
 
 ```mermaid
 graph LR
-    A["Agent makes mistake<br/>(DoD failures, review rejections)"] --> B["Learner extracts lesson<br/>(category: antipattern/rule)"]
-    B --> C["Lesson stored in FTS5<br/>(deduplicated, searchable)"]
-    C --> D["Semgrep rule generated<br/>(.semgrep/chum-*.yaml)"]
-    D --> E["Next execution:<br/>Semgrep pre-filter catches it FREE"]
-    E --> F["Mistake never reaches<br/>expensive DoD gate again"]
-    F -.->|"Over time"| G["Factory grows its<br/>own immune system"]
+    A["Agent makes mistake"] --> B["Learner extracts lesson"]
+    B --> C["Stored in FTS5"]
+    C --> D["Semgrep rule generated"]
+    D --> E["Next run: caught free"]
+    E --> F["Never hits DoD again"]
+    F -.->|over time| G["Self-growing immune system"]
 ```
 
 ---

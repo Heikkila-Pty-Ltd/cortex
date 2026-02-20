@@ -20,35 +20,16 @@ Deterministic state machines orchestrating non-deterministic models. Every failu
 ## The Pipeline
 
 ```mermaid
-graph TB
-    subgraph Planning["🧠 Planning Layer"]
-        B[Beads DAG<br/><i>Git-backed backlog</i>]
-        PC[Planning Ceremony<br/><i>Groomed → Scoped → Gated</i>]
-    end
+graph LR
+    Beads["Beads DAG"] --> Plan --> Gate["Human Gate"]
+    Gate --> Execute --> Review["Cross-Model Review"]
+    Review --> Semgrep --> DoD
 
-    subgraph Execution["⚡ Temporal Execution Engine"]
-        W[CortexAgentWorkflow<br/><i>The Shark 🦈</i>]
-        P[Plan Activity]
-        HG[Human Gate<br/><i>Signal: approve/reject</i>]
-        E[Execute Activity<br/><i>Primary Agent</i>]
-        R[Code Review Activity<br/><i>Cross-Model Review</i>]
-        SG[Semgrep Pre-Filter<br/><i>CHUM-grown rules</i>]
-        D[DoD Verify Activity<br/><i>Compile / Test / Lint</i>]
-    end
+    DoD -->|Pass| Learner & Groom
+    DoD -->|Fail| Execute
 
-    subgraph CHUM["🔄 CHUM — Continuous Hyper-Utility Module"]
-        L[ContinuousLearner 🧠<br/><i>Extract → Store → Crystallize</i>]
-        TG[TacticalGroom 🧹<br/><i>Per-bead backlog tidy</i>]
-        SGR[StrategicGroom 🔬<br/><i>Daily 5 AM deep analysis</i>]
-    end
-
-    B --> PC --> W
-    W --> P --> HG --> E
-    E --> R --> SG --> D
-    D -->|Pass| L & TG
-    D -->|Fail| E
-    SGR -->|Cron 0 5 * * *| B
-    L -->|Semgrep Rules| SG
+    Learner -->|rules| Semgrep
+    Groom -->|groom| Beads
 ```
 
 ### What Happens When You Feed It a Task

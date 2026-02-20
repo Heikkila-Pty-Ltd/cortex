@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 
 	"github.com/antigravity-dev/cortex/internal/beads"
@@ -70,12 +71,13 @@ func (s *Scheduler) Run(ctx context.Context) {
 func (s *Scheduler) tick(ctx context.Context) {
 	cfg := s.cfgMgr.Get()
 
-	// Count running workflows to enforce concurrency limits.
-	running, err := s.countRunningWorkflows(ctx)
+	// List all open workflows once — used for both total and per-project counts.
+	openWFs, err := s.listOpenAgentWorkflows(ctx)
 	if err != nil {
-		s.logger.Error("scheduler tick: failed to count running workflows", "error", err)
+		s.logger.Error("scheduler tick: failed to list running workflows", "error", err)
 		return
 	}
+	running := len(openWFs)
 
 	maxTotal := cfg.General.MaxConcurrentTotal
 	if maxTotal <= 0 {
@@ -95,6 +97,19 @@ func (s *Scheduler) tick(ctx context.Context) {
 		slots = maxPerTick
 	}
 
+	// Track per-project running counts for max_concurrent_per_project.
+	projectRunning := make(map[string]int)
+	for _, wfID := range openWFs {
+		if idx := strings.LastIndex(wfID, "-"); idx > 0 {
+			projectRunning[wfID[:idx]]++
+		}
+	}
+
+	maxPerProject := cfg.Dispatch.Git.MaxConcurrentPerProject
+	if maxPerProject <= 0 {
+		maxPerProject = 3
+	}
+
 	// Gather ready beads across all enabled projects, sorted by priority.
 	type candidate struct {
 		bead    beads.Bead
@@ -102,14 +117,6 @@ func (s *Scheduler) tick(ctx context.Context) {
 		workDir string
 	}
 	var candidates []candidate
-
-	// Track per-project running counts for max_concurrent_per_project.
-	projectRunning := s.countRunningPerProject(ctx)
-
-	maxPerProject := cfg.Dispatch.Git.MaxConcurrentPerProject
-	if maxPerProject <= 0 {
-		maxPerProject = 3
-	}
 
 	for name, proj := range cfg.Projects {
 		if !proj.Enabled {
@@ -126,9 +133,9 @@ func (s *Scheduler) tick(ctx context.Context) {
 			continue
 		}
 
-		all, err := beads.ListBeadsCtx(ctx, beadsDir)
-		if err != nil {
-			s.logger.Error("scheduler tick: failed to list beads", "project", name, "error", err)
+		all, listErr := beads.ListBeadsCtx(ctx, beadsDir)
+		if listErr != nil {
+			s.logger.Error("scheduler tick: failed to list beads", "project", name, "error", listErr)
 			continue
 		}
 
@@ -218,57 +225,23 @@ func (s *Scheduler) dispatch(ctx context.Context, cfg *config.Config, b beads.Be
 	return nil
 }
 
-// countRunningWorkflows queries Temporal for open CortexAgentWorkflow executions.
-func (s *Scheduler) countRunningWorkflows(ctx context.Context) (int, error) {
-	resp, err := s.tc.ListOpenWorkflow(ctx, &client.ListOpenWorkflowInput{
-		MaximumPageSize: 200,
+// listOpenAgentWorkflows returns the workflow IDs of all running CortexAgentWorkflow executions.
+func (s *Scheduler) listOpenAgentWorkflows(ctx context.Context) ([]string, error) {
+	query := `WorkflowType = 'CortexAgentWorkflow' AND ExecutionStatus = 'Running'`
+
+	resp, err := s.tc.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
+		Query:    query,
+		PageSize: 200,
 	})
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 
-	count := 0
+	ids := make([]string, 0, len(resp.Executions))
 	for _, exec := range resp.Executions {
-		wfType := ""
-		if exec.GetType() != nil {
-			wfType = exec.GetType().GetName()
-		}
-		if wfType == "CortexAgentWorkflow" {
-			count++
-		}
+		ids = append(ids, exec.GetExecution().GetWorkflowId())
 	}
-	return count, nil
-}
-
-// countRunningPerProject returns a map of project -> running CortexAgentWorkflow count.
-// It infers the project from the workflow ID prefix (bead IDs are "{project}-{hex}").
-func (s *Scheduler) countRunningPerProject(ctx context.Context) map[string]int {
-	counts := make(map[string]int)
-
-	resp, err := s.tc.ListOpenWorkflow(ctx, &client.ListOpenWorkflowInput{
-		MaximumPageSize: 200,
-	})
-	if err != nil {
-		s.logger.Warn("scheduler: failed to list workflows for per-project count", "error", err)
-		return counts
-	}
-
-	for _, exec := range resp.Executions {
-		wfType := ""
-		if exec.GetType() != nil {
-			wfType = exec.GetType().GetName()
-		}
-		if wfType != "CortexAgentWorkflow" {
-			continue
-		}
-		wfID := exec.GetExecution().GetWorkflowId()
-		// Bead IDs are "{project}-{short-hex}". Extract project by trimming last segment.
-		if idx := strings.LastIndex(wfID, "-"); idx > 0 {
-			counts[wfID[:idx]]++
-		}
-	}
-
-	return counts
+	return ids, nil
 }
 
 // buildPrompt constructs the agent prompt from bead metadata.

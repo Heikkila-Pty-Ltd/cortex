@@ -19,6 +19,7 @@ import (
 
 	"github.com/antigravity-dev/cortex/internal/api"
 	"github.com/antigravity-dev/cortex/internal/config"
+	"github.com/antigravity-dev/cortex/internal/scheduler"
 	"github.com/antigravity-dev/cortex/internal/store"
 	"github.com/antigravity-dev/cortex/internal/temporal"
 )
@@ -218,6 +219,24 @@ func main() {
 			}
 			logger.Info("strategic cron registered", "project", name, "workflow_id", workflowID, "schedule", "0 5 * * *")
 		}
+	}()
+
+	// Start scheduler tick loop
+	go func() {
+		// Let the worker register workflows before the scheduler tries to dispatch.
+		time.Sleep(5 * time.Second)
+
+		schedClient, err := tclient.Dial(tclient.Options{
+			HostPort: "127.0.0.1:7233",
+		})
+		if err != nil {
+			logger.Error("failed to create temporal client for scheduler", "error", err)
+			return
+		}
+		defer schedClient.Close()
+
+		sched := scheduler.New(cfgManager, schedClient, logger.With("component", "scheduler"))
+		sched.Run(ctx)
 	}()
 
 	// Start API server
