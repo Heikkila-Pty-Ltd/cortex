@@ -64,6 +64,7 @@ type General struct {
 	MaxConcurrentCoders    int      `toml:"max_concurrent_coders"`    // hard cap on concurrent coder agents
 	MaxConcurrentReviewers int      `toml:"max_concurrent_reviewers"` // hard cap on concurrent reviewer agents
 	MaxConcurrentTotal     int      `toml:"max_concurrent_total"`     // hard cap on total concurrent agents
+	SlowStepThreshold      Duration `toml:"slow_step_threshold"`      // steps exceeding this are flagged slow (default 2m)
 }
 
 // Cadence defines shared sprint cadence across all projects.
@@ -481,6 +482,10 @@ func applyDefaults(cfg *Config, md toml.MetaData) {
 	}
 	if cfg.General.LogLevel == "" {
 		cfg.General.LogLevel = "info"
+	}
+
+	if cfg.General.SlowStepThreshold.Duration == 0 {
+		cfg.General.SlowStepThreshold.Duration = 2 * time.Minute
 	}
 
 	// Concurrency limit defaults

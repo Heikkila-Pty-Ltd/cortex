@@ -9,6 +9,7 @@ max_concurrent_total = 3
 stuck_timeout = "30m"
 max_retries = 6
 log_level = "info"
+slow_step_threshold = "2m"
 state_db = "~/.local/share/cortex/cortex.db"
 
 [projects.cortex]
@@ -28,13 +29,13 @@ require_estimate = true
 require_acceptance = true
 
 [projects.hg-website]
-enabled = true
+enabled = false
 beads_dir = "~/projects/hg-website/.beads"
 workspace = "~/projects/hg-website"
 priority = 1
 
 [projects.hunter-galloway]
-enabled = true
+enabled = false
 beads_dir = "/home/ubuntu/.openclaw/workspace-main/.beads"
 workspace = "/home/ubuntu/obsidian-vault"
 priority = 1

@@ -1,16 +1,19 @@
 package temporal
 
+import "time"
+
 // TaskRequest is submitted via the API to start a workflow.
 type TaskRequest struct {
-	BeadID      string   `json:"bead_id"`
-	Project     string   `json:"project"`
-	Prompt      string   `json:"prompt"`
-	Agent       string   `json:"agent"`        // primary coding agent (claude, codex)
-	Reviewer    string   `json:"reviewer"`     // review agent — auto-assigned if empty
-	WorkDir     string   `json:"work_dir"`
-	Provider    string   `json:"provider"`
-	DoDChecks   []string `json:"dod_checks"`   // e.g. ["go build ./cmd/cortex", "go test ./..."]
-	AutoApprove bool     `json:"auto_approve"` // skip human gate for pre-planned work
+	BeadID            string        `json:"bead_id"`
+	Project           string        `json:"project"`
+	Prompt            string        `json:"prompt"`
+	Agent             string        `json:"agent"`              // primary coding agent (claude, codex)
+	Reviewer          string        `json:"reviewer"`           // review agent — auto-assigned if empty
+	WorkDir           string        `json:"work_dir"`
+	Provider          string        `json:"provider"`
+	DoDChecks         []string      `json:"dod_checks"`         // e.g. ["go build ./cmd/cortex", "go test ./..."]
+	AutoApprove       bool          `json:"auto_approve"`       // skip human gate for pre-planned work
+	SlowStepThreshold time.Duration `json:"slow_step_threshold"` // steps exceeding this are flagged slow
 }
 
 // DefaultReviewer returns the cross-model reviewer for a given primary agent.
@@ -131,6 +134,14 @@ type CheckResult struct {
 	DurationMs int64 `json:"duration_ms"`
 }
 
+// StepMetric records the name, duration, and outcome of a single pipeline step.
+type StepMetric struct {
+	Name      string  `json:"name"`
+	DurationS float64 `json:"duration_s"`
+	Status    string  `json:"status"` // "ok", "failed", "skipped"
+	Slow      bool    `json:"slow,omitempty"`
+}
+
 // OutcomeRecord is passed to the store recording activity.
 type OutcomeRecord struct {
 	DispatchID     int64                 `json:"dispatch_id"`
@@ -148,6 +159,7 @@ type OutcomeRecord struct {
 	FilesChanged   int                   `json:"files_changed"`
 	TotalTokens    TokenUsage            `json:"total_tokens"`
 	ActivityTokens []ActivityTokenUsage   `json:"activity_tokens,omitempty"`
+	StepMetrics    []StepMetric           `json:"step_metrics,omitempty"`
 }
 
 // EscalationRequest is sent to the chief when DoD fails after retries.
@@ -364,4 +376,29 @@ type MorningBriefing struct {
 	Risks         []string        `json:"risks"`
 	RecentLessons []Lesson        `json:"recent_lessons"`
 	Markdown      string          `json:"markdown"` // full rendered markdown
+}
+
+// --- Dispatcher Types ---
+// DispatcherWorkflow scans for ready beads and starts CortexAgentWorkflow
+// children. Runs on a Temporal Schedule every tick_interval.
+
+// DispatchCandidate is a ready bead with its project context, returned by
+// ScanCandidatesActivity and dispatched as a child workflow.
+type DispatchCandidate struct {
+	BeadID          string   `json:"bead_id"`
+	Title           string   `json:"title"`
+	Project         string   `json:"project"`
+	WorkDir         string   `json:"work_dir"`
+	Prompt          string   `json:"prompt"`
+	Provider        string   `json:"provider"`
+	DoDChecks       []string `json:"dod_checks"`
+	AutoApprove     bool     `json:"auto_approve"`
+	EstimateMinutes int      `json:"estimate_minutes"`
+}
+
+// ScanCandidatesResult is returned by ScanCandidatesActivity.
+type ScanCandidatesResult struct {
+	Candidates []DispatchCandidate `json:"candidates"`
+	Running    int                 `json:"running"` // currently running workflow count
+	MaxTotal   int                 `json:"max_total"`
 }

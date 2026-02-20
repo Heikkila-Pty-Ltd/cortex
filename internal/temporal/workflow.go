@@ -15,6 +15,9 @@ import (
 const (
 	maxDoDRetries = 3 // maximum DoD retry attempts
 	maxHandoffs   = 3 // maximum cross-model review handoffs
+
+	// defaultSlowStepThreshold is used when no config override is provided.
+	defaultSlowStepThreshold = 2 * time.Minute
 )
 
 // CortexAgentWorkflow implements the LeSS/SCRUM loop:
@@ -30,6 +33,30 @@ const (
 func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 	startTime := workflow.Now(ctx)
 	logger := workflow.GetLogger(ctx)
+
+	slowThreshold := defaultSlowStepThreshold
+	if req.SlowStepThreshold > 0 {
+		slowThreshold = req.SlowStepThreshold
+	}
+
+	var stepMetrics []StepMetric
+	recordStep := func(name string, stepStart time.Time, status string) {
+		dur := workflow.Now(ctx).Sub(stepStart)
+		slow := dur >= slowThreshold
+		stepMetrics = append(stepMetrics, StepMetric{
+			Name:      name,
+			DurationS: dur.Seconds(),
+			Status:    status,
+			Slow:      slow,
+		})
+		if slow {
+			logger.Warn(SharkPrefix+" SLOW STEP",
+				"Step", name, "DurationS", dur.Seconds(), "Threshold", slowThreshold.String())
+		} else {
+			logger.Info(SharkPrefix+" Step complete",
+				"Step", name, "DurationS", dur.Seconds(), "Status", status)
+		}
+	}
 
 	// Assign reviewer if not specified
 	if req.Reviewer == "" {
@@ -62,29 +89,48 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 	var a *Activities
 
 	// ===== PHASE 1: PLAN =====
-	logger.Info("Phase 1: Generating structured plan")
-	planCtx := workflow.WithActivityOptions(ctx, planOpts)
-
+	// Execution-ready beads (AutoApprove=true) skip the LLM planning activity.
+	// CHUM beads already have acceptance criteria, design, and estimates —
+	// the bead IS the plan. "If CHUM is in the water, feed."
+	planStart := workflow.Now(ctx)
 	var plan StructuredPlan
-	if err := workflow.ExecuteActivity(planCtx, a.StructuredPlanActivity, req).Get(ctx, &plan); err != nil {
-		return fmt.Errorf("plan generation failed: %w", err)
-	}
-	if plan.TokenUsage.InputTokens > 0 || plan.TokenUsage.OutputTokens > 0 || plan.TokenUsage.CostUSD > 0 ||
-		plan.TokenUsage.CacheReadTokens > 0 || plan.TokenUsage.CacheCreationTokens > 0 {
-		logger.Info("Plan tokens recorded in workflow",
-			"InputTokens", plan.TokenUsage.InputTokens,
-			"OutputTokens", plan.TokenUsage.OutputTokens,
-			"CacheReadTokens", plan.TokenUsage.CacheReadTokens,
-			"CacheCreationTokens", plan.TokenUsage.CacheCreationTokens,
-			"CostUSD", plan.TokenUsage.CostUSD,
-		)
+	if req.AutoApprove {
+		logger.Info(SharkPrefix+" Phase 1: Execution-ready bead — using bead as plan (skipping LLM)")
+		plan = StructuredPlan{
+			Summary:            req.Prompt,
+			AcceptanceCriteria: []string{"See bead acceptance criteria"},
+			Steps:              []PlanStep{{Description: req.Prompt, Rationale: "Pre-planned by CHUM"}},
+			FilesToModify:      []string{"(determined by agent at execution time)"},
+		}
+		recordStep("plan", planStart, "skipped")
+	} else {
+		logger.Info(SharkPrefix + " Phase 1: Generating structured plan via LLM")
+		planCtx := workflow.WithActivityOptions(ctx, planOpts)
+
+		if err := workflow.ExecuteActivity(planCtx, a.StructuredPlanActivity, req).Get(ctx, &plan); err != nil {
+			recordStep("plan", planStart, "failed")
+			return fmt.Errorf("plan generation failed: %w", err)
+		}
+		if plan.TokenUsage.InputTokens > 0 || plan.TokenUsage.OutputTokens > 0 || plan.TokenUsage.CostUSD > 0 ||
+			plan.TokenUsage.CacheReadTokens > 0 || plan.TokenUsage.CacheCreationTokens > 0 {
+			logger.Info(SharkPrefix+" Plan tokens recorded in workflow",
+				"InputTokens", plan.TokenUsage.InputTokens,
+				"OutputTokens", plan.TokenUsage.OutputTokens,
+				"CacheReadTokens", plan.TokenUsage.CacheReadTokens,
+				"CacheCreationTokens", plan.TokenUsage.CacheCreationTokens,
+				"CostUSD", plan.TokenUsage.CostUSD,
+			)
+		}
+		recordStep("plan", planStart, "ok")
 	}
 
-	logger.Info("Plan generated",
-		"Summary", plan.Summary,
+	logger.Info(SharkPrefix+" Plan ready",
+		"Summary", truncate(plan.Summary, 120),
 		"Steps", len(plan.Steps),
 		"Files", len(plan.FilesToModify),
+		"AutoApprove", req.AutoApprove,
 	)
+
 
 	// ===== PHASE 2: HUMAN GATE =====
 	// Pre-planned work (has acceptance criteria) skips the gate.
@@ -113,35 +159,41 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 	}
 	resetAttemptTokens()
 
+	gateStart := workflow.Now(ctx)
 	if req.AutoApprove {
-		logger.Info("Phase 2: Auto-approved (pre-planned work)")
+		logger.Info(SharkPrefix+" Phase 2: Auto-approved (pre-planned work)")
+		recordStep("gate", gateStart, "skipped")
 	} else {
-		logger.Info("Phase 2: Waiting for human approval")
+		logger.Info(SharkPrefix+" Phase 2: Waiting for human approval")
 		signalChan := workflow.GetSignalChannel(ctx, "human-approval")
 		var signalVal string
 		signalChan.Receive(ctx, &signalVal)
 
 		if signalVal == "REJECTED" {
+			recordStep("gate", gateStart, "failed")
 			recordOutcome(ctx, recordOpts, a, req, "rejected", 0, 0, false, "Plan rejected by human", startTime, 0,
-				totalTokens, activityTokens)
+				totalTokens, activityTokens, stepMetrics)
 			return fmt.Errorf("plan rejected by human")
 		}
+		recordStep("gate", gateStart, "ok")
 	}
 
 	// ===== PHASE 3-6: EXECUTE → REVIEW → DOD LOOP =====
 	handoffCount := 0
 
 	for attempt := 0; attempt < maxDoDRetries; attempt++ {
-		logger.Info("Execution attempt", "Attempt", attempt+1, "Agent", currentAgent)
+		logger.Info(SharkPrefix+" Execution attempt", "Attempt", attempt+1, "Agent", currentAgent)
 
 		// Reset token tracking to plan baseline for each attempt.
 		// Only the last attempt's costs are reported in the outcome.
 		resetAttemptTokens()
 
 		// --- EXECUTE ---
+		execStart := workflow.Now(ctx)
 		execCtx := workflow.WithActivityOptions(ctx, execOpts)
 		var execResult ExecutionResult
 		if err := workflow.ExecuteActivity(execCtx, a.ExecuteActivity, plan, req).Get(ctx, &execResult); err != nil {
+			recordStep(fmt.Sprintf("execute[%d]", attempt+1), execStart, "failed")
 			allFailures = append(allFailures, fmt.Sprintf("Attempt %d execute error: %s", attempt+1, err.Error()))
 			continue
 		}
@@ -149,8 +201,10 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 		activityTokens = append(activityTokens, ActivityTokenUsage{
 			ActivityName: "execute", Agent: execResult.Agent, Tokens: execResult.Tokens,
 		})
+		recordStep(fmt.Sprintf("execute[%d]", attempt+1), execStart, "ok")
 
 		// --- CROSS-MODEL REVIEW LOOP ---
+		reviewStart := workflow.Now(ctx)
 		reviewPassed := false
 		for handoff := 0; handoff < maxHandoffs; handoff++ {
 			reviewCtx := workflow.WithActivityOptions(ctx, reviewOpts)
@@ -161,7 +215,7 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 			reviewReq.Reviewer = currentReviewer
 
 			if err := workflow.ExecuteActivity(reviewCtx, a.CodeReviewActivity, plan, execResult, reviewReq).Get(ctx, &review); err != nil {
-				logger.Warn("Review activity failed", "error", err)
+				logger.Warn(SharkPrefix+" Review activity failed", "error", err)
 				reviewPassed = true // don't block on review infrastructure failures
 				break
 			}
@@ -172,14 +226,14 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 			})
 
 			if review.Approved {
-				logger.Info("Code review approved", "Reviewer", review.ReviewerAgent, "Handoff", handoff)
+				logger.Info(SharkPrefix+" Code review approved", "Reviewer", review.ReviewerAgent, "Handoff", handoff)
 				reviewPassed = true
 				break
 			}
 
 			// Review failed — swap agents and re-execute with feedback
 			handoffCount++
-			logger.Info("Code review rejected, swapping agents",
+			logger.Info(SharkPrefix+" Code review rejected, swapping agents",
 				"Reviewer", currentReviewer,
 				"Issues", strings.Join(review.Issues, "; "),
 				"Handoff", handoffCount,
@@ -207,13 +261,16 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 		}
 
 		if !reviewPassed {
+			recordStep(fmt.Sprintf("review[%d]", attempt+1), reviewStart, "failed")
 			allFailures = append(allFailures, fmt.Sprintf("Attempt %d: review not passed after %d handoffs", attempt+1, handoffCount))
 			continue
 		}
+		recordStep(fmt.Sprintf("review[%d]", attempt+1), reviewStart, "ok")
 
 		// --- SEMGREP PRE-FILTER ---
 		// Run custom .semgrep/ rules first. Free and fast — catches known
 		// antipatterns before we pay for compile/test/lint.
+		semgrepStart := workflow.Now(ctx)
 		semgrepOpts := workflow.ActivityOptions{
 			StartToCloseTimeout: 1 * time.Minute,
 			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
@@ -221,28 +278,36 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 		semgrepCtx := workflow.WithActivityOptions(ctx, semgrepOpts)
 		var semgrepResult SemgrepScanResult
 		if err := workflow.ExecuteActivity(semgrepCtx, a.RunSemgrepScanActivity, req.WorkDir).Get(ctx, &semgrepResult); err != nil {
-			logger.Warn("Semgrep scan failed (non-fatal, proceeding to DoD)", "error", err)
+			logger.Warn(SharkPrefix+" Semgrep scan failed (non-fatal, proceeding to DoD)", "error", err)
+			recordStep(fmt.Sprintf("semgrep[%d]", attempt+1), semgrepStart, "skipped")
 		} else if !semgrepResult.Passed {
+			recordStep(fmt.Sprintf("semgrep[%d]", attempt+1), semgrepStart, "failed")
 			plan.PreviousErrors = append(plan.PreviousErrors,
 				fmt.Sprintf("Semgrep found %d issues: %s", semgrepResult.Findings, truncate(semgrepResult.Output, 500)))
 			allFailures = append(allFailures,
 				fmt.Sprintf("Attempt %d: Semgrep found %d issues", attempt+1, semgrepResult.Findings))
-			logger.Warn("Semgrep pre-filter failed, skipping expensive DoD", "Findings", semgrepResult.Findings)
+			logger.Warn(SharkPrefix+" Semgrep pre-filter failed, skipping expensive DoD", "Findings", semgrepResult.Findings)
 			continue
+		} else {
+			recordStep(fmt.Sprintf("semgrep[%d]", attempt+1), semgrepStart, "ok")
 		}
 
 		// --- DOD VERIFICATION ---
-		logger.Info("Running DoD checks")
+		dodStart := workflow.Now(ctx)
+		logger.Info(SharkPrefix+" Running DoD checks")
 		dodCtx := workflow.WithActivityOptions(ctx, dodOpts)
 		var dodResult DoDResult
 		if err := workflow.ExecuteActivity(dodCtx, a.DoDVerifyActivity, req).Get(ctx, &dodResult); err != nil {
+			recordStep(fmt.Sprintf("dod[%d]", attempt+1), dodStart, "failed")
 			allFailures = append(allFailures, fmt.Sprintf("Attempt %d DoD error: %s", attempt+1, err.Error()))
 			continue
 		}
 
 		if dodResult.Passed {
+			recordStep(fmt.Sprintf("dod[%d]", attempt+1), dodStart, "ok")
+
 			// ===== SUCCESS — RECORD OUTCOME =====
-			logger.Info("DoD PASSED — recording outcome",
+			logger.Info(SharkPrefix+" DoD PASSED — recording outcome",
 				"TotalInputTokens", totalTokens.InputTokens,
 				"TotalOutputTokens", totalTokens.OutputTokens,
 				"TotalCacheReadTokens", totalTokens.CacheReadTokens,
@@ -250,7 +315,7 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 				"TotalCostUSD", totalTokens.CostUSD,
 			)
 			recordOutcome(ctx, recordOpts, a, req, "completed", 0,
-				handoffCount, true, "", startTime, attempt+1, totalTokens, activityTokens)
+				handoffCount, true, "", startTime, attempt+1, totalTokens, activityTokens, stepMetrics)
 
 			// ===== CHUM LOOP — spawn async learner + groomer =====
 			spawnCHUMWorkflows(ctx, logger, req, plan)
@@ -259,15 +324,17 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 		}
 
 		// DoD failed — feed failures back into plan
+		recordStep(fmt.Sprintf("dod[%d]", attempt+1), dodStart, "failed")
 		failureMsg := strings.Join(dodResult.Failures, "; ")
 		allFailures = append(allFailures, fmt.Sprintf("Attempt %d DoD failed: %s", attempt+1, failureMsg))
 		plan.PreviousErrors = append(plan.PreviousErrors, "DoD check failures: "+failureMsg)
 
-		logger.Warn("DoD failed, retrying", "Attempt", attempt+1, "Failures", failureMsg)
+		logger.Warn(SharkPrefix+" DoD failed, retrying", "Attempt", attempt+1, "Failures", failureMsg)
 	}
 
 	// ===== ESCALATE — all retries exhausted =====
-	logger.Error("All attempts exhausted, escalating to chief")
+	escalateStart := workflow.Now(ctx)
+	logger.Error(SharkPrefix+" All attempts exhausted, escalating to chief")
 
 	escalateCtx := workflow.WithActivityOptions(ctx, recordOpts)
 	_ = workflow.ExecuteActivity(escalateCtx, a.EscalateActivity, EscalationRequest{
@@ -278,9 +345,10 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 		AttemptCount: maxDoDRetries,
 		HandoffCount: handoffCount,
 	}).Get(ctx, nil)
+	recordStep("escalate", escalateStart, "ok")
 
 	recordOutcome(ctx, recordOpts, a, req, "escalated", 1,
-		handoffCount, false, strings.Join(allFailures, "\n"), startTime, maxDoDRetries, totalTokens, activityTokens)
+		handoffCount, false, strings.Join(allFailures, "\n"), startTime, maxDoDRetries, totalTokens, activityTokens, stepMetrics)
 
 	return fmt.Errorf("task escalated after %d attempts: %s", maxDoDRetries, strings.Join(allFailures, "; "))
 }
@@ -289,7 +357,7 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 func recordOutcome(ctx workflow.Context, opts workflow.ActivityOptions, a *Activities,
 	req TaskRequest, status string, exitCode int, handoffs int,
 	dodPassed bool, dodFailures string, startTime time.Time, attempts int,
-	tokens TokenUsage, activityTokens []ActivityTokenUsage) {
+	tokens TokenUsage, activityTokens []ActivityTokenUsage, steps []StepMetric) {
 	_ = attempts
 
 	recordCtx := workflow.WithActivityOptions(ctx, opts)
@@ -309,6 +377,7 @@ func recordOutcome(ctx workflow.Context, opts workflow.ActivityOptions, a *Activ
 		Handoffs:       handoffs,
 		TotalTokens:    tokens,
 		ActivityTokens: activityTokens,
+		StepMetrics:    steps,
 	}).Get(ctx, nil)
 }
 
@@ -354,14 +423,14 @@ func spawnCHUMWorkflows(ctx workflow.Context, logger log.Logger, req TaskRequest
 	// ABANDON policy only protects children that have already started executing.
 	var learnerExec, groomExec workflow.Execution
 	if err := learnerFut.GetChildWorkflowExecution().Get(ctx, &learnerExec); err != nil {
-		logger.Warn("CHUM: Learner failed to start", "error", err)
+		logger.Warn(SharkPrefix+" CHUM: Learner failed to start", "error", err)
 	} else {
-		logger.Info("CHUM: Learner started", "WorkflowID", learnerExec.ID, "RunID", learnerExec.RunID)
+		logger.Info(SharkPrefix+" CHUM: Learner started", "WorkflowID", learnerExec.ID, "RunID", learnerExec.RunID)
 	}
 	if err := groomFut.GetChildWorkflowExecution().Get(ctx, &groomExec); err != nil {
-		logger.Warn("CHUM: TacticalGroom failed to start", "error", err)
+		logger.Warn(SharkPrefix+" CHUM: TacticalGroom failed to start", "error", err)
 	} else {
-		logger.Info("CHUM: TacticalGroom started", "WorkflowID", groomExec.ID, "RunID", groomExec.RunID)
+		logger.Info(SharkPrefix+" CHUM: TacticalGroom started", "WorkflowID", groomExec.ID, "RunID", groomExec.RunID)
 	}
 }
 

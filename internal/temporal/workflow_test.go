@@ -1,6 +1,7 @@
 package temporal
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/mock"
@@ -354,6 +355,368 @@ func TestPlanRejected(t *testing.T) {
 
 	// Nothing downstream should have been called
 	env.AssertActivityNotCalled(t, "ExecuteActivity", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// TestStrategicGroomWorkflowActionableCreatePassesThroughToActivity verifies
+// the end-to-end path: a fully actionable strategic create mutation flows
+// from StrategicAnalysisActivity through normalizeStrategicMutations to
+// ApplyStrategicMutationsActivity without being deferred.
+func TestStrategicGroomWorkflowActionableCreatePassesThroughToActivity(t *testing.T) {
+	s := testsuite.WorkflowTestSuite{}
+	env := s.NewTestWorkflowEnvironment()
+
+	var a *Activities
+
+	env.OnActivity(a.GenerateRepoMapActivity, mock.Anything, mock.Anything).Return(&RepoMap{
+		TotalFiles: 10,
+		Packages:   []PackageInfo{{ImportPath: "example.com/pkg", Name: "pkg"}},
+	}, nil)
+
+	env.OnActivity(a.GetBeadStateSummaryActivity, mock.Anything, mock.Anything).Return(
+		"Open: 5, Closed: 10", nil)
+
+	env.OnActivity(a.StrategicAnalysisActivity, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&StrategicAnalysis{
+		Priorities: []StrategicItem{{Title: "Add request validation", Urgency: "high"}},
+		Mutations: []BeadMutation{{
+			Action:          "create",
+			Title:           "Add input validation for POST /users",
+			Description:     "Validate request body fields before processing.",
+			Acceptance:      "POST /users rejects invalid payloads with 400 and descriptive error.",
+			Design:          "Add validation middleware using existing validator package.",
+			EstimateMinutes: 45,
+			StrategicSource: StrategicMutationSource,
+			Deferred:        false,
+		}},
+	}, nil)
+
+	var capturedMutations []BeadMutation
+	env.OnActivity(a.ApplyStrategicMutationsActivity, mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			if ms, ok := args.Get(2).([]BeadMutation); ok {
+				capturedMutations = ms
+			}
+		}).Return(&GroomResult{MutationsApplied: 1}, nil)
+
+	env.OnActivity(a.GenerateMorningBriefingActivity, mock.Anything, mock.Anything, mock.Anything).Return(&MorningBriefing{
+		Date:     "2026-02-21",
+		Project:  "test-project",
+		Markdown: "# Briefing",
+	}, nil)
+
+	env.ExecuteWorkflow(StrategicGroomWorkflow, StrategicGroomRequest{
+		Project:  "test-project",
+		WorkDir:  "/tmp/test",
+		BeadsDir: "/tmp/test/.beads",
+		Tier:     "premium",
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	require.Len(t, capturedMutations, 1, "actionable create should reach ApplyStrategicMutationsActivity")
+	require.False(t, capturedMutations[0].Deferred, "actionable create must not be deferred")
+	require.Equal(t, "Add input validation for POST /users", capturedMutations[0].Title)
+	require.Equal(t, 45, capturedMutations[0].EstimateMinutes)
+}
+
+// TestStrategicGroomWorkflowVagueCreateIsDeferredNotP1 verifies that a vague
+// "break down" create from strategic analysis is deferred to P4 and never
+// reaches the mutation activity as a high-priority executable task.
+func TestStrategicGroomWorkflowVagueCreateIsDeferredNotP1(t *testing.T) {
+	s := testsuite.WorkflowTestSuite{}
+	env := s.NewTestWorkflowEnvironment()
+
+	var a *Activities
+
+	env.OnActivity(a.GenerateRepoMapActivity, mock.Anything, mock.Anything).Return(&RepoMap{
+		TotalFiles: 10,
+		Packages:   []PackageInfo{{ImportPath: "example.com/pkg", Name: "pkg"}},
+	}, nil)
+
+	env.OnActivity(a.GetBeadStateSummaryActivity, mock.Anything, mock.Anything).Return(
+		"Open: 5", nil)
+
+	// Strategic analysis returns a vague decomposition suggestion without
+	// required actionable fields — this is the production scenario we're guarding against.
+	env.OnActivity(a.StrategicAnalysisActivity, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&StrategicAnalysis{
+		Priorities: []StrategicItem{{Title: "Break down auth", Urgency: "medium"}},
+		Mutations: []BeadMutation{{
+			Action:          "create",
+			Title:           "Break down authentication flow into subtasks",
+			Description:     "The auth system needs decomposition.",
+			Priority:        intPtr(1),
+			StrategicSource: StrategicMutationSource,
+			// Missing: Acceptance, Design, EstimateMinutes — should trigger deferral.
+		}},
+	}, nil)
+
+	var capturedMutations []BeadMutation
+	env.OnActivity(a.ApplyStrategicMutationsActivity, mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			if ms, ok := args.Get(2).([]BeadMutation); ok {
+				capturedMutations = ms
+			}
+		}).Return(&GroomResult{MutationsApplied: 1}, nil)
+
+	env.OnActivity(a.GenerateMorningBriefingActivity, mock.Anything, mock.Anything, mock.Anything).Return(&MorningBriefing{
+		Date:     "2026-02-21",
+		Project:  "test-project",
+		Markdown: "# Briefing",
+	}, nil)
+
+	env.ExecuteWorkflow(StrategicGroomWorkflow, StrategicGroomRequest{
+		Project:  "test-project",
+		WorkDir:  "/tmp/test",
+		BeadsDir: "/tmp/test/.beads",
+		Tier:     "premium",
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	require.Len(t, capturedMutations, 1, "deferred create should still reach activity")
+	require.True(t, capturedMutations[0].Deferred, "vague create must be deferred")
+	require.NotNil(t, capturedMutations[0].Priority)
+	require.Equal(t, 4, *capturedMutations[0].Priority, "deferred create must be downgraded to P4")
+}
+
+// TestNormalizeStrategicMutationsNonPrefixedVagueCreateIsDeferred verifies that
+// a title like "Break down authentication flow" (without "Auto:" prefix) is still
+// caught as deferred when it lacks actionable fields. This guards against the prompt
+// telling the LLM not to use "Auto:" prefixes while the detection relies on title heuristics.
+func TestNormalizeStrategicMutationsNonPrefixedVagueCreateIsDeferred(t *testing.T) {
+	mutations := []BeadMutation{{
+		Action:          "create",
+		Title:           "Break down authentication flow",
+		Description:     "The auth system needs decomposition.",
+		Priority:        intPtr(1),
+		StrategicSource: StrategicMutationSource,
+		// Missing: Acceptance, Design, EstimateMinutes
+	}}
+
+	got := normalizeStrategicMutations(mutations)
+	require.Len(t, got, 1)
+	require.True(t, got[0].Deferred, "non-prefixed vague create must be deferred")
+	require.Equal(t, 4, *got[0].Priority, "deferred must be P4")
+	require.NotEmpty(t, got[0].Acceptance, "deferred must get safe defaults")
+	require.NotEmpty(t, got[0].Design, "deferred must get safe defaults")
+	require.Greater(t, got[0].EstimateMinutes, 0, "deferred must get safe defaults")
+}
+
+// TestNormalizeStrategicMutationsNonCreatePassesThrough verifies that non-create
+// mutations (update_priority, close, etc.) pass through normalization unmodified.
+func TestNormalizeStrategicMutationsNonCreatePassesThrough(t *testing.T) {
+	mutations := []BeadMutation{
+		{BeadID: "bead-1", Action: "update_priority", Priority: intPtr(0)},
+		{BeadID: "bead-2", Action: "close", Reason: "stale"},
+		{BeadID: "bead-3", Action: "update_notes", Notes: "context from strategic review"},
+	}
+
+	got := normalizeStrategicMutations(mutations)
+	require.Len(t, got, 3)
+	for _, m := range got {
+		require.Equal(t, StrategicMutationSource, m.StrategicSource, "all get source set")
+		require.False(t, m.Deferred, "non-create mutations are never deferred")
+	}
+}
+
+// TestStepDurationLogging verifies that every pipeline step records its name,
+// duration, and status in the OutcomeRecord.StepMetrics field on a successful run.
+func TestStepDurationLogging(t *testing.T) {
+	s := testsuite.WorkflowTestSuite{}
+	env := s.NewTestWorkflowEnvironment()
+
+	stubActivities(env)
+
+	// Mock child workflows
+	env.OnWorkflow(ContinuousLearnerWorkflow, mock.Anything, mock.Anything).Return(nil)
+	env.OnWorkflow(TacticalGroomWorkflow, mock.Anything, mock.Anything).Return(nil)
+
+	// Send human-approval signal after plan is created
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow("human-approval", "APPROVED")
+	}, 0)
+
+	var outcome OutcomeRecord
+	env.OnActivity((*Activities)(nil).RecordOutcomeActivity, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		if o, ok := args.Get(1).(OutcomeRecord); ok {
+			outcome = o
+		}
+	}).Return(nil)
+
+	env.ExecuteWorkflow(CortexAgentWorkflow, TaskRequest{
+		BeadID:  "test-bead-steps",
+		Project: "test-project",
+		Prompt:  "add step metrics",
+		Agent:   "claude",
+		WorkDir: "/tmp/test",
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+
+	// Verify step metrics are populated
+	require.NotEmpty(t, outcome.StepMetrics, "step metrics must be recorded")
+
+	// Build a map of step names for lookup
+	stepNames := make(map[string]StepMetric, len(outcome.StepMetrics))
+	for _, m := range outcome.StepMetrics {
+		stepNames[m.Name] = m
+	}
+
+	// All phases must be present: plan, gate, execute[1], review[1], semgrep[1], dod[1]
+	for _, expected := range []string{"plan", "gate", "execute[1]", "review[1]", "semgrep[1]", "dod[1]"} {
+		m, ok := stepNames[expected]
+		require.True(t, ok, "missing step metric for %q", expected)
+		require.NotEmpty(t, m.Status, "step %q must have a status", expected)
+		require.GreaterOrEqual(t, m.DurationS, 0.0, "step %q duration must be non-negative", expected)
+	}
+
+	// Verify each step has a valid status
+	for _, m := range outcome.StepMetrics {
+		require.Contains(t, []string{"ok", "failed", "skipped"}, m.Status,
+			"step %q has invalid status %q", m.Name, m.Status)
+	}
+}
+
+// TestStepDurationLoggingAutoApprove verifies step metrics for auto-approved beads
+// where plan and gate are skipped.
+func TestStepDurationLoggingAutoApprove(t *testing.T) {
+	s := testsuite.WorkflowTestSuite{}
+	env := s.NewTestWorkflowEnvironment()
+
+	var a *Activities
+
+	// No StructuredPlanActivity needed — auto-approve skips it
+	env.OnActivity(a.ExecuteActivity, mock.Anything, mock.Anything, mock.Anything).Return(&ExecutionResult{
+		ExitCode: 0, Output: "done", Agent: "claude",
+	}, nil)
+	env.OnActivity(a.CodeReviewActivity, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&ReviewResult{
+		Approved: true, ReviewerAgent: "codex",
+	}, nil)
+	env.OnActivity(a.RunSemgrepScanActivity, mock.Anything, mock.Anything).Return(&SemgrepScanResult{
+		Passed: true,
+	}, nil)
+	env.OnActivity(a.DoDVerifyActivity, mock.Anything, mock.Anything).Return(&DoDResult{
+		Passed: true,
+	}, nil)
+
+	env.OnWorkflow(ContinuousLearnerWorkflow, mock.Anything, mock.Anything).Return(nil)
+	env.OnWorkflow(TacticalGroomWorkflow, mock.Anything, mock.Anything).Return(nil)
+
+	var outcome OutcomeRecord
+	env.OnActivity(a.RecordOutcomeActivity, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		if o, ok := args.Get(1).(OutcomeRecord); ok {
+			outcome = o
+		}
+	}).Return(nil)
+
+	env.ExecuteWorkflow(CortexAgentWorkflow, TaskRequest{
+		BeadID:      "test-bead-auto",
+		Project:     "test-project",
+		Prompt:      "auto-approved task",
+		Agent:       "claude",
+		WorkDir:     "/tmp/test",
+		AutoApprove: true,
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	require.NotEmpty(t, outcome.StepMetrics)
+
+	// Plan and gate should be "skipped" for auto-approve
+	stepNames := make(map[string]StepMetric, len(outcome.StepMetrics))
+	for _, m := range outcome.StepMetrics {
+		stepNames[m.Name] = m
+	}
+
+	planStep, ok := stepNames["plan"]
+	require.True(t, ok, "plan step must be recorded even when skipped")
+	require.Equal(t, "skipped", planStep.Status)
+
+	gateStep, ok := stepNames["gate"]
+	require.True(t, ok, "gate step must be recorded even when skipped")
+	require.Equal(t, "skipped", gateStep.Status)
+}
+
+// TestStepDurationLoggingEscalation verifies step metrics are recorded on escalation
+// (all DoD retries fail).
+func TestStepDurationLoggingEscalation(t *testing.T) {
+	s := testsuite.WorkflowTestSuite{}
+	env := s.NewTestWorkflowEnvironment()
+
+	var a *Activities
+
+	env.OnActivity(a.StructuredPlanActivity, mock.Anything, mock.Anything).Return(&StructuredPlan{
+		Summary:            "will fail dod",
+		Steps:              []PlanStep{{Description: "break things", File: "main.go", Rationale: "test"}},
+		FilesToModify:      []string{"main.go"},
+		AcceptanceCriteria: []string{"tests pass"},
+	}, nil)
+
+	env.OnActivity(a.ExecuteActivity, mock.Anything, mock.Anything, mock.Anything).Return(&ExecutionResult{
+		ExitCode: 0, Output: "code", Agent: "claude",
+	}, nil)
+	env.OnActivity(a.CodeReviewActivity, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&ReviewResult{
+		Approved: true, ReviewerAgent: "codex",
+	}, nil)
+	env.OnActivity(a.RunSemgrepScanActivity, mock.Anything, mock.Anything).Return(&SemgrepScanResult{
+		Passed: true,
+	}, nil)
+	env.OnActivity(a.DoDVerifyActivity, mock.Anything, mock.Anything).Return(&DoDResult{
+		Passed: false, Failures: []string{"tests failed"},
+	}, nil)
+	env.OnActivity(a.EscalateActivity, mock.Anything, mock.Anything).Return(nil)
+
+	env.OnWorkflow(ContinuousLearnerWorkflow, mock.Anything, mock.Anything).Return(nil).Maybe()
+	env.OnWorkflow(TacticalGroomWorkflow, mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	var outcome OutcomeRecord
+	env.OnActivity(a.RecordOutcomeActivity, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		if o, ok := args.Get(1).(OutcomeRecord); ok {
+			outcome = o
+		}
+	}).Return(nil)
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow("human-approval", "APPROVED")
+	}, 0)
+
+	env.ExecuteWorkflow(CortexAgentWorkflow, TaskRequest{
+		BeadID:  "test-bead-escalate",
+		Project: "test-project",
+		Prompt:  "will fail dod",
+		Agent:   "claude",
+		WorkDir: "/tmp/test",
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.Error(t, env.GetWorkflowError())
+	require.NotEmpty(t, outcome.StepMetrics)
+
+	// Should have: plan, gate, 3x (execute, review, semgrep, dod), escalate
+	// = 2 + 3*4 + 1 = 15 steps
+	stepNames := make(map[string]int)
+	for _, m := range outcome.StepMetrics {
+		stepNames[m.Name]++
+	}
+
+	require.Equal(t, 1, stepNames["plan"])
+	require.Equal(t, 1, stepNames["gate"])
+	require.Equal(t, 1, stepNames["escalate"])
+
+	// 3 DoD retries
+	for i := 1; i <= 3; i++ {
+		require.Equal(t, 1, stepNames[fmt.Sprintf("execute[%d]", i)], "execute[%d]", i)
+		require.Equal(t, 1, stepNames[fmt.Sprintf("review[%d]", i)], "review[%d]", i)
+		require.Equal(t, 1, stepNames[fmt.Sprintf("semgrep[%d]", i)], "semgrep[%d]", i)
+		require.Equal(t, 1, stepNames[fmt.Sprintf("dod[%d]", i)], "dod[%d]", i)
+	}
+
+	// All dod steps should be "failed"
+	for _, m := range outcome.StepMetrics {
+		if m.Name == "dod[1]" || m.Name == "dod[2]" || m.Name == "dod[3]" {
+			require.Equal(t, "failed", m.Status, "dod step should be failed")
+		}
+	}
 }
 
 func intPtr(i int) *int { return &i }
