@@ -31,6 +31,7 @@ import (
 // Scheduler is the core orchestration loop.
 type Scheduler struct {
 	cfg                     *config.Config
+	cfgMu                  sync.RWMutex
 	cfgManager              config.ConfigManager
 	store                   *store.Store
 	rateLimiter             *dispatch.RateLimiter
@@ -54,16 +55,7 @@ type Scheduler struct {
 	paused                  bool
 	systemPauseReason       string
 	systemPauseSince        time.Time
-	quarantine              map[string]time.Time
-	churnBlock              map[string]time.Time
-	epicBreakup             map[string]time.Time
-	claimAnomaly            map[string]time.Time
-	dispatchBlockAnomaly    map[string]time.Time
-	mergeGateRateLimitUntil map[string]time.Time
-	lifecycleRateLimitUntil map[string]time.Time
-	lifecycleRateLimitLog   map[string]time.Time
-	gatewayCircuitUntil     time.Time
-	gatewayCircuitLogAt     time.Time
+	epicBreakdown           map[string]time.Time // Still needed or moved to DispatchEngine?
 	planGateLogAt           time.Time
 	workflowRegistry        *workflow.Registry
 	workflowMode            string
@@ -117,14 +109,7 @@ type dodExecutionState struct {
 }
 
 const (
-	failureQuarantineThreshold   = 3
-	failureQuarantineWindow      = 45 * time.Minute
-	failureQuarantineLogInterval = 10 * time.Minute
 
-	churnDispatchThreshold      = 6
-	churnTotalDispatchThreshold = 12
-	churnWindow                 = 60 * time.Minute
-	churnBlockInterval          = 20 * time.Minute
 
 	systemPauseReasonChurn      = "system_churn"
 	systemPauseReasonTokenWaste = "system_token_waste"
@@ -135,30 +120,20 @@ const (
 
 	profileRebuildInterval = 24 * time.Hour     // Rebuild profiles daily
 	profileStatsWindow     = 7 * 24 * time.Hour // Look back 7 days for stats
+	qualityDisqualifyScore = 0.5
 
 	// Completion verification settings
 	completionCheckInterval = 2 * time.Hour // Check for completed beads every 2 hours
 	completionLookbackDays  = 7             // Look back 7 days in git commits
 	orphanedCommitLogSample = 5
 
-	nightModeStartHour = 22
-	nightModeEndHour   = 7
 
-	claimLeaseTTL                 = 3 * time.Minute
-	claimLeaseGrace               = 1 * time.Minute
-	terminalClaimGrace            = 2 * time.Minute
-	claimedNoDispatchManagedGrace = 15 * time.Minute
-	claimAnomalyLogWindow         = 10 * time.Minute
 	dispatchBlockLogWindow        = 10 * time.Minute
 
-	gatewayFailureWindow    = 2 * time.Minute
-	gatewayFailureThreshold = 5
-	gatewayCircuitDuration  = 10 * time.Minute
+
 	planGateLogInterval     = 2 * time.Minute
 
-	lifecycleRateLimitMinBackoff = 100 * time.Millisecond
-	lifecycleRateLimitMaxBackoff = 2 * time.Minute
-	lifecycleRateLimitLogWindow  = 30 * time.Second
+
 
 	dodQueueCapacity      = 128
 	tickWatchdogThreshold = 90 * time.Second
@@ -213,19 +188,11 @@ func NewWithConfigManager(cfgManager config.ConfigManager, s *store.Store, rl *d
 		now:         time.Now,
 		backends: map[string]dispatch.Backend{
 			"headless_cli": dispatch.NewHeadlessBackend(cfg.Dispatch.CLI, config.ExpandHome(cfg.Dispatch.LogDir), cfg.Dispatch.LogRetentionDays),
-			"tmux":         dispatch.NewTmuxBackend(cfg.Dispatch.CLI, cfg.Dispatch.Tmux.HistoryLimit),
 			"openclaw":     dispatch.NewOpenClawBackend(openclawDispatcher),
 		},
 		logger:                    logger,
 		dryRun:                    dryRun,
-		quarantine:                make(map[string]time.Time),
-		churnBlock:                make(map[string]time.Time),
-		epicBreakup:               make(map[string]time.Time),
-		claimAnomaly:              make(map[string]time.Time),
-		dispatchBlockAnomaly:      make(map[string]time.Time),
-		mergeGateRateLimitUntil:  make(map[string]time.Time),
-		lifecycleRateLimitUntil:   make(map[string]time.Time),
-		lifecycleRateLimitLog:     make(map[string]time.Time),
+		epicBreakdown:             make(map[string]time.Time),
 		utilizationSampleInterval: 1 * time.Minute,
 		dodQueue:                  make(chan dodQueueItem, dodQueueCapacity),
 		dodQueued:                 make(map[string]struct{}),
@@ -293,8 +260,71 @@ func NewWithConfigManager(cfgManager config.ConfigManager, s *store.Store, rl *d
 			"workflows", scheduler.workflowRegistry.Names(),
 		)
 	}
+	scheduler.SetConfig(cfg)
 
 	return scheduler
+}
+
+func (s *Scheduler) getConfig() *config.Config {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg
+}
+
+func (s *Scheduler) projectWorkspace(projectName string) string {
+	cfg := s.getConfig()
+	if cfg == nil {
+		return ""
+	}
+	project, ok := cfg.Projects[projectName]
+	if !ok {
+		return ""
+	}
+	return config.ExpandHome(project.Workspace)
+}
+
+func inferRoleFromAgentID(agentID string) string {
+	parts := strings.Split(agentID, "-")
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[len(parts)-1]
+}
+
+func (s *Scheduler) SetConfig(cfg *config.Config) {
+	if s == nil {
+		return
+	}
+
+	s.cfgMu.Lock()
+	s.cfg = cfg
+	if cfg != nil {
+		s.workflowRegistry = buildWorkflowRegistry(cfg)
+		s.workflowMode = workflowExecutionMode()
+		s.workflowEnabled = s.workflowRegistry != nil && s.workflowMode != "disabled"
+	}
+	s.cfgMu.Unlock()
+
+	if s.concurrencyController != nil {
+		s.concurrencyController.SetConfig(cfg)
+	}
+	if s.riskController != nil {
+		s.riskController.SetConfig(cfg)
+	}
+	if s.claimManager != nil {
+		s.claimManager.SetConfig(cfg)
+	}
+	if s.dispatchEngine != nil {
+		if de, ok := s.dispatchEngine.(*dispatchEngine); ok {
+			de.SetConfig(cfg)
+		}
+	}
+	if s.ceremonyScheduler != nil {
+		s.ceremonyScheduler.SetConfig(cfg)
+	}
+	if s.completionVerifier != nil {
+		s.completionVerifier.SetProjects(cfg.Projects)
+	}
 }
 
 func defaultSchedulerInstanceID() string {
@@ -440,24 +470,6 @@ func (s *Scheduler) latestCommitSHASafe(workspace string) (string, error) {
 	return git.LatestCommitSHA(workspace)
 }
 
-func (s *Scheduler) getMergeGateRateLimitUntil() (time.Time, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.mergeGateRateLimitUntil == nil {
-		return time.Time{}, false
-	}
-	until, ok := s.mergeGateRateLimitUntil[mergeGateCooldownKey]
-	return until, ok
-}
-
-func (s *Scheduler) setMergeGateRateLimitUntil(now time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.mergeGateRateLimitUntil == nil {
-		s.mergeGateRateLimitUntil = make(map[string]time.Time)
-	}
-	s.mergeGateRateLimitUntil[mergeGateCooldownKey] = now.Add(mergeGateRateLimit)
-}
 
 func workflowStageForBead(bead beads.Bead) string {
 	bestStage := ""
@@ -621,7 +633,19 @@ func (s *Scheduler) Start(ctx context.Context) {
 
 	s.startDoDWorker(ctx)
 
-	ticker := time.NewTicker(s.cfg.General.TickInterval.Duration)
+	currentTickInterval := func() time.Duration {
+		cfg := s.getConfig()
+		if cfg == nil {
+			return 60 * time.Second
+		}
+		if cfg.General.TickInterval.Duration <= 0 {
+			return 60 * time.Second
+		}
+		return cfg.General.TickInterval.Duration
+	}
+
+	tickerPeriod := currentTickInterval()
+	ticker := time.NewTicker(tickerPeriod)
 	defer ticker.Stop()
 
 	// Run immediately on start
@@ -633,6 +657,12 @@ func (s *Scheduler) Start(ctx context.Context) {
 			s.logger.Info("scheduler stopped")
 			return
 		case <-ticker.C:
+			nextInterval := currentTickInterval()
+			if nextInterval != tickerPeriod {
+				ticker.Stop()
+				ticker = time.NewTicker(nextInterval)
+				tickerPeriod = nextInterval
+			}
 			s.RunTick(ctx)
 		}
 	}
@@ -793,13 +823,14 @@ func (s *Scheduler) shouldPauseForChurn(ctx context.Context, now time.Time, cc c
 
 func (s *Scheduler) systemPauseDecision(ctx context.Context) (bool, string, string) {
 	now := time.Now()
-	if s == nil || s.cfg == nil || !s.cfg.Dispatch.CostControl.Enabled {
+	cfg := s.getConfig()
+	if cfg == nil || !cfg.Dispatch.CostControl.Enabled {
 		return false, "", ""
 	}
-	if shouldPause, details := s.shouldPauseForChurn(ctx, now, s.cfg.Dispatch.CostControl); shouldPause {
+	if shouldPause, details := s.shouldPauseForChurn(ctx, now, cfg.Dispatch.CostControl); shouldPause {
 		return true, systemPauseReasonChurn, details
 	}
-	if shouldPause, details := s.shouldPauseForTokenWaste(ctx, now, s.cfg.Dispatch.CostControl); shouldPause {
+	if shouldPause, details := s.shouldPauseForTokenWaste(ctx, now, cfg.Dispatch.CostControl); shouldPause {
 		return true, systemPauseReasonTokenWaste, details
 	}
 	return false, "", ""
@@ -829,30 +860,6 @@ func (s *Scheduler) handleSystemEscalationPause(ctx context.Context) bool {
 	return false
 }
 
-func (s *Scheduler) validateBeadStructureForDispatch(project config.Project, bead beads.Bead, role string) []string {
-	if !requiresStructuredBeadBeforeDispatch(role) {
-		return nil
-	}
-	var failures []string
-	dod := project.DoD
-	if dod.RequireEstimate && bead.EstimateMinutes <= 0 {
-		failures = append(failures, "EstimateMinutes is 0 or missing")
-	}
-	if dod.RequireAcceptance && strings.TrimSpace(bead.Acceptance) == "" {
-		failures = append(failures, "Acceptance criteria is missing")
-	}
-	return failures
-}
-
-func requiresStructuredBeadBeforeDispatch(role string) bool {
-	switch strings.TrimSpace(role) {
-	case "coder", "reviewer", "qa":
-		return true
-	default:
-		return false
-	}
-}
-
 func (s *Scheduler) countRecentDispatchesByStatus(now time.Time, statuses []string, window time.Duration) (int, error) {
 	if s == nil || s.store == nil || len(statuses) == 0 || window <= 0 {
 		return 0, nil
@@ -879,7 +886,11 @@ func (s *Scheduler) countRecentDispatchesByStatus(now time.Time, statuses []stri
 }
 
 func (s *Scheduler) notifySchedulerEscalation(ctx context.Context, details string) {
-	room := strings.TrimSpace(s.cfg.ResolveRoom(""))
+	cfg := s.getConfig()
+	if cfg == nil {
+		return
+	}
+	room := strings.TrimSpace(cfg.ResolveRoom(""))
 	if room == "" || s.lifecycleMatrixSender == nil {
 		return
 	}
@@ -890,7 +901,12 @@ func (s *Scheduler) notifySchedulerEscalation(ctx context.Context, details strin
 
 // PlanGateStatus returns the execution plan gate state used to control implementation dispatching.
 func (s *Scheduler) PlanGateStatus() (required bool, active bool, plan *store.ExecutionPlanGate, err error) {
-	required = s.cfg.Chief.RequireApprovedPlan
+	cfg := s.getConfig()
+	if cfg == nil {
+		return false, false, nil, nil
+	}
+
+	required = cfg.Chief.RequireApprovedPlan
 	active, plan, err = s.store.HasActiveApprovedPlan()
 	return required, active, plan, err
 }
@@ -905,12 +921,6 @@ func (s *Scheduler) CancelDispatch(id int64) error {
 		return fmt.Errorf("dispatch not running")
 	}
 
-	if d.SessionName != "" {
-		if err := dispatch.KillSession(d.SessionName); err != nil {
-			s.logger.Warn("failed to kill tmux session for cancel", "id", id, "session", d.SessionName, "error", err)
-		}
-	}
-
 	// Keep this path for PID-based dispatchers and compatibility.
 	if err := s.dispatcher.Kill(d.PID); err != nil {
 		s.logger.Warn("failed to kill dispatch process for cancel", "id", id, "handle", d.PID, "error", err)
@@ -922,7 +932,7 @@ func (s *Scheduler) CancelDispatch(id int64) error {
 	if err := s.store.UpdateDispatchStage(id, "cancelled"); err != nil {
 		s.logger.Warn("failed to update dispatch stage", "dispatch_id", id, "stage", "cancelled", "error", err)
 	}
-	if err := s.reconcileDispatchClaimOnTerminal(context.Background(), *d, "cancelled"); err != nil {
+	if err := s.claimManager.ReconcileDispatchClaimOnTerminal(context.Background(), *d, "cancelled"); err != nil {
 		s.logger.Warn("failed to reconcile dispatch claim after cancel", "dispatch_id", id, "bead", d.BeadID, "error", err)
 	}
 	s.reportBeadLifecycle(context.Background(), beadLifecycleEvent{
@@ -944,6 +954,12 @@ func (s *Scheduler) CancelDispatch(id int64) error {
 
 // RunTick executes a single scheduler tick.
 func (s *Scheduler) RunTick(ctx context.Context) {
+	cfg := s.getConfig()
+	if cfg == nil {
+		s.logger.Warn("tick skipped due to missing config")
+		return
+	}
+
 	// Check for active pause conditions before dispatching.
 	if s.riskController.HandleSystemEscalationPause(ctx) {
 		return
@@ -959,15 +975,6 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 	defer close(watchdogDone)
 
 	s.logger.Info("tick started")
-
-	// 1. Reload configuration if manager is available
-	if s.cfgManager != nil {
-		if newCfg := s.cfgManager.Get(); newCfg != nil {
-			// In a real implementation we might diff and log changes,
-			// for now just atomic swap the pointer for the tick execution.
-			s.cfg = newCfg
-		}
-	}
 
 	// Rebuild provider profiles periodically
 	s.rebuildProfilesIfNeeded()
@@ -1035,7 +1042,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		proj config.Project
 	}
 	var projects []namedProject
-	for name, proj := range s.cfg.Projects {
+	for name, proj := range cfg.Projects {
 		if proj.Enabled {
 			projects = append(projects, namedProject{name, proj})
 		}
@@ -1044,7 +1051,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		return projects[i].proj.Priority < projects[j].proj.Priority
 	})
 
-	crossGraph, crossErr := s.buildCrossProjectGraphSafe(ctx, s.cfg.Projects)
+	crossGraph, crossErr := s.buildCrossProjectGraphSafe(ctx, cfg.Projects)
 	if crossErr != nil {
 		s.logger.Warn("failed to build cross-project dependency graph", "error", crossErr)
 		crossGraph = nil
@@ -1110,7 +1117,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		if gatewayCircuitOpen {
 			break
 		}
-		if dispatched >= s.cfg.General.MaxPerTick {
+		if dispatched >= cfg.General.MaxPerTick {
 			break
 		}
 
@@ -1215,7 +1222,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		// Detect complexity -> tier
 		tier := DetectComplexity(item.bead)
 
-		provider, _, currentTier, _, cleanupReservation, err := s.pickAndReserveProviderForBead(item.bead, tier, nil, agent)
+		provider, _, currentTier, _, cleanupReservation, err := s.pickAndReserveProviderForBead(item.bead, tier, role, nil, agent)
 		if provider == nil {
 			// If reservation failed due to error, log it. If just nil, it means no provider/rate limited.
 			if err != nil {
@@ -1353,7 +1360,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			}
 		}
 
-		backend, backendName, err := s.selectBackend(role, currentTier, 0)
+		backend, backendName, err := s.dispatchEngine.SelectBackend(role, currentTier, 0)
 		if err != nil {
 			s.logger.Error("failed to resolve backend", "bead", item.bead.ID, "tier", currentTier, "role", role, "error", err)
 			releaseLock("backend_resolution_failed")
@@ -1504,6 +1511,10 @@ func (s *Scheduler) WaitForRunningDispatches(ctx context.Context, pollInterval t
 }
 
 func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
+	cfg := s.getConfig()
+	if cfg == nil {
+		return
+	}
 	running, err := s.store.GetRunningDispatches()
 	if err != nil {
 		s.logger.Error("failed to get running dispatches", "error", err)
@@ -1530,11 +1541,11 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 		finalStage := "completed"
 		retryPending := false
 		retryReason := ""
+		output := ""
 
-		if d.Backend == "tmux" || strings.TrimSpace(d.SessionName) != "" {
-			sessStatus, sessExit := dispatch.SessionStatus(d.SessionName)
-			switch sessStatus {
-			case "gone":
+		if strings.TrimSpace(d.SessionName) != "" {
+			state := s.dispatcher.GetProcessState(d.PID)
+			if state.State == "unknown" {
 				status = "failed"
 				exitCode = -1
 				finalStage = "failed_needs_check"
@@ -1550,22 +1561,25 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 				_ = s.store.RecordHealthEventWithDispatch("dispatch_session_gone", healthDetails, d.ID, d.BeadID)
 
 				category := "session_disappeared"
-				summary := fmt.Sprintf("Tmux session %s disappeared unexpectedly during execution. This may indicate a system crash, out-of-memory condition, or external termination. Manual investigation required.", d.SessionName)
+				summary := fmt.Sprintf("Docker container %s disappeared unexpectedly during execution. This may indicate a system crash, out-of-memory condition, or external termination. Manual investigation required.", d.SessionName)
 				if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
 					s.logger.Error("failed to store failure diagnosis for gone session", "dispatch_id", d.ID, "error", err)
 				}
-			case "exited":
-				if sessExit != 0 {
+			} else if state.State == "exited" {
+				if state.ExitCode != 0 {
 					status = "failed"
-					exitCode = sessExit
+					exitCode = state.ExitCode
 					finalStage = "failed"
+				} else {
+					status = "completed"
+					exitCode = 0
+					finalStage = "completed"
 				}
 			}
 		} else {
 			handle := s.dispatchHandleFromRecord(d)
 			backend := s.backendByName(d.Backend)
 			state := dispatch.DispatchStatus{State: "unknown", ExitCode: -1}
-			output := ""
 			if backend != nil {
 				backendState, statusErr := backend.Status(handle)
 				if statusErr != nil {
@@ -1713,19 +1727,43 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 		if err := s.store.UpdateDispatchStatus(d.ID, status, exitCode, duration); err != nil {
 			s.logger.Error("failed to update dispatch status", "id", d.ID, "error", err)
 		} else {
+			if status == "completed" {
+				quality, err := learner.ScoreDispatch(output, s.projectWorkspace(d.Project), d.BeadID)
+				if err != nil {
+					s.logger.Warn("failed to score dispatch quality", "dispatch_id", d.ID, "error", err)
+				} else if quality != nil {
+					role := inferRoleFromAgentID(d.AgentID)
+					provider := strings.TrimSpace(d.Provider)
+					if err := s.store.UpsertQualityScore(store.QualityScore{
+						DispatchID:   int64(d.ID),
+						Provider:     provider,
+						Role:         role,
+						Overall:      quality.Overall,
+						TestsPassed:  quality.TestsPassed,
+						BeadClosed:   quality.BeadClosed,
+						CommitMade:   quality.CommitMade,
+						FilesChanged: quality.FilesChanged,
+						LinesChanged: quality.LinesChanged,
+						Duration:     duration,
+					}); err != nil {
+						s.logger.Warn("failed to persist quality score", "dispatch_id", d.ID, "error", err)
+					}
+				}
+			}
+
 			if status == "failed" && retryPending {
 				nextTier := d.Tier
 				if nextTier == "" {
 					nextTier = "balanced"
 				}
 				if retryReason == "cli_broken" {
-					if !s.hasAlternativeProviderInTier(nextTier, d.Provider) {
-						if shifted := nextTierAfterExhaustion(nextTier); shifted != "" {
+					if !s.dispatchEngine.HasAlternativeProviderInTier(nextTier, d.Provider) {
+						if shifted := s.dispatchEngine.NextTierAfterExhaustion(nextTier); shifted != "" {
 							nextTier = shifted
 						}
 					}
 				}
-				policy := resolveRetryPolicy(s.cfg, d.Project, nextTier)
+				policy := s.dispatchEngine.ResolveRetryPolicy(d.Project, d.Tier)
 				delay, nextAttemptTier, shouldRetry := policy.NextRetry(d.Retries, nextTier)
 				if !shouldRetry {
 					s.logger.Warn("max retries exceeded, marking failed after transient completion failure",
@@ -1764,11 +1802,11 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 				output, _ := s.store.GetOutput(d.ID)
 				usage := cost.ExtractTokenUsage(output, d.Prompt)
 				var inputPrice, outputPrice float64
-				if provider, ok := s.cfg.Providers[d.Provider]; ok {
+				if provider, ok := cfg.Providers[d.Provider]; ok {
 					inputPrice = provider.CostInputPerMtok
 					outputPrice = provider.CostOutputPerMtok
 				} else {
-					for _, provider := range s.cfg.Providers {
+					for _, provider := range cfg.Providers {
 						if provider.Model == d.Provider {
 							inputPrice = provider.CostInputPerMtok
 							outputPrice = provider.CostOutputPerMtok
@@ -1793,7 +1831,7 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 			}
 
 			if status == "completed" || status == "failed" || status == "cancelled" || status == "interrupted" {
-				if err := s.reconcileDispatchClaimOnTerminal(ctx, d, status); err != nil {
+				if err := s.claimManager.ReconcileDispatchClaimOnTerminal(ctx, d, status); err != nil {
 					s.logger.Warn("failed to reconcile claim after terminal dispatch", "dispatch_id", d.ID, "bead", d.BeadID, "status", status, "error", err)
 				}
 			} else if status == "pending_retry" {
@@ -1841,28 +1879,9 @@ func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
 	}
 }
 
-func (s *Scheduler) processOverflowQueue(_ context.Context) {
-	if s.concurrencyController == nil {
-		return
-	}
-}
+// runHealthChecks executes stuck dispatch detection and zombie cleanup as part of the scheduler loop.
 
-func (s *Scheduler) isDispatchCoolingDown(beadID, agent string) bool {
-	_ = agent
-	if s == nil || s.cfg == nil || s.store == nil {
-		return false
-	}
-	cooldown := s.cfg.General.DispatchCooldown.Duration
-	if cooldown <= 0 {
-		return false
-	}
-	recent, err := s.store.WasBeadDispatchedRecently(beadID, cooldown)
-	if err != nil {
-		s.logger.Warn("failed to evaluate dispatch cooldown", "bead", beadID, "error", err)
-		return false
-	}
-	return recent
-}
+// checkCeremonies evaluates ceremony schedules and triggers them if due
 
 // checkCeremonies evaluates ceremony schedules and triggers them if due
 func (s *Scheduler) checkCeremonies(ctx context.Context) {
@@ -1882,7 +1901,11 @@ func (s *Scheduler) checkSprintCeremonies(ctx context.Context) {
 		return // Only check in the first 5 minutes of each hour
 	}
 
-	for projectName, project := range s.cfg.Projects {
+	cfg := s.getConfig()
+	if cfg == nil {
+		return
+	}
+	for projectName, project := range cfg.Projects {
 		if !project.Enabled {
 			continue
 		}
@@ -1894,7 +1917,11 @@ func (s *Scheduler) checkSprintCeremonies(ctx context.Context) {
 // checkProjectSprintCeremony checks if a project should run sprint ceremonies
 func (s *Scheduler) checkProjectSprintCeremony(ctx context.Context, projectName string, project config.Project) {
 	// Create ceremony orchestrator for this project
-	ceremony := learner.NewSprintCeremony(s.cfg, s.store, s.dispatcher, s.logger, projectName)
+	cfg := s.getConfig()
+	if cfg == nil {
+		return
+	}
+	ceremony := learner.NewSprintCeremony(cfg, s.store, s.dispatcher, s.logger, projectName)
 	
 	// Check if ceremonies are due based on cadence configuration
 	shouldRunReview := s.shouldRunSprintCeremony(ctx, projectName, "review")
@@ -1952,26 +1979,30 @@ func (s *Scheduler) checkProjectSprintCeremony(ctx context.Context, projectName 
 // shouldRunSprintCeremony checks if a sprint ceremony should run based on schedule
 func (s *Scheduler) shouldRunSprintCeremony(ctx context.Context, projectName, ceremonyType string) bool {
 	now := time.Now()
+	cfg := s.getConfig()
+	if cfg == nil {
+		return false
+	}
 	
 	// Use cadence configuration to determine ceremony timing
-	if s.cfg.Cadence.SprintStartDay == "" || s.cfg.Cadence.SprintStartTime == "" {
+	if cfg.Cadence.SprintStartDay == "" || cfg.Cadence.SprintStartTime == "" {
 		return false // No cadence configured
 	}
 	
 	// Parse sprint start configuration
-	startWeekday, err := s.cfg.Cadence.StartWeekday()
+	startWeekday, err := cfg.Cadence.StartWeekday()
 	if err != nil {
 		s.logger.Warn("invalid cadence sprint_start_day", "project", projectName, "error", err)
 		return false
 	}
 	
-	_, _, err = s.cfg.Cadence.StartClock()
+	_, _, err = cfg.Cadence.StartClock()
 	if err != nil {
 		s.logger.Warn("invalid cadence sprint_start_time", "project", projectName, "error", err)
 		return false
 	}
 	
-	location, err := s.cfg.Cadence.LoadLocation()
+	location, err := cfg.Cadence.LoadLocation()
 	if err != nil {
 		s.logger.Warn("invalid cadence timezone", "project", projectName, "error", err)
 		location = time.UTC
@@ -2091,7 +2122,8 @@ func (s *Scheduler) runRetrospectiveCeremonyAsync(ctx context.Context, ceremony 
 }
 
 func (s *Scheduler) checkSprintPlanningTriggers(ctx context.Context) {
-	if s.ceremonyScheduler == nil || !s.cfg.Chief.Enabled {
+	cfg := s.getConfig()
+	if s.ceremonyScheduler == nil || cfg == nil || !cfg.Chief.Enabled {
 		return
 	}
 
@@ -2106,7 +2138,7 @@ func (s *Scheduler) checkSprintPlanningTriggers(ctx context.Context) {
 	now := s.now()
 	triggered := make([]planningTrigger, 0)
 
-	for projectName, project := range s.cfg.Projects {
+	for projectName, project := range cfg.Projects {
 		if !project.Enabled {
 			continue
 		}
@@ -2388,7 +2420,11 @@ func (s *Scheduler) lookupDoDBead(projectName string, project config.Project, be
 // processDoDStage checks for beads in stage:dod and queues asynchronous DoD validation.
 func (s *Scheduler) processDoDStage(ctx context.Context) {
 	_ = ctx
-	for projectName, project := range s.cfg.Projects {
+	cfg := s.getConfig()
+	if cfg == nil {
+		return
+	}
+	for projectName, project := range cfg.Projects {
 		if !project.Enabled {
 			continue
 		}
@@ -2526,6 +2562,10 @@ func (s *Scheduler) transitionBeadToCoding(ctx context.Context, projectName stri
 
 // handleOpsQaCompletion checks if a completed dispatch was ops/qa work and transitions to DoD if configured
 func (s *Scheduler) handleOpsQaCompletion(ctx context.Context, dispatch store.Dispatch) {
+	cfg := s.getConfig()
+	if cfg == nil {
+		return
+	}
 	// Check if this was an ops or qa agent dispatch
 	if dispatch.AgentID == "" || (!strings.HasSuffix(dispatch.AgentID, "-ops") && !strings.HasSuffix(dispatch.AgentID, "-qa")) {
 		return
@@ -2538,7 +2578,7 @@ func (s *Scheduler) handleOpsQaCompletion(ctx context.Context, dispatch store.Di
 	} else if strings.HasSuffix(projectName, "-qa") {
 		projectName = strings.TrimSuffix(projectName, "-qa")
 	}
-	project, exists := s.cfg.Projects[projectName]
+	project, exists := cfg.Projects[projectName]
 	if !exists || !project.Enabled {
 		return
 	}
@@ -2629,14 +2669,18 @@ func (s *Scheduler) transitionBeadToDod(ctx context.Context, projectName string,
 
 // defaultModel returns the model from the first balanced provider, or falls back to any provider.
 func (s *Scheduler) defaultModel() string {
+	cfg := s.getConfig()
+	if cfg == nil {
+		return "claude-sonnet-4-20250514"
+	}
 	// Prefer balanced tier
-	for _, name := range s.cfg.Tiers.Balanced {
-		if p, ok := s.cfg.Providers[name]; ok {
+	for _, name := range cfg.Tiers.Balanced {
+		if p, ok := cfg.Providers[name]; ok {
 			return p.Model
 		}
 	}
 	// Fallback to any provider
-	for _, p := range s.cfg.Providers {
+	for _, p := range cfg.Providers {
 		return p.Model
 	}
 	return "claude-sonnet-4-20250514"
@@ -2683,20 +2727,38 @@ func (s *Scheduler) GetOverflowQueue() []QueueItem {
 
 
 func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
+	cfg := s.getConfig()
+	if cfg == nil {
+		return
+	}
 	now := time.Now
 	if s.now != nil {
 		now = s.now
 	}
 	nowTime := now()
 
-	if until, ok := s.getMergeGateRateLimitUntil(); ok && nowTime.Before(until) {
-		s.logger.Info("merge-gate rate limit active, skipping merge processing", "until", until)
+	if until, ok := s.riskController.GetMergeGateRateLimitUntil(); ok && nowTime.Before(until) {
+		remaining := until.Sub(nowTime)
+		if s.logger != nil {
+			s.logger.Debug("merge gate is rate limited", "remaining", remaining)
+		}
 		return
 	}
 
 	mergesThisTick := 0
+	projectNames := make([]string, 0, len(cfg.Projects))
+	for projectName := range cfg.Projects {
+		if project, ok := cfg.Projects[projectName]; ok && project.Enabled && project.UseBranches {
+			projectNames = append(projectNames, projectName)
+		}
+	}
+	if len(projectNames) > 0 {
+		sort.Strings(projectNames)
+		s.logger.Info("merge workflow phase started", "projects", len(projectNames))
+	}
 
-	for projectName, project := range s.cfg.Projects {
+	for _, projectName := range projectNames {
+		project := cfg.Projects[projectName]
 		if !project.Enabled || !project.UseBranches {
 			continue
 		}
@@ -2709,6 +2771,7 @@ func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
 		}
 
 		for _, bead := range beadList {
+			s.logger.Debug("evaluating bead for merge workflow", "project", projectName, "bead", bead.ID, "status", bead.Status)
 			if mergesThisTick >= mergeGateMaxPerTick {
 				s.logger.Info("merge-gate per-tick max reached, deferring remaining merges", "project", projectName, "max", mergeGateMaxPerTick)
 				return
@@ -2726,6 +2789,7 @@ func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
 				continue
 			}
 			if dispatch == nil {
+				s.logger.Debug("merge workflow has no dispatch history for open review bead", "project", projectName, "bead", bead.ID)
 				continue
 			}
 			if dispatch.PRNumber <= 0 {
@@ -2754,7 +2818,8 @@ func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
 
 			if err := s.mergePRSafe(workspace, dispatch.PRNumber, mergeMethod); err != nil {
 				mergesThisTick++
-				s.setMergeGateRateLimitUntil(nowTime)
+				s.riskController.SetMergeGateRateLimitUntil(nowTime)
+				s.logger.Warn("merge attempt failed", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber, "method", mergeMethod, "error", err)
 				if isMergeConflictError(err) {
 					s.logger.Warn("merge conflict prevented PR merge", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber, "method", mergeMethod, "error", err)
 					_ = s.store.RecordHealthEventWithDispatch(
@@ -2778,7 +2843,14 @@ func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
 			}
 
 			mergesThisTick++
-			s.setMergeGateRateLimitUntil(nowTime)
+			s.riskController.SetMergeGateRateLimitUntil(nowTime)
+			_ = s.store.RecordHealthEventWithDispatch(
+				"pr_merge_successful",
+				fmt.Sprintf("project %s bead %s merged PR #%d using %s", projectName, bead.ID, dispatch.PRNumber, mergeMethod),
+				dispatch.ID,
+				bead.ID,
+			)
+			s.logger.Info("PR merged successfully", "project", projectName, "bead", bead.ID, "pr", dispatch.PRNumber, "method", mergeMethod)
 
 			commitSHA, err := s.latestCommitSHASafe(workspace)
 			if err != nil {
@@ -2802,6 +2874,12 @@ func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
 			}
 			if checkResult.Passed {
 				s.logger.Info("post-merge checks passed, closing bead", "project", projectName, "bead", bead.ID)
+				_ = s.store.RecordHealthEventWithDispatch(
+					"pr_post_merge_checks_passed",
+					fmt.Sprintf("project %s bead %s post-merge checks passed after merge of PR #%d", projectName, bead.ID, dispatch.PRNumber),
+					dispatch.ID,
+					bead.ID,
+				)
 				s.closeBead(ctx, projectName, project, bead, "Post-merge checks passed")
 				continue
 			}
@@ -2874,7 +2952,11 @@ func isMergeConflictError(err error) bool {
 }
 
 func (s *Scheduler) finalizeDispatchBranch(d store.Dispatch) (string, error) {
-	project, ok := s.cfg.Projects[d.Project]
+	cfg := s.getConfig()
+	if cfg == nil {
+		return "", fmt.Errorf("scheduler config is not available")
+	}
+	project, ok := cfg.Projects[d.Project]
 	if !ok {
 		return "", fmt.Errorf("project %q not found for dispatch branch finalization", d.Project)
 	}
@@ -2887,7 +2969,7 @@ func (s *Scheduler) finalizeDispatchBranch(d store.Dispatch) (string, error) {
 	if baseBranch == "" {
 		baseBranch = "main"
 	}
-	mergeStrategy := strings.TrimSpace(s.cfg.Dispatch.Git.MergeStrategy)
+	mergeStrategy := strings.TrimSpace(cfg.Dispatch.Git.MergeStrategy)
 	if mergeStrategy == "" {
 		mergeStrategy = "merge"
 	}
@@ -2956,78 +3038,7 @@ func firstLineContaining(output, needle string) string {
 	return ""
 }
 
-func hasActiveChurnEscalation(issueList []beads.Bead, beadID string) bool {
-	if beadID == "" {
-		return false
-	}
-	titlePrefix := fmt.Sprintf("Auto: churn guard blocked bead %s ", beadID)
-	for _, issue := range issueList {
-		if normalizeIssueType(issue.Type) != "bug" {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(issue.Status), "closed") {
-			continue
-		}
-		if !strings.HasPrefix(issue.Title, titlePrefix) {
-			continue
-		}
-		if hasDiscoveredFromDependency(issue, beadID) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasRecentChurnEscalation(issueList []beads.Bead, beadID string, cutoff time.Time) bool {
-	if beadID == "" {
-		return false
-	}
-
-	titlePrefix := fmt.Sprintf("Auto: churn guard blocked bead %s ", beadID)
-	for _, issue := range issueList {
-		if normalizeIssueType(issue.Type) != "bug" {
-			continue
-		}
-		if !strings.HasPrefix(issue.Title, titlePrefix) {
-			continue
-		}
-		if !hasDiscoveredFromDependency(issue, beadID) {
-			continue
-		}
-
-		status := strings.ToLower(strings.TrimSpace(issue.Status))
-		if status != "closed" {
-			return true
-		}
-
-		lastUpdated := issue.UpdatedAt
-		if lastUpdated.IsZero() {
-			lastUpdated = issue.CreatedAt
-		}
-		if lastUpdated.IsZero() {
-			continue
-		}
-		if !lastUpdated.Before(cutoff) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func hasDiscoveredFromDependency(issue beads.Bead, beadID string) bool {
-	for _, dep := range issue.Dependencies {
-		if dep.DependsOnID == beadID && dep.Type == "discovered-from" {
-			return true
-		}
-	}
-	for _, depID := range issue.DependsOn {
-		if depID == beadID {
-			return true
-		}
-	}
-	return false
-}
+// isDispatchAlive
 
 // isDispatchAlive checks if a dispatch is still running using the best available method.
 // For tmux dispatches, it uses the stored session name (crash-resilient).
@@ -3040,28 +3051,13 @@ func (s *Scheduler) isDispatchAlive(d store.Dispatch) bool {
 		}
 	}
 	if d.SessionName != "" {
-		status, _ := dispatch.SessionStatus(d.SessionName)
-		return status == "running"
+		state := s.dispatcher.GetProcessState(d.PID)
+		return state.State == "running"
 	}
 	return s.dispatcher.IsAlive(d.PID)
 }
 
-func normalizeIssueType(t string) string {
-	t = strings.TrimSpace(strings.ToLower(t))
-	if t == "" {
-		return "task"
-	}
-	return t
-}
 
-func isNightEligibleIssueType(t string) bool {
-	switch normalizeIssueType(t) {
-	case "bug", "task":
-		return true
-	default:
-		return false
-	}
-}
 
 func (s *Scheduler) isNightMode() bool {
 	hour := time.Now().Hour()
@@ -3076,7 +3072,7 @@ func (s *Scheduler) ensureEpicBreakdowns(ctx context.Context, beadsDir string, b
 		}
 
 		key := projectName + ":" + b.ID
-		if last, ok := s.epicBreakup[key]; ok && now.Sub(last) < epicBreakdownInterval {
+		if last, ok := s.epicBreakdown[key]; ok && now.Sub(last) < epicBreakdownInterval {
 			continue
 		}
 
@@ -3092,7 +3088,7 @@ func (s *Scheduler) ensureEpicBreakdowns(ctx context.Context, beadsDir string, b
 			continue
 		}
 
-		s.epicBreakup[key] = now
+		s.epicBreakdown[key] = now
 		s.logger.Warn("epic auto-breakdown task created", "project", projectName, "epic", b.ID, "created_issue", issueID)
 		_ = s.store.RecordHealthEventWithDispatch("epic_breakdown_requested",
 			fmt.Sprintf("project %s epic %s queued for breakdown via %s", projectName, b.ID, issueID),
@@ -3232,150 +3228,12 @@ func isExecutableIssueType(issueType string) bool {
 	}
 }
 
-func (s *Scheduler) isChurnBlocked(ctx context.Context, bead beads.Bead, projectName string, beadsDir string) bool {
-	// Failure quarantine is a stronger signal than churn counting.
-	// If a bead is already quarantined for consecutive failures, suppress churn escalation noise.
-	if s.isFailureQuarantined(bead.ID) {
-		s.logger.Warn("bead blocked by failure quarantine (churn escalation suppressed)",
-			"project", projectName,
-			"bead", bead.ID,
-			"type", bead.Type,
-			"threshold", failureQuarantineThreshold,
-			"window", failureQuarantineWindow.String())
-		return true
-	}
-
-	history, err := s.store.GetDispatchesByBead(bead.ID)
-	if err != nil {
-		s.logger.Error("failed to evaluate churn guard", "bead", bead.ID, "error", err)
-		return false
-	}
-
-	now := time.Now()
-	cutoff := now.Add(-churnWindow)
-	recentFailureLike := 0
-	recentAll := 0
-	for _, d := range history {
-		if d.DispatchedAt.Before(cutoff) {
-			continue
-		}
-		if isChurnTotalStatus(d.Status) {
-			recentAll++
-		}
-		if isChurnCountableStatus(d.Status) {
-			recentFailureLike++
-		}
-	}
-
-	key := projectName + ":" + bead.ID
-	if recentFailureLike < churnDispatchThreshold && recentAll < churnTotalDispatchThreshold {
-		delete(s.churnBlock, key)
-		return false
-	}
-
-	triggerCount := recentFailureLike
-	triggerThreshold := churnDispatchThreshold
-	triggerMode := "failure_like"
-	if recentFailureLike < churnDispatchThreshold && recentAll >= churnTotalDispatchThreshold {
-		triggerCount = recentAll
-		triggerThreshold = churnTotalDispatchThreshold
-		triggerMode = "all_status"
-	}
-
-	last, seen := s.churnBlock[key]
-	if seen && now.Sub(last) < churnBlockInterval {
-		s.logger.Warn("bead blocked by churn guard",
-			"project", projectName,
-			"bead", bead.ID,
-			"type", bead.Type,
-			"dispatches_in_window", triggerCount,
-			"dispatches_failure_like", recentFailureLike,
-			"dispatches_all_status", recentAll,
-			"trigger_mode", triggerMode,
-			"threshold", triggerThreshold,
-			"window", churnWindow.String())
-		return true
-	}
-
-	issueList, listErr := s.listBeadsSafe(beadsDir)
-	if listErr != nil {
-		s.logger.Warn("failed to list beads for churn escalation dedupe",
-			"project", projectName,
-			"bead", bead.ID,
-			"error", listErr)
-	}
-
-	if hasActiveChurnEscalation(issueList, bead.ID) {
-		s.logger.Warn("bead blocked by churn guard (existing escalation open)",
-			"project", projectName,
-			"bead", bead.ID,
-			"type", bead.Type,
-			"dispatches_in_window", triggerCount,
-			"dispatches_failure_like", recentFailureLike,
-			"dispatches_all_status", recentAll,
-			"trigger_mode", triggerMode,
-			"threshold", triggerThreshold,
-			"window", churnWindow.String())
-	} else if hasRecentChurnEscalation(issueList, bead.ID, cutoff) {
-		s.logger.Warn("bead blocked by churn guard (recent escalation already recorded)",
-			"project", projectName,
-			"bead", bead.ID,
-			"type", bead.Type,
-			"dispatches_in_window", triggerCount,
-			"dispatches_failure_like", recentFailureLike,
-			"dispatches_all_status", recentAll,
-			"trigger_mode", triggerMode,
-			"threshold", triggerThreshold,
-			"window", churnWindow.String())
-	} else {
-		title := fmt.Sprintf("Auto: churn guard blocked bead %s (%d dispatches/%s)", bead.ID, triggerCount, churnWindow)
-		description := fmt.Sprintf(
-			"Bead `%s` in project `%s` exceeded churn threshold and was blocked from further overnight dispatch.\n\nTrigger mode: %s\nFailure-like dispatches in window: %d (threshold: %d)\nAll dispatches in window: %d (threshold: %d)\nWindow: %s\n\nPlease investigate root cause, split work into smaller tasks if needed, and add hardening/tests before re-enabling.\n\nBead title: %s\nBead type: %s",
-			bead.ID, projectName, triggerMode, recentFailureLike, churnDispatchThreshold, recentAll, churnTotalDispatchThreshold, churnWindow, bead.Title, bead.Type,
-		)
-		deps := []string{fmt.Sprintf("discovered-from:%s", bead.ID)}
-		if issueID, err := beads.CreateIssueCtx(ctx, beadsDir, title, "bug", 1, description, deps); err != nil {
-			s.logger.Warn("failed to create churn escalation bead", "project", projectName, "bead", bead.ID, "error", err)
-		} else {
-			s.logger.Warn("churn escalation bead created",
-				"project", projectName,
-				"bead", bead.ID,
-				"issue", issueID,
-				"dispatches_in_window", triggerCount,
-				"dispatches_failure_like", recentFailureLike,
-				"dispatches_all_status", recentAll,
-				"trigger_mode", triggerMode,
-				"threshold", triggerThreshold)
-		}
-	}
-
-	_ = s.store.RecordHealthEventWithDispatch("bead_churn_blocked",
-		fmt.Sprintf("project %s bead %s blocked by churn guard mode=%s failure_like=%d/%d all_status=%d/%d in %s", projectName, bead.ID, triggerMode, recentFailureLike, churnDispatchThreshold, recentAll, churnTotalDispatchThreshold, churnWindow),
-		0, bead.ID)
-	s.churnBlock[key] = now
-	return true
-}
-
-func isChurnCountableStatus(status string) bool {
-	switch status {
-	case "running", "failed", "cancelled", "pending_retry", "retried", "interrupted":
-		return true
-	default:
-		return false
-	}
-}
-
-func isChurnTotalStatus(status string) bool {
-	switch status {
-	case "running", "completed", "failed", "cancelled", "pending_retry", "retried", "interrupted":
-		return true
-	default:
-		return false
-	}
-}
-
 func (s *Scheduler) syncBeadsImports(ctx context.Context) {
-	for projectName, project := range s.cfg.Projects {
+	cfg := s.getConfig()
+	if cfg == nil {
+		return
+	}
+	for projectName, project := range cfg.Projects {
 		if !project.Enabled {
 			continue
 		}
@@ -3394,8 +3252,12 @@ func (s *Scheduler) syncBeadsImports(ctx context.Context) {
 
 // runHealthChecks executes stuck dispatch detection and zombie cleanup as part of the scheduler loop.
 func (s *Scheduler) runHealthChecks() {
+	cfg := s.getConfig()
+	if cfg == nil {
+		return
+	}
 	// Skip health checks if stuck timeout is not configured
-	if s.cfg.General.StuckTimeout.Duration <= 0 {
+	if cfg.General.StuckTimeout.Duration <= 0 {
 		return
 	}
 
@@ -3403,8 +3265,8 @@ func (s *Scheduler) runHealthChecks() {
 	actions := health.CheckStuckDispatches(
 		s.store,
 		s.dispatcher,
-		s.cfg.General.StuckTimeout.Duration,
-		s.cfg,
+		cfg.General.StuckTimeout.Duration,
+		cfg,
 		s.logger.With("scope", "stuck"),
 	)
 	if len(actions) > 0 {
@@ -3418,20 +3280,7 @@ func (s *Scheduler) runHealthChecks() {
 	}
 }
 
-func resolveRetryPolicy(cfg *config.Config, project string, tier string) dispatch.RetryPolicy {
-	if cfg == nil {
-		return dispatch.DefaultPolicy()
-	}
-
-	policy := cfg.RetryPolicyFor(project, tier)
-	return dispatch.RetryPolicy{
-		MaxRetries:    policy.MaxRetries,
-		InitialDelay:  policy.InitialDelay.Duration,
-		BackoffFactor: policy.BackoffFactor,
-		MaxDelay:      policy.MaxDelay.Duration,
-		EscalateAfter: policy.EscalateAfter,
-	}
-}
+// runCompletionVerification checks for beads that should be auto-closed based on git commits
 
 // runCompletionVerification checks for beads that should be auto-closed based on git commits
 func (s *Scheduler) runCompletionVerification(ctx context.Context) {
@@ -3445,11 +3294,16 @@ func (s *Scheduler) runCompletionVerification(ctx context.Context) {
 	s.lastCompletionCheck = now
 	s.logger.Debug("running completion verification check")
 
+	cfg := s.getConfig()
+	if cfg == nil {
+		return
+	}
+
 	// Update projects in the verifier in case config changed
-	s.completionVerifier.SetProjects(s.cfg.Projects)
+	s.completionVerifier.SetProjects(cfg.Projects)
 
 	// Run verification
-	results, err := s.completionVerifier.VerifyCompletion(ctx, s.cfg.Projects, completionLookbackDays)
+	results, err := s.completionVerifier.VerifyCompletion(ctx, cfg.Projects, completionLookbackDays)
 	if err != nil {
 		s.logger.Error("completion verification failed", "error", err)
 		return
@@ -3586,18 +3440,22 @@ func (s *Scheduler) rebuildProfilesIfNeeded() {
 }
 
 // pickAndReserveProviderWithProfileFiltering applies profile-aware filtering before provider selection/reservation.
-func (s *Scheduler) pickAndReserveProviderWithProfileFiltering(tier string, bead beads.Bead, excludeModels map[string]bool, agentID string) (*config.Provider, string, int64, func(), error) {
+func (s *Scheduler) pickAndReserveProviderWithProfileFiltering(tier string, bead beads.Bead, role string, excludeModels map[string]bool, agentID string) (*config.Provider, string, int64, func(), error) {
+	cfg := s.getConfig()
+	if cfg == nil {
+		return nil, "", 0, nil, nil
+	}
 	// Get all provider names for this tier
 	var tierProviders []string
 	switch tier {
 	case "fast":
-		tierProviders = s.cfg.Tiers.Fast
+		tierProviders = cfg.Tiers.Fast
 	case "balanced":
-		tierProviders = s.cfg.Tiers.Balanced
+		tierProviders = cfg.Tiers.Balanced
 	case "premium":
-		tierProviders = s.cfg.Tiers.Premium
+		tierProviders = cfg.Tiers.Premium
 	default:
-		tierProviders = s.cfg.Tiers.Balanced
+		tierProviders = cfg.Tiers.Balanced
 	}
 
 	// Apply profile-aware filtering
@@ -3614,17 +3472,71 @@ func (s *Scheduler) pickAndReserveProviderWithProfileFiltering(tier string, bead
 			"remaining", len(filteredProviders))
 	}
 
+	// Apply objective quality filtering for this role when data exists.
+	qualityFiltered, err := s.applyQualityDisqualifications(filteredProviders, role)
+	if err != nil {
+		s.logger.Debug("provider quality filtering failed, skipping quality filter",
+			"bead", bead.ID,
+			"role", role,
+			"error", err,
+		)
+	} else if len(qualityFiltered) > 0 {
+		filteredProviders = qualityFiltered
+	}
+
 	// Use filtered providers with rate limiter
 	return s.pickAndReserveProviderFromCandidates(tier, filteredProviders, excludeModels, agentID, bead.ID)
+}
+
+// applyQualityDisqualifications removes providers with low recent average quality for a role.
+// If all providers are disqualified, this returns the original filtered list.
+func (s *Scheduler) applyQualityDisqualifications(candidates []string, role string) ([]string, error) {
+	if len(candidates) == 0 || strings.TrimSpace(role) == "" {
+		return candidates, nil
+	}
+
+	averages, err := s.store.GetProviderRoleQualityAverages(profileStatsWindow)
+	if err != nil {
+		return candidates, err
+	}
+
+	filtered := make([]string, 0, len(candidates))
+	for _, provider := range candidates {
+		roleAverages, hasAverages := averages[provider]
+		if !hasAverages {
+			filtered = append(filtered, provider)
+			continue
+		}
+		avg, hasAverage := roleAverages[role]
+		if !hasAverage || avg >= qualityDisqualifyScore {
+			filtered = append(filtered, provider)
+			continue
+		}
+		s.logger.Debug("deprioritizing provider by quality score",
+			"provider", provider,
+			"role", role,
+			"average", avg,
+		)
+	}
+
+	if len(filtered) == 0 {
+		return candidates, nil
+	}
+
+	return filtered, nil
 }
 
 // pickAndReserveProviderFromCandidates selects a provider from the filtered candidate list, respecting and reserving rate limits.
 // This now delegates to RateLimiter to avoid code duplication and ensure consistent behavior.
 func (s *Scheduler) pickAndReserveProviderFromCandidates(tier string, candidates []string, excludeModels map[string]bool, agentID, beadID string) (*config.Provider, string, int64, func(), error) {
-	return s.rateLimiter.PickAndReserveProviderFromCandidates(candidates, s.cfg.Providers, excludeModels, agentID, beadID)
+	cfg := s.getConfig()
+	if cfg == nil {
+		return nil, "", 0, nil, nil
+	}
+	return s.rateLimiter.PickAndReserveProviderFromCandidates(candidates, cfg.Providers, excludeModels, agentID, beadID)
 }
 
-func (s *Scheduler) pickAndReserveProviderForBead(bead beads.Bead, initialTier string, excludeModels map[string]bool, agentID string) (*config.Provider, string, string, int64, func(), error) {
+func (s *Scheduler) pickAndReserveProviderForBead(bead beads.Bead, initialTier string, role string, excludeModels map[string]bool, agentID string) (*config.Provider, string, string, int64, func(), error) {
 	currentTier := initialTier
 	if strings.TrimSpace(currentTier) == "" {
 		currentTier = "balanced"
@@ -3632,7 +3544,7 @@ func (s *Scheduler) pickAndReserveProviderForBead(bead beads.Bead, initialTier s
 
 	tried := map[string]bool{currentTier: true}
 	for {
-		provider, providerName, usageID, cleanup, err := s.pickAndReserveProviderWithProfileFiltering(currentTier, bead, excludeModels, agentID)
+		provider, providerName, usageID, cleanup, err := s.pickAndReserveProviderWithProfileFiltering(currentTier, bead, role, excludeModels, agentID)
 		if provider != nil {
 			return provider, providerName, currentTier, usageID, cleanup, nil
 		}
@@ -3659,48 +3571,12 @@ func (s *Scheduler) pickAndReserveProviderForBead(bead beads.Bead, initialTier s
 	}
 }
 
-func (s *Scheduler) pickAndReserveProviderForRetry(initialTier string, excludeModels map[string]bool, agentID, beadID string) (*config.Provider, string, string, int64, func(), error) {
-	currentTier := initialTier
-	if strings.TrimSpace(currentTier) == "" {
-		currentTier = "balanced"
-	}
-
-	tried := map[string]bool{currentTier: true}
-	for {
-		provider, providerName, usageID, cleanup, err := s.pickAndReserveProviderFromCandidates(currentTier, s.tierCandidates(currentTier), excludeModels, agentID, beadID)
-		if provider != nil {
-			return provider, providerName, currentTier, usageID, cleanup, nil
-		}
-		if err != nil {
-			// Log error?
-		}
-
-		nextTier := nextTierAfterExhaustion(currentTier)
-		if nextTier == "" || tried[nextTier] {
-			return nil, "", currentTier, 0, nil, nil
-		}
-		s.logger.Info("tier shift for retry provider selection", "from", currentTier, "to", nextTier)
-		tried[nextTier] = true
-		currentTier = nextTier
-	}
-}
-
-
-func (s *Scheduler) selectBackend(role, tier string, retryCount int) (dispatch.Backend, string, error) {
-	backendName := s.backendNameFor(role, tier, retryCount)
-	backend := s.backendByName(backendName)
-	if backend != nil {
-		return backend, backendName, nil
-	}
-
-	if fallback := s.backendByName("openclaw"); fallback != nil {
-		return fallback, "openclaw", nil
-	}
-	return nil, "", fmt.Errorf("dispatch backend %q not configured", backendName)
-}
-
 func (s *Scheduler) backendNameFor(role, tier string, retryCount int) string {
-	routing := s.cfg.Dispatch.Routing
+	cfg := s.getConfig()
+	if cfg == nil {
+		return "openclaw"
+	}
+	routing := cfg.Dispatch.Routing
 
 	if retryCount > 0 && strings.TrimSpace(routing.RetryBackend) != "" {
 		return strings.TrimSpace(routing.RetryBackend)
@@ -3754,11 +3630,15 @@ func (s *Scheduler) dispatchHandleFromRecord(d store.Dispatch) dispatch.Handle {
 }
 
 func (s *Scheduler) defaultCLIConfigName() string {
-	if _, ok := s.cfg.Dispatch.CLI["codex"]; ok {
+	cfg := s.getConfig()
+	if cfg == nil {
+		return ""
+	}
+	if _, ok := cfg.Dispatch.CLI["codex"]; ok {
 		return "codex"
 	}
-	keys := make([]string, 0, len(s.cfg.Dispatch.CLI))
-	for key := range s.cfg.Dispatch.CLI {
+	keys := make([]string, 0, len(cfg.Dispatch.CLI))
+	for key := range cfg.Dispatch.CLI {
 		keys = append(keys, key)
 	}
 	if len(keys) == 0 {
@@ -3769,7 +3649,11 @@ func (s *Scheduler) defaultCLIConfigName() string {
 }
 
 func (s *Scheduler) buildDispatchLogPath(project, beadID, backendName string) string {
-	root := strings.TrimSpace(config.ExpandHome(s.cfg.Dispatch.LogDir))
+	cfg := s.getConfig()
+	if cfg == nil {
+		return ""
+	}
+	root := strings.TrimSpace(config.ExpandHome(cfg.Dispatch.LogDir))
 	if root == "" {
 		return ""
 	}
@@ -3780,31 +3664,16 @@ func (s *Scheduler) buildDispatchLogPath(project, beadID, backendName string) st
 	return filepath.Join(root, filename)
 }
 
-func sanitizeLogComponent(v string) string {
-	if strings.TrimSpace(v) == "" {
-		return "dispatch"
-	}
-	replacer := strings.NewReplacer("/", "-", "\\", "-", ":", "-", " ", "-", ".", "-")
-	return replacer.Replace(strings.TrimSpace(v))
-}
-
-func roleFromAgentID(project, agentID string) string {
-	prefix := strings.TrimSpace(project) + "-"
-	if strings.HasPrefix(agentID, prefix) {
-		role := strings.TrimPrefix(agentID, prefix)
-		if strings.TrimSpace(role) != "" {
-			return role
-		}
-	}
-	return "coder"
-}
-
 func (s *Scheduler) providerByModel(model string) *config.Provider {
+	cfg := s.getConfig()
+	if cfg == nil {
+		return nil
+	}
 	trimmed := strings.TrimSpace(model)
 	if trimmed == "" {
 		return nil
 	}
-	for _, provider := range s.cfg.Providers {
+	for _, provider := range cfg.Providers {
 		if provider.Model == trimmed {
 			p := provider
 			return &p

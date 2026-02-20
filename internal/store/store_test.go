@@ -1464,6 +1464,93 @@ func TestGetProviderLabelStats(t *testing.T) {
 	}
 }
 
+func TestQualityScorePersistenceAndAverages(t *testing.T) {
+	s := tempStore(t)
+
+	pass := true
+	fail := false
+
+	d1, err := s.RecordDispatch("bead-quality-1", "proj", "agent-1", "openai", "fast", 100, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertQualityScore(QualityScore{
+		DispatchID:   d1,
+		Provider:     "openai",
+		Role:         "coder",
+		Overall:      0.8,
+		TestsPassed:  &pass,
+		BeadClosed:   true,
+		CommitMade:   true,
+		FilesChanged: 3,
+		LinesChanged: 10,
+		Duration:     30,
+	}); err != nil {
+		t.Fatalf("failed to upsert quality score 1: %v", err)
+	}
+
+	d2, err := s.RecordDispatch("bead-quality-2", "proj", "agent-1", "openai", "fast", 101, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertQualityScore(QualityScore{
+		DispatchID:   d2,
+		Provider:     "openai",
+		Role:         "coder",
+		Overall:      0.2,
+		TestsPassed:  &fail,
+		BeadClosed:   false,
+		CommitMade:   false,
+		FilesChanged: 1,
+		LinesChanged: -5,
+		Duration:     45,
+	}); err != nil {
+		t.Fatalf("failed to upsert quality score 2: %v", err)
+	}
+
+	d3, err := s.RecordDispatch("bead-quality-3", "proj", "agent-1", "anthropic", "fast", 102, "", "prompt", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertQualityScore(QualityScore{
+		DispatchID:  d3,
+		Provider:    "anthropic",
+		Role:        "reviewer",
+		Overall:     0.9,
+		BeadClosed:  true,
+		CommitMade:  true,
+		Duration:    22,
+		TestsPassed: nil,
+	}); err != nil {
+		t.Fatalf("failed to upsert quality score 3: %v", err)
+	}
+
+	averages, err := s.GetProviderRoleQualityAverages(time.Hour)
+	if err != nil {
+		t.Fatalf("failed to query quality averages: %v", err)
+	}
+
+	coderAverage, ok := averages["openai"]["coder"]
+	if !ok {
+		t.Fatalf("expected openai/coder average")
+	}
+	if coderAverage != 0.5 {
+		t.Fatalf("expected openai/coder average 0.5, got %.2f", coderAverage)
+	}
+
+	reviewerAverage, ok := averages["anthropic"]["reviewer"]
+	if !ok {
+		t.Fatalf("expected anthropic/reviewer average")
+	}
+	if reviewerAverage != 0.9 {
+		t.Fatalf("expected anthropic/reviewer average 0.9, got %.2f", reviewerAverage)
+	}
+
+	if _, ok := averages["openai"]["reviewer"]; ok {
+		t.Fatalf("did not expect openai/reviewer average")
+	}
+}
+
 func TestProviderStatsExcludeNonTerminalDispatches(t *testing.T) {
 	s := tempStore(t)
 
