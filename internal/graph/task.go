@@ -26,3 +26,5 @@ type CrossDep struct {
 	Project string `json:"project"`
 	TaskID  string `json:"task_id"`
 }
+
+const taskTypeEpic = "epic"

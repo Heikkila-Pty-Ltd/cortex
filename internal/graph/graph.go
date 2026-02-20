@@ -5,144 +5,215 @@ import (
 	"strings"
 )
 
-// DepGraph is a directed dependency graph built from Task.DependsOn edges.
+const stageLabelPrefix = "stage:"
+
+// DepGraph is a directed dependency graph for tasks.
 type DepGraph struct {
 	nodes   map[string]*Task
-	forward map[string][]string // task -> depends on these
-	reverse map[string][]string // task -> blocks these
+	forward map[string][]string // task -> depends on
+	reverse map[string][]string // task -> blocks
 }
 
-// BuildDepGraph constructs a directed dependency graph from a slice of tasks.
-// Tasks are copied into the graph to avoid aliasing the caller's slice.
+// BuildDepGraph initializes an in-memory dependency graph from tasks.
 func BuildDepGraph(tasks []Task) *DepGraph {
 	g := &DepGraph{
 		nodes:   make(map[string]*Task, len(tasks)),
-		forward: make(map[string][]string),
-		reverse: make(map[string][]string),
+		forward: make(map[string][]string, len(tasks)),
+		reverse: make(map[string][]string, len(tasks)),
+	}
+	graphTasks := make([]Task, len(tasks))
+
+	for i := range tasks {
+		graphTasks[i] = cloneTask(tasks[i])
+		g.nodes[graphTasks[i].ID] = &graphTasks[i]
 	}
 
 	for i := range tasks {
-		task := tasks[i]
-		g.nodes[task.ID] = cloneTask(task)
-	}
+		task := &tasks[i]
+		if _, ok := g.forward[task.ID]; !ok {
+			g.forward[task.ID] = make([]string, 0)
+		}
+		if _, ok := g.reverse[task.ID]; !ok {
+			g.reverse[task.ID] = make([]string, 0)
+		}
 
-	for i := range tasks {
-		id := tasks[i].ID
-		deps := tasks[i].DependsOn
-		if len(deps) == 0 {
+		if len(task.DependsOn) == 0 {
 			continue
 		}
-		g.forward[id] = append(g.forward[id], deps...)
-		for _, depID := range deps {
-			g.reverse[depID] = append(g.reverse[depID], id)
+
+		seen := make(map[string]struct{}, len(task.DependsOn))
+		for _, depID := range task.DependsOn {
+			depID = strings.TrimSpace(depID)
+			if depID == "" {
+				continue
+			}
+			if _, dup := seen[depID]; dup {
+				continue
+			}
+			seen[depID] = struct{}{}
+			g.forward[task.ID] = append(g.forward[task.ID], depID)
+			g.reverse[depID] = append(g.reverse[depID], task.ID)
 		}
 	}
 
 	return g
 }
 
-// Nodes returns the node map.
-// Callers must not mutate the returned map or task pointers.
+// Nodes returns a shallow copy of the node lookup map. The map itself is a
+// copy (deleting keys won't affect the graph), but the *Task pointers are
+// shared with the graph's internal state.
+//
+// CAUTION: Mutating fields on a returned *Task (e.g. Status, Title) will
+// modify the graph's internal state. This is intentional for single-owner
+// workflows but unsafe under concurrent access. Callers that need isolation
+// should copy individual Task values before mutation.
 func (g *DepGraph) Nodes() map[string]*Task {
 	if g == nil {
 		return nil
 	}
-	return g.nodes
+	cp := make(map[string]*Task, len(g.nodes))
+	for k, v := range g.nodes {
+		cp[k] = v
+	}
+	return cp
 }
 
-// DependsOnIDs returns a copy of the IDs this task depends on.
-// Returns nil for unknown task IDs.
+// DependsOnIDs returns all task IDs the task depends on.
 func (g *DepGraph) DependsOnIDs(id string) []string {
-	if g == nil {
+	if g == nil || g.forward == nil {
 		return nil
 	}
-	s := g.forward[id]
-	if s == nil {
+	dependencies, ok := g.forward[id]
+	if !ok {
 		return nil
 	}
-	out := make([]string, len(s))
-	copy(out, s)
-	return out
+	return cloneStringSlice(dependencies)
 }
 
-// BlocksIDs returns a copy of the task IDs blocked by this task.
-// Returns nil for unknown task IDs.
+// BlocksIDs returns all task IDs directly blocked by the task.
 func (g *DepGraph) BlocksIDs(id string) []string {
-	if g == nil {
+	if g == nil || g.reverse == nil {
 		return nil
 	}
-	s := g.reverse[id]
-	if s == nil {
+	blockers, ok := g.reverse[id]
+	if !ok {
 		return nil
 	}
-	out := make([]string, len(s))
-	copy(out, s)
-	return out
+	return cloneStringSlice(blockers)
 }
 
-// FilterUnblockedOpen returns open, non-epic tasks whose dependencies all exist
-// and are closed. Results are sorted by Priority ASC, stage-labeled tasks first,
-// then EstimateMinutes ASC. Sort is stable.
+// FilterUnblockedOpen returns open, non-epic tasks whose dependencies are all
+// closed.
+//
+// Results are sorted deterministically:
+//  1. Stage-labeled tasks first ("stage:" prefix in labels)
+//  2. Priority ascending
+//  3. EstimateMinutes ascending
+//  4. ID ascending
 func FilterUnblockedOpen(tasks []Task, graph *DepGraph) []Task {
-	var result []Task
-
-	for _, task := range tasks {
-		if task.Status != "open" || task.Type == "epic" {
+	result := make([]Task, 0, len(tasks))
+	for i := range tasks {
+		if !isOpenTask(tasks[i]) || isEpicTask(tasks[i]) {
 			continue
 		}
-		if isBlocked(task, graph) {
+		if !allDepsClosed(tasks[i], graph) {
 			continue
 		}
-		result = append(result, task)
+		result = append(result, cloneTask(tasks[i]))
 	}
 
-	sort.SliceStable(result, func(i, j int) bool {
-		if result[i].Priority != result[j].Priority {
-			return result[i].Priority < result[j].Priority
-		}
+	sort.Slice(result, func(i, j int) bool {
+		// 1. Stage-labeled before non-stage.
 		iStage := hasStageLabel(result[i])
 		jStage := hasStageLabel(result[j])
 		if iStage != jStage {
 			return iStage
 		}
+		// 2. Priority ascending.
+		if result[i].Priority != result[j].Priority {
+			return result[i].Priority < result[j].Priority
+		}
+		// 3. EstimateMinutes ascending.
 		if result[i].EstimateMinutes != result[j].EstimateMinutes {
 			return result[i].EstimateMinutes < result[j].EstimateMinutes
 		}
-		return false
+		// 4. ID ascending for determinism.
+		return result[i].ID < result[j].ID
 	})
 
 	return result
 }
 
+func allDepsClosed(task Task, graph *DepGraph) bool {
+	if graph == nil || graph.nodes == nil {
+		// Without a graph, conservatively require no declared dependencies.
+		return len(task.DependsOn) == 0
+	}
+
+	// Use graph-backed dependencies for tasks in the graph.
+	// Tasks missing from the graph fall back to the input dependency list.
+	depIDs := task.DependsOn
+	if _, inGraph := graph.nodes[task.ID]; inGraph {
+		depIDs = graph.DependsOnIDs(task.ID)
+	}
+
+	if len(depIDs) == 0 {
+		return true
+	}
+
+	for _, depID := range depIDs {
+		dep, ok := graph.nodes[depID]
+		if !ok || dep == nil || !isClosedTask(dep.Status) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func isClosedTask(status string) bool {
+	return normalizeTaskStatus(status) == statusClosed
+}
+
+func isOpenTask(task Task) bool {
+	return normalizeTaskStatus(task.Status) == statusOpen
+}
+
+func isEpicTask(task Task) bool {
+	return strings.EqualFold(strings.TrimSpace(task.Type), taskTypeEpic)
+}
+
 func hasStageLabel(task Task) bool {
 	for _, label := range task.Labels {
-		if strings.HasPrefix(label, "stage:") {
+		if strings.HasPrefix(label, stageLabelPrefix) {
 			return true
 		}
 	}
 	return false
 }
 
-func isBlocked(task Task, graph *DepGraph) bool {
-	if graph == nil {
-		return len(task.DependsOn) > 0
+// cloneTask returns a value copy of t with independently allocated slices.
+// Reference-type fields that must be cloned: DependsOn ([]string), Labels ([]string).
+// If Task gains new slice or map fields, add them here.
+func cloneTask(t Task) Task {
+	if len(t.DependsOn) > 0 {
+		cp := make([]string, len(t.DependsOn))
+		copy(cp, t.DependsOn)
+		t.DependsOn = cp
 	}
-	for _, depID := range task.DependsOn {
-		dep, exists := graph.nodes[depID]
-		if !exists || dep == nil || dep.Status != "closed" {
-			return true
-		}
+	if len(t.Labels) > 0 {
+		cp := make([]string, len(t.Labels))
+		copy(cp, t.Labels)
+		t.Labels = cp
 	}
-	return false
+	return t
 }
 
-func cloneTask(task Task) *Task {
-	cp := task
-	if len(task.DependsOn) > 0 {
-		cp.DependsOn = append([]string(nil), task.DependsOn...)
+func cloneStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return make([]string, 0)
 	}
-	if len(task.Labels) > 0 {
-		cp.Labels = append([]string(nil), task.Labels...)
-	}
-	return &cp
+	cp := make([]string, len(values))
+	copy(cp, values)
+	return cp
 }
