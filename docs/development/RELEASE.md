@@ -106,8 +106,9 @@ Validation commands:
 
 ```bash
 make build
-./scripts/prepare-rollback-assets.sh
-ls -la rollback-binary rollback-config
+cp build/cortex build/cortex.rollback
+cp cortex.toml cortex.toml.rollback
+ls -la build/cortex.rollback cortex.toml.rollback
 ```
 
 ### 2.3 Dry run
@@ -115,13 +116,12 @@ ls -la rollback-binary rollback-config
 Acceptance criteria:
 
 - Release flow executed in non-production mode.
-- Results captured to `release/dry-run-results.json`.
+- Cortex starts, passes health check, and shuts down cleanly.
 
 Validation commands:
 
 ```bash
-# Fill with project-specific dry-run command once automation is finalized.
-echo '{"status":"pending-command"}' > release/dry-run-results.json
+scripts/release/dry-run-release.sh
 ```
 
 ## 3. Post-Release Verification
@@ -184,8 +184,17 @@ Acceptance criteria:
 Validation commands:
 
 ```bash
-# See full runbook for exact rollback operations.
-sed -n '1,220p' docs/runbooks/ROLLBACK_RUNBOOK.md
+# Stop the running instance
+systemctl stop cortex
+
+# Swap in the known-good binary and config
+cp build/cortex.rollback build/cortex
+cp cortex.toml.rollback cortex.toml
+
+# Restart and verify
+systemctl start cortex
+curl -s http://127.0.0.1:8900/health
+curl -s http://127.0.0.1:8900/status
 ```
 
 ## Quality Gates Summary
@@ -202,14 +211,25 @@ If any gate fails, stop release and execute rollback/hotfix decision protocol.
 
 ## Required Evidence Artifacts
 
-- `release/process-definition.md`
-- `release/dry-run-results.json`
-- `release/rollback-procedures.md`
-- Release notes using `.github/RELEASE_TEMPLATE.md`
+- Dry-run output from `scripts/release/dry-run-release.sh`
+- Changelog from `scripts/release/generate-changelog.sh`
+- Rollback binary and config backups (`build/cortex.rollback`, `cortex.toml.rollback`)
+- Post-release health check outputs
+
+## Release Scripts
+
+All scripts live in `scripts/release/`:
+
+| Script | Purpose |
+|--------|---------|
+| `bump-version.sh` | Increment VERSION file |
+| `create-release-tag.sh` | Create annotated git tag |
+| `dry-run-release.sh` | Full pre-release validation |
+| `generate-changelog.sh` | Generate changelog from git log |
+| `validate-release.sh` | Post-release validation checks |
 
 ## Related Documents
 
-- `docs/ROLLBACK_RUNBOOK.md`
-- `docs/BACKUP_RESTORE_RUNBOOK.md`
-- `docs/api-security.md`
-- `scripts/release-checklist.md`
+- [api-security.md](../api/api-security.md)
+- [CONFIG.md](../architecture/CONFIG.md)
+- [CONTRIBUTING.md](../../CONTRIBUTING.md)

@@ -56,8 +56,7 @@ cortex/
 │   ├── architecture/             #   System architecture, CHUM backlog, config reference
 │   ├── api/                      #   API documentation
 │   ├── development/              #   Developer guides, AI agent onboarding
-│   ├── operations/               #   Operational guides, scrum commands
-│   └── runbooks/                 #   Step-by-step operational procedures
+│   └── operations/               #   Operational guides, scrum commands
 │
 ├── scripts/                      # Utility scripts
 │   ├── dev/                      #   Development helpers
@@ -66,7 +65,6 @@ cortex/
 │   └── release/                  #   Release management scripts
 │
 ├── build/                        # Build outputs
-├── _archived/                    # Historical code (pre-Temporal scheduler, old learner, etc.)
 ├── .beads/                       # Beads issue tracker data (gitignored runtime data)
 ├── .openclaw/                    # OpenClaw agent personality files
 │
