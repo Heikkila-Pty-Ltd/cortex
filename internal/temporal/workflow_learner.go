@@ -15,7 +15,7 @@ import (
 // All steps are non-fatal. Learner failure never blocks the main execution loop.
 func ContinuousLearnerWorkflow(ctx workflow.Context, req LearnerRequest) error {
 	logger := workflow.GetLogger(ctx)
-	logger.Info("ContinuousLearner starting", "BeadID", req.BeadID)
+	logger.Info(LearnerPrefix+" ContinuousLearner starting", "BeadID", req.BeadID)
 
 	if req.Tier == "" {
 		req.Tier = "fast"
@@ -37,12 +37,12 @@ func ContinuousLearnerWorkflow(ctx workflow.Context, req LearnerRequest) error {
 
 	var lessons []Lesson
 	if err := workflow.ExecuteActivity(extractCtx, a.ExtractLessonsActivity, req).Get(ctx, &lessons); err != nil {
-		logger.Warn("Lesson extraction failed (non-fatal)", "error", err)
+		logger.Warn(LearnerPrefix+" Lesson extraction failed (non-fatal)", "error", err)
 		return nil
 	}
 
 	if len(lessons) == 0 {
-		logger.Info("No lessons extracted", "BeadID", req.BeadID)
+		logger.Info(LearnerPrefix+" No lessons extracted", "BeadID", req.BeadID)
 		return nil
 	}
 
@@ -53,7 +53,7 @@ func ContinuousLearnerWorkflow(ctx workflow.Context, req LearnerRequest) error {
 	}
 	storeCtx := workflow.WithActivityOptions(ctx, storeOpts)
 	if err := workflow.ExecuteActivity(storeCtx, a.StoreLessonActivity, lessons).Get(ctx, nil); err != nil {
-		logger.Warn("Lesson storage failed (non-fatal)", "error", err)
+		logger.Warn(LearnerPrefix+" Lesson storage failed (non-fatal)", "error", err)
 		// Continue to rule generation even if storage fails
 	}
 
@@ -65,10 +65,10 @@ func ContinuousLearnerWorkflow(ctx workflow.Context, req LearnerRequest) error {
 	ruleCtx := workflow.WithActivityOptions(ctx, ruleOpts)
 	var rules []SemgrepRule
 	if err := workflow.ExecuteActivity(ruleCtx, a.GenerateSemgrepRuleActivity, req, lessons).Get(ctx, &rules); err != nil {
-		logger.Warn("Semgrep rule generation failed (non-fatal)", "error", err)
+		logger.Warn(LearnerPrefix+" Semgrep rule generation failed (non-fatal)", "error", err)
 	}
 
-	logger.Info("ContinuousLearner complete",
+	logger.Info(LearnerPrefix+" ContinuousLearner complete",
 		"BeadID", req.BeadID,
 		"Lessons", len(lessons),
 		"Rules", len(rules),

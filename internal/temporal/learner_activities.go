@@ -35,7 +35,7 @@ func sanitizeForFilename(s string) string {
 // DoD results, and review feedback to extract reusable lessons.
 func (a *Activities) ExtractLessonsActivity(ctx context.Context, req LearnerRequest) ([]Lesson, error) {
 	logger := activity.GetLogger(ctx)
-	logger.Info("Extracting lessons", "BeadID", req.BeadID, "Tier", req.Tier)
+	logger.Info(LearnerPrefix+" Extracting lessons", "BeadID", req.BeadID, "Tier", req.Tier)
 
 	// Build context from the bead's journey
 	var contextParts []string
@@ -97,7 +97,7 @@ If there are no meaningful lessons, return an empty array [].`,
 	agent := ResolveTierAgent(a.Tiers, req.Tier)
 	cliResult, err := runAgent(ctx, agent, prompt, req.WorkDir)
 	if err != nil {
-		logger.Warn("Lesson extraction LLM failed", "error", err)
+		logger.Warn(LearnerPrefix+" Lesson extraction LLM failed", "error", err)
 		return nil, nil // non-fatal
 	}
 
@@ -108,7 +108,7 @@ If there are no meaningful lessons, return an empty array [].`,
 
 	var lessons []Lesson
 	if err := json.Unmarshal([]byte(jsonStr), &lessons); err != nil {
-		logger.Warn("Failed to parse lessons JSON", "error", err)
+		logger.Warn(LearnerPrefix+" Failed to parse lessons JSON", "error", err)
 		return nil, nil
 	}
 
@@ -118,7 +118,7 @@ If there are no meaningful lessons, return an empty array [].`,
 		lessons[i].Project = req.Project
 	}
 
-	logger.Info("Lessons extracted", "Count", len(lessons))
+	logger.Info(LearnerPrefix+" Lessons extracted", "Count", len(lessons))
 	return lessons, nil
 }
 
@@ -127,7 +127,7 @@ If there are no meaningful lessons, return an empty array [].`,
 func (a *Activities) StoreLessonActivity(ctx context.Context, lessons []Lesson) error {
 	logger := activity.GetLogger(ctx)
 	if a.Store == nil {
-		logger.Warn("No store configured, skipping lesson storage")
+		logger.Warn(LearnerPrefix+" No store configured, skipping lesson storage")
 		return nil
 	}
 
@@ -153,13 +153,13 @@ func (a *Activities) StoreLessonActivity(ctx context.Context, lessons []Lesson) 
 			lesson.SemgrepRuleID,
 		)
 		if err != nil {
-			logger.Error("Failed to store lesson", "error", err)
+			logger.Error(LearnerPrefix+" Failed to store lesson", "error", err)
 			continue // best-effort
 		}
 		stored++
 	}
 
-	logger.Info("Lessons stored", "Stored", stored, "Total", len(lessons))
+	logger.Info(LearnerPrefix+" Lessons stored", "Stored", stored, "Total", len(lessons))
 	return nil
 }
 
@@ -210,13 +210,13 @@ rules:
 
 		cliResult, err := runAgent(ctx, ResolveTierAgent(a.Tiers, req.Tier), prompt, req.WorkDir)
 		if err != nil {
-			logger.Warn("Semgrep rule generation failed", "lesson", lesson.Summary, "error", err)
+			logger.Warn(LearnerPrefix+" Semgrep rule generation failed", "lesson", lesson.Summary, "error", err)
 			continue
 		}
 
 		output := strings.TrimSpace(cliResult.Output)
 		if !strings.Contains(output, "rules:") {
-			logger.Warn("Generated output doesn't look like Semgrep YAML", "lesson", lesson.Summary)
+			logger.Warn(LearnerPrefix+" Generated output doesn't look like Semgrep YAML", "lesson", lesson.Summary)
 			continue
 		}
 
@@ -237,7 +237,7 @@ rules:
 		rulePath := filepath.Join(semgrepDir, fileName)
 
 		if err := os.WriteFile(rulePath, []byte(output), 0644); err != nil {
-			logger.Error("Failed to write semgrep rule", "path", rulePath, "error", err)
+			logger.Error(LearnerPrefix+" Failed to write semgrep rule", "path", rulePath, "error", err)
 			continue
 		}
 
@@ -248,7 +248,7 @@ rules:
 			Category: lesson.Category,
 		})
 
-		logger.Info("Semgrep rule generated", "RuleID", ruleID, "Path", rulePath)
+		logger.Info(LearnerPrefix+" Semgrep rule generated", "RuleID", ruleID, "Path", rulePath)
 	}
 
 	return rules, nil
@@ -261,7 +261,7 @@ func (a *Activities) RunSemgrepScanActivity(ctx context.Context, workDir string)
 
 	// Check if semgrep is installed
 	if _, err := exec.LookPath("semgrep"); err != nil {
-		logger.Info("Semgrep not installed, skipping pre-filter")
+		logger.Info(LearnerPrefix+" Semgrep not installed, skipping pre-filter")
 		return &SemgrepScanResult{Passed: true}, nil
 	}
 
@@ -269,7 +269,7 @@ func (a *Activities) RunSemgrepScanActivity(ctx context.Context, workDir string)
 	semgrepDir := filepath.Join(workDir, ".semgrep")
 	entries, err := os.ReadDir(semgrepDir)
 	if err != nil || len(entries) == 0 {
-		logger.Info("No custom semgrep rules found, skipping")
+		logger.Info(LearnerPrefix+" No custom semgrep rules found, skipping")
 		return &SemgrepScanResult{Passed: true}, nil
 	}
 
@@ -304,7 +304,7 @@ func (a *Activities) RunSemgrepScanActivity(ctx context.Context, workDir string)
 		}
 	}
 
-	logger.Warn("Semgrep found issues", "Findings", findings)
+	logger.Warn(LearnerPrefix+" Semgrep found issues", "Findings", findings)
 	return &SemgrepScanResult{
 		Passed:   false,
 		Findings: findings,

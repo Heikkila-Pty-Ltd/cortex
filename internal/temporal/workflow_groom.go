@@ -14,7 +14,7 @@ import (
 // Uses fast/cheap LLM tier.
 func TacticalGroomWorkflow(ctx workflow.Context, req TacticalGroomRequest) error {
 	logger := workflow.GetLogger(ctx)
-	logger.Info("TacticalGroom starting", "BeadID", req.BeadID, "Project", req.Project)
+	logger.Info(GroomPrefix+" TacticalGroom starting", "BeadID", req.BeadID, "Project", req.Project)
 
 	if req.Tier == "" {
 		req.Tier = "fast"
@@ -34,11 +34,11 @@ func TacticalGroomWorkflow(ctx workflow.Context, req TacticalGroomRequest) error
 	var a *Activities
 	var result GroomResult
 	if err := workflow.ExecuteActivity(ctx, a.MutateBeadsActivity, req).Get(ctx, &result); err != nil {
-		logger.Warn("TacticalGroom failed (non-fatal)", "error", err)
+		logger.Warn(GroomPrefix+" TacticalGroom failed (non-fatal)", "error", err)
 		return nil
 	}
 
-	logger.Info("TacticalGroom complete", "Applied", result.MutationsApplied, "Failed", result.MutationsFailed)
+	logger.Info(GroomPrefix+" TacticalGroom complete", "Applied", result.MutationsApplied, "Failed", result.MutationsFailed)
 	return nil
 }
 
@@ -48,7 +48,7 @@ func TacticalGroomWorkflow(ctx workflow.Context, req TacticalGroomRequest) error
 // Pipeline: GenerateRepoMap -> GetBeadState -> StrategicAnalysis -> ApplyMutations -> MorningBriefing
 func StrategicGroomWorkflow(ctx workflow.Context, req StrategicGroomRequest) error {
 	logger := workflow.GetLogger(ctx)
-	logger.Info("StrategicGroom starting", "Project", req.Project)
+	logger.Info(GroomPrefix+" StrategicGroom starting", "Project", req.Project)
 
 	if req.Tier == "" {
 		req.Tier = "premium"
@@ -77,7 +77,7 @@ func StrategicGroomWorkflow(ctx workflow.Context, req StrategicGroomRequest) err
 	beadStateCtx := workflow.WithActivityOptions(ctx, shortAO)
 	var beadStateSummary string
 	if err := workflow.ExecuteActivity(beadStateCtx, a.GetBeadStateSummaryActivity, req).Get(ctx, &beadStateSummary); err != nil {
-		logger.Warn("Failed to get bead state, continuing with empty", "error", err)
+		logger.Warn(GroomPrefix+" Failed to get bead state, continuing with empty", "error", err)
 		beadStateSummary = "(bead state unavailable)"
 	}
 
@@ -98,9 +98,9 @@ func StrategicGroomWorkflow(ctx workflow.Context, req StrategicGroomRequest) err
 		mutateCtx := workflow.WithActivityOptions(ctx, shortAO)
 		var mutResult GroomResult
 		if err := workflow.ExecuteActivity(mutateCtx, a.ApplyStrategicMutationsActivity, req.BeadsDir, mutations).Get(ctx, &mutResult); err != nil {
-			logger.Warn("Strategic mutations failed (non-fatal)", "error", err)
+			logger.Warn(GroomPrefix+" Strategic mutations failed (non-fatal)", "error", err)
 		} else {
-			logger.Info("Strategic mutations applied", "Applied", mutResult.MutationsApplied, "Failed", mutResult.MutationsFailed)
+			logger.Info(GroomPrefix+" Strategic mutations applied", "Applied", mutResult.MutationsApplied, "Failed", mutResult.MutationsFailed)
 		}
 	}
 
@@ -108,10 +108,10 @@ func StrategicGroomWorkflow(ctx workflow.Context, req StrategicGroomRequest) err
 	briefingCtx := workflow.WithActivityOptions(ctx, shortAO)
 	var briefing MorningBriefing
 	if err := workflow.ExecuteActivity(briefingCtx, a.GenerateMorningBriefingActivity, req, &analysis).Get(ctx, &briefing); err != nil {
-		logger.Warn("Morning briefing failed (non-fatal)", "error", err)
+		logger.Warn(GroomPrefix+" Morning briefing failed (non-fatal)", "error", err)
 	}
 
-	logger.Info("StrategicGroom complete",
+	logger.Info(GroomPrefix+" StrategicGroom complete",
 		"Project", req.Project,
 		"Priorities", len(analysis.Priorities),
 		"Risks", len(analysis.Risks),
