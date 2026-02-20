@@ -1,60 +1,162 @@
 # Git Worktree Workflow
 
-This project uses branch-per-feature development. Worktrees are used for parallel work and clean isolation.
+> Branch-per-feature development with worktree isolation. Each agent or human developer works in a dedicated worktree to prevent commit cross-talk and merge conflicts.
 
-## 1) Create branch in canonical workspace
+---
+
+## Quick Start
+
+### 1. Create a Feature Branch + Worktree
 
 ```bash
+cd /path/to/cortex                    # canonical workspace
 git checkout master
 git pull --rebase
 git worktree add -b feature/your-feature ../cortex-feature-your-feature master
 ```
 
-Install branch-guard hook before opening the worktree:
+### 2. Install Branch Guards
 
 ```bash
 ./scripts/hooks/install.sh
 ```
 
-## 2) Open the worktree for the feature
+This installs pre-commit hooks that:
+- Block direct commits to `master`
+- Validate branch naming conventions
+- Run pre-push linting
+
+### 3. Work in Isolation
 
 ```bash
 cd ../cortex-feature-your-feature
-```
 
-## 3) Work in isolation
-
-- run tests/linters in the feature worktree
-- commit only from that worktree directory
-- push to origin branch
-
-```bash
+# Normal development cycle
 git add .
 git commit -m "feat(scope): describe change"
 git push -u origin feature/your-feature
 ```
 
-## 4) Return to main workspace
+### 4. Clean Up
 
 ```bash
 cd /path/to/cortex
 git worktree remove ../cortex-feature-your-feature
+git branch -d feature/your-feature     # after merge
 ```
 
-Use one worktree per active feature to prevent context switching and reduce commit cross-talk.
+---
 
-## Team training checkpoint
+## Cortex Agent Worktree Management
 
-- Open one feature branch.
-- Open one isolated worktree for it.
-- Verify pre-commit hook is installed:
-  - `./scripts/hooks/install.sh`
-- Attempt one commit without pushing:
-  - confirm branch name checks pass.
-  - confirm commit to `master` is blocked by pre-commit.
-- Open a draft PR and confirm CI shows the branch policy check.
+When `use_branches = true` is configured, the scheduler automatically creates worktrees for each dispatched bead:
 
-For onboarding and branch policy, also read:
+```
+/home/user/projects/
+├── cortex/                              # canonical workspace (master)
+├── cortex-cortex-bvnv/                  # auto-created for bead cortex-bvnv
+├── cortex-cortex-o4ni/                  # auto-created for bead cortex-o4ni
+└── cortex-cortex-w7dk/                  # auto-created for bead cortex-w7dk
+```
 
-- `CONTRIBUTING.md`
-- `scripts/hooks/README.md`
+**Branch naming convention:** `{branch_prefix}{bead-id}` (e.g., `feat/cortex-bvnv`).
+
+**Lifecycle:**
+1. Scheduler creates branch from `base_branch`
+2. Worktree is added at `../cortex-{project}-{bead-id}`
+3. Agent is dispatched into the worktree
+4. On completion, PR is created via `merge_method`
+5. Post-merge checks run and worktree is cleaned up
+6. Stale branches are pruned after `branch_cleanup_days`
+
+---
+
+## Branch Naming Convention
+
+| Pattern | Use |
+|---------|-----|
+| `feat/{scope}` | Feature work |
+| `fix/{scope}` | Bug fixes |
+| `chore/{scope}` | Maintenance, docs, CI |
+| `cortex/{bead-id}` | Auto-created by scheduler |
+
+---
+
+## Parallel Work Rules
+
+- **One worktree per active feature.** Never share a worktree between tasks.
+- **Never commit from canonical workspace** while worktrees exist for the same branch.
+- **Max concurrent worktrees** is governed by `dispatch.git.max_concurrent_per_project` (default: 3).
+- **Merge conflicts** are handled by the scheduler — if a merge conflict is detected, the dispatch is failed and the bead is re-queued.
+
+---
+
+## Troubleshooting
+
+### Locked Worktree
+
+```bash
+# If a worktree is locked (e.g., after a crash)
+git worktree unlock ../cortex-feature-your-feature
+git worktree remove ../cortex-feature-your-feature
+```
+
+### Stale Worktree References
+
+```bash
+# Prune references to removed worktrees
+git worktree prune
+```
+
+### Branch Already Exists
+
+```bash
+# If the branch from a previous dispatch wasn't cleaned up
+git branch -D cortex/cortex-bvnv
+git worktree add -b cortex/cortex-bvnv ../cortex-cortex-bvnv master
+```
+
+### Pre-Commit Hook Not Installed
+
+```bash
+# Verify hook is installed
+ls -la .git/hooks/pre-commit
+
+# Re-install
+./scripts/hooks/install.sh
+```
+
+---
+
+## Configuration
+
+```toml
+[projects.cortex]
+base_branch   = "master"
+branch_prefix = "feat/"
+use_branches  = true
+merge_method  = "squash"          # "squash", "merge", "rebase"
+auto_revert_on_failure = true     # revert merge if post-merge checks fail
+post_merge_checks = ["go build ./...", "go test ./..."]
+
+[dispatch.git]
+branch_prefix              = "cortex/"
+branch_cleanup_days        = 7
+merge_strategy             = "squash"
+max_concurrent_per_project = 3
+```
+
+---
+
+## Team Onboarding Checklist
+
+- [ ] Open one feature branch
+- [ ] Open one isolated worktree for it
+- [ ] Verify pre-commit hook is installed: `./scripts/hooks/install.sh`
+- [ ] Attempt one commit without pushing — confirm branch name checks pass
+- [ ] Confirm that committing to `master` is blocked by pre-commit
+- [ ] Open a draft PR and confirm CI shows the branch policy check
+
+**Related docs:**
+- [CONTRIBUTING.md](../../CONTRIBUTING.md)
+- [CONFIG.md](../architecture/CONFIG.md)
