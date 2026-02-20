@@ -80,7 +80,8 @@ Respond with ONLY a JSON array of mutations:
   "reason": "reason for closing (for close)"
 }]
 
-Return empty array [] if no mutations are needed.`, completedContext, openCount, beadSummary.String(), req.BeadID)
+Return empty array [] if no mutations are needed.`,
+ completedContext, openCount, beadSummary.String(), req.BeadID)
 
 	agent := ResolveTierAgent(a.Tiers, req.Tier)
 	cliResult, err := runAgent(ctx, agent, prompt, req.WorkDir)
@@ -120,6 +121,29 @@ Return empty array [] if no mutations are needed.`, completedContext, openCount,
 	return result, nil
 }
 
+// ApplyStrategicMutationsActivity applies pre-normalized strategic mutations
+// directly without re-invoking the LLM. This is the correct path for mutations
+// produced by StrategicAnalysisActivity + normalizeStrategicMutations.
+func (a *Activities) ApplyStrategicMutationsActivity(ctx context.Context, beadsDir string, mutations []BeadMutation) (*GroomResult, error) {
+	logger := activity.GetLogger(ctx)
+	logger.Info("Applying strategic mutations", "count", len(mutations))
+
+	result := &GroomResult{}
+	for _, m := range mutations {
+		if err := applyMutation(ctx, beadsDir, m); err != nil {
+			result.MutationsFailed++
+			result.Details = append(result.Details, fmt.Sprintf("FAILED %s on %s: %v", m.Action, m.BeadID, err))
+			logger.Warn("Strategic mutation failed", "action", m.Action, "bead", m.BeadID, "error", err)
+		} else {
+			result.MutationsApplied++
+			result.Details = append(result.Details, fmt.Sprintf("OK %s on %s", m.Action, m.BeadID))
+		}
+	}
+
+	logger.Info("Strategic mutations complete", "Applied", result.MutationsApplied, "Failed", result.MutationsFailed)
+	return result, nil
+}
+
 // applyMutation executes a single BeadMutation against the beads package.
 func applyMutation(ctx context.Context, beadsDir string, m BeadMutation) error {
 	switch m.Action {
@@ -139,14 +163,28 @@ func applyMutation(ctx context.Context, beadsDir string, m BeadMutation) error {
 		return beads.UpdateNotesCtx(ctx, beadsDir, m.BeadID, m.Notes)
 
 	case "create":
+		m.Title = normalizeMutationTitle(m.Title)
 		if m.Title == "" {
 			return fmt.Errorf("title required for create")
 		}
+
 		priority := 2
 		if m.Priority != nil {
 			priority = *m.Priority
 		}
-		_, err := beads.CreateIssueCtx(ctx, beadsDir, m.Title, "task", priority, m.Description, nil)
+		if isStrategicMutation(m) && m.Deferred {
+			priority = 4
+		}
+		// Only enforce actionability for strategic creates — tactical LLM output
+		// does not produce acceptance/design/estimate fields.
+		if isStrategicMutation(m) && !isCreateMutationActionable(m) {
+			if m.Deferred {
+				return nil // no-op for incomplete deferred strategic suggestions
+			}
+			return fmt.Errorf("strategic create mutation missing acceptance/design/estimate metadata")
+		}
+		labels := mergeLabels(m.Labels, isStrategicMutation(m), m.Deferred)
+		_, err := beads.CreateIssueCtx(ctx, beadsDir, m.Title, "task", priority, m.Description, m.Acceptance, m.Design, m.EstimateMinutes, labels, nil)
 		return err
 
 	case "close":
@@ -158,6 +196,51 @@ func applyMutation(ctx context.Context, beadsDir string, m BeadMutation) error {
 	default:
 		return fmt.Errorf("unknown mutation action: %s", m.Action)
 	}
+}
+
+func isCreateMutationActionable(m BeadMutation) bool {
+	return strings.TrimSpace(m.Title) != "" &&
+		strings.TrimSpace(m.Description) != "" &&
+		strings.TrimSpace(m.Acceptance) != "" &&
+		strings.TrimSpace(m.Design) != "" &&
+		m.EstimateMinutes > 0
+}
+
+func isStrategicMutation(m BeadMutation) bool {
+	return strings.EqualFold(strings.TrimSpace(m.StrategicSource), StrategicMutationSource)
+}
+
+func normalizeMutationTitle(raw string) string {
+	title := strings.TrimSpace(raw)
+	lower := strings.ToLower(title)
+	if strings.HasPrefix(lower, "auto:") {
+		title = strings.TrimSpace(title[len("auto:"):])
+	}
+	if title == "" {
+		return title
+	}
+	return title
+}
+
+func mergeLabels(labels []string, isStrategic bool, isDeferred bool) []string {
+	if !isStrategic {
+		return labels
+	}
+	out := append([]string{}, labels...)
+	out = appendLabelIfMissing(out, StrategicSourceLabel)
+	if isDeferred {
+		out = appendLabelIfMissing(out, StrategicDeferredLabel)
+	}
+	return out
+}
+
+func appendLabelIfMissing(labels []string, label string) []string {
+	for _, existing := range labels {
+		if strings.EqualFold(existing, label) {
+			return labels
+		}
+	}
+	return append(labels, label)
 }
 
 // countOpen returns the number of open, non-epic beads.
@@ -322,12 +405,43 @@ Produce a strategic analysis:
 2. What RISKS exist (technical debt, blocked beads, complexity)?
 3. What bead MUTATIONS would improve the backlog? (reprioritize, create, add deps, close stale)
 
+Mutation contract:
+- action=create must be fully actionable with:
+  - scoped title (no generic "Auto:" prefixes)
+  - description
+  - acceptance_criteria
+  - design
+  - estimate_minutes (minutes, integer > 0)
+  - strategic_source: "strategic"
+  - deferred: false
+- decomposition/meta recommendations must be explicitly deferred:
+  - set deferred: true
+  - set strategic_source: "strategic"
+  - set priority to 4 or omit
+  - title can be a short recommendation label
+  - do not emit these as immediate executable tasks
+
 Respond with ONLY a JSON object:
 {
   "priorities": [{"bead_id": "or empty", "title": "...", "rationale": "...", "urgency": "critical|high|medium|low"}],
   "risks": ["risk 1", "risk 2"],
   "observations": ["observation 1"],
-  "mutations": [{"bead_id": "...", "action": "...", "priority": 2, "reason": "..."}]
+  "mutations": [{
+    "bead_id": "existing-bead-id or empty for create",
+    "action": "update_priority|add_dependency|update_notes|create|close",
+    "priority": 2,
+    "reason": "...",
+    "notes": "...",
+    "depends_on_id": "...",
+    "title": "...",
+    "description": "...",
+    "acceptance_criteria": "...",
+    "design": "...",
+    "estimate_minutes": 30,
+    "strategic_source": "strategic",
+    "deferred": true|false,
+    "labels": ["source:strategic", "strategy:deferred"]
+  }]
 }
 
 Be opinionated. Say what matters most and why.`,

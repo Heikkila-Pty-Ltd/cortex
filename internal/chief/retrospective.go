@@ -30,7 +30,7 @@ type RetrospectiveRecorder struct {
 	store       *store.Store
 	dispatcher  dispatch.DispatcherInterface
 	logger      *slog.Logger
-	createIssue func(context.Context, string, string, string, int, string, []string) (string, error)
+	createIssue func(context.Context, string, string, string, int, string, string, string, int, []string, []string) (string, error)
 }
 
 // NewRetrospectiveRecorder creates a recorder for overall retrospective outcomes.
@@ -175,7 +175,7 @@ func (rr *RetrospectiveRecorder) createActionItemBead(ctx context.Context, cerem
 	if createIssue == nil {
 		createIssue = beads.CreateIssueCtx
 	}
-	return createIssue(ctx, beadsDir, title, "task", normalizePriority(item.Priority), description, nil)
+	return createIssue(ctx, beadsDir, title, "task", normalizePriority(item.Priority), description, "", "", 0, nil, nil)
 }
 
 func (rr *RetrospectiveRecorder) defaultProject() (string, config.Project) {

@@ -50,6 +50,35 @@ premium  = ["claude"]
 | `max_concurrent_reviewers` | int | `10` | Hard cap on concurrent reviewer agents |
 | `max_concurrent_total` | int | `40` | Hard cap on total concurrent agents |
 
+### Scheduler janitor (stale workflow cleanup)
+
+Cortex runs a janitor pass at the start of every scheduler tick to reclaim concurrency lanes from stale `CortexAgentWorkflow` executions before normal dispatch.
+
+Cleanup rules:
+
+- `bead_closed` — terminate when bead status is `closed`.
+- `bead_deferred` — terminate when bead status is `deferred`.
+- `stuck_timeout` — terminate when execution `start_time` is older than `stuck_timeout`. Applies to both known-open beads and unknown beads (when all projects listed successfully). Set `stuck_timeout = "0s"` to disable timeout-based termination entirely.
+
+Partial failure handling:
+
+When some projects fail to list beads, the janitor operates in partial-data mode. Unknown beads (not found in any successful project listing) are conservatively retained — neither status-based nor timeout-based termination applies. If **all** projects fail to list, the janitor aborts entirely and returns the full running set unchanged.
+
+Per-termination log fields:
+
+- `workflow_id`
+- `run_id`
+- `bead_id`
+- `reason` (`bead_closed`, `bead_deferred`, `stuck_timeout`)
+- `age` (present for timeout decisions)
+
+Manual verification:
+
+1. Create stale workflow fixtures via test-state manipulation.
+2. Ensure a matching project has a running open workflow in Temporal with a known `workflow_id`, `run_id`, and `start_time`.
+3. Run one scheduler tick.
+4. Confirm a single info log line includes the fields above and that the stale workflow is no longer counted as an occupied slot.
+
 ### `[general.retry_policy]` — Default Retry Behaviour
 
 ```toml

@@ -91,14 +91,14 @@ func runBD(ctx context.Context, projectDir string, args ...string) ([]byte, erro
 }
 
 // CreateIssue creates a new bead issue and returns its issue ID.
-func CreateIssue(beadsDir, title, issueType string, priority int, description string, deps []string) (string, error) {
-	return CreateIssueCtx(context.Background(), beadsDir, title, issueType, priority, description, deps)
+func CreateIssue(beadsDir, title, issueType string, priority int, description, acceptance string, design string, estimateMinutes int, labels []string, deps []string) (string, error) {
+	return CreateIssueCtx(context.Background(), beadsDir, title, issueType, priority, description, acceptance, design, estimateMinutes, labels, deps)
 }
 
 // CreateIssueCtx is the context-aware version of CreateIssue.
-func CreateIssueCtx(ctx context.Context, beadsDir, title, issueType string, priority int, description string, deps []string) (string, error) {
+func CreateIssueCtx(ctx context.Context, beadsDir, title, issueType string, priority int, description, acceptance string, design string, estimateMinutes int, labels []string, deps []string) (string, error) {
 	root := projectRoot(beadsDir)
-	args := []string{
+	baseArgs := []string{
 		"create",
 		"--type", issueType,
 		"--priority", strconv.Itoa(priority),
@@ -107,18 +107,83 @@ func CreateIssueCtx(ctx context.Context, beadsDir, title, issueType string, prio
 		"--silent",
 	}
 	if len(deps) > 0 {
-		args = append(args, "--deps", strings.Join(deps, ","))
+		baseArgs = append(baseArgs, "--deps", strings.Join(deps, ","))
 	}
 
-	out, err := runBD(ctx, root, args...)
-	if err != nil {
-		return "", fmt.Errorf("creating bead issue %q: %w", title, err)
+	candidateArgs := createIssueArgCandidates(baseArgs, acceptance, design, estimateMinutes, labels)
+	var lastErr error
+	for _, args := range candidateArgs {
+		out, err := runBD(ctx, root, args...)
+		if err == nil {
+			issueID := strings.TrimSpace(string(out))
+			if issueID == "" {
+				return "", fmt.Errorf("creating bead issue %q returned empty id", title)
+			}
+			return issueID, nil
+		}
+		lastErr = err
+		if !isUnsupportedBDFlagError(err) {
+			return "", fmt.Errorf("creating bead issue %q: %w", title, err)
+		}
 	}
-	issueID := strings.TrimSpace(string(out))
-	if issueID == "" {
-		return "", fmt.Errorf("creating bead issue %q returned empty id", title)
+	return "", fmt.Errorf("creating bead issue %q: %w", title, lastErr)
+}
+
+// createIssueArgCandidates returns a short, ordered list of argument sets to try.
+// Progressive fallback: full flags first, then alternate flag names, then minimal.
+// At most ~6 candidates instead of the combinatorial explosion of all flag permutations.
+func createIssueArgCandidates(base []string, acceptance, design string, estimateMinutes int, labels []string) [][]string {
+	normalizedLabels := strings.Join(labels, ",")
+
+	type flagSet struct {
+		acceptanceKey string
+		designKey     string
+		estimateKey   string
+		labelKey      string
 	}
-	return issueID, nil
+
+	// Ordered: preferred flags first, then alternates, then bare minimum.
+	sets := []flagSet{
+		{"--acceptance-criteria", "--design", "--estimate-minutes", "--labels"},
+		{"--acceptance", "--design", "--estimate", "--labels"},
+		{"--acceptance", "--design", "--estimate", "--label"},
+		{"--acceptance", "--design-notes", "--estimate", "--labels"},
+		{"--acceptance", "", "--estimate", ""},
+		{"", "", "", ""},
+	}
+
+	seen := make(map[string]struct{}, len(sets))
+	candidates := make([][]string, 0, len(sets))
+	for _, s := range sets {
+		args := append([]string{}, base...)
+		if acceptance != "" && s.acceptanceKey != "" {
+			args = append(args, s.acceptanceKey, acceptance)
+		}
+		if design != "" && s.designKey != "" {
+			args = append(args, s.designKey, design)
+		}
+		if estimateMinutes > 0 && s.estimateKey != "" {
+			args = append(args, s.estimateKey, strconv.Itoa(estimateMinutes))
+		}
+		if normalizedLabels != "" && s.labelKey != "" {
+			args = append(args, s.labelKey, normalizedLabels)
+		}
+		key := strings.Join(args, "\x00")
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		candidates = append(candidates, args)
+	}
+	return candidates
+}
+
+func isUnsupportedBDFlagError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unknown flag") || strings.Contains(msg, "unknown shorthand flag")
 }
 
 // UpdatePriority updates a bead priority.

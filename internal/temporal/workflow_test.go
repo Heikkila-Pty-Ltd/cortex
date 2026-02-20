@@ -256,7 +256,7 @@ func TestStrategicGroomWorkflowPipeline(t *testing.T) {
 		Mutations: []BeadMutation{{BeadID: "bead-5", Action: "update_priority", Priority: intPtr(1)}},
 	}, nil)
 
-	env.OnActivity(a.MutateBeadsActivity, mock.Anything, mock.Anything).Return(&GroomResult{
+	env.OnActivity(a.ApplyStrategicMutationsActivity, mock.Anything, mock.Anything, mock.Anything).Return(&GroomResult{
 		MutationsApplied: 1,
 	}, nil)
 
@@ -276,6 +276,48 @@ func TestStrategicGroomWorkflowPipeline(t *testing.T) {
 	require.True(t, env.IsWorkflowCompleted())
 	require.NoError(t, env.GetWorkflowError())
 	env.AssertExpectations(t)
+}
+
+func TestNormalizeStrategicMutationsAutoDecompositionWithoutActionableFieldsIsDeferred(t *testing.T) {
+	priority := 1
+	mutations := []BeadMutation{{
+		Action:          "create",
+		Title:           "Auto: break down authentication flow",
+		Description:     "",
+		Priority:        &priority,
+		StrategicSource: "",
+	}}
+
+	got := normalizeStrategicMutations(mutations)
+	require.Len(t, got, 1)
+	require.True(t, got[0].Deferred)
+	require.NotNil(t, got[0].Priority)
+	require.Equal(t, 4, *got[0].Priority)
+	require.Equal(t, StrategicMutationSource, got[0].StrategicSource)
+	require.Equal(t, "break down authentication flow", got[0].Title)
+	require.Equal(t, "Deferred strategic recommendation pending breakdown.", got[0].Description)
+	require.Equal(t, "This is deferred strategy guidance. Review and expand before execution.", got[0].Acceptance)
+	require.Equal(t, "Clarify design and acceptance criteria before creating executable subtasks.", got[0].Design)
+	require.Equal(t, 30, got[0].EstimateMinutes)
+}
+
+func TestNormalizeStrategicMutationsActionableDecompositionRemainsExecutable(t *testing.T) {
+	mutations := []BeadMutation{{
+		Action:          "create",
+		Title:           "Auto decomposition: split request validation into tasks",
+		Description:     "Add one coded task for each phase of request validation rollout.",
+		Acceptance:      "All validation paths are implemented and covered by tests.",
+		Design:          "Implement helper modules and add targeted unit tests first.",
+		EstimateMinutes:  120,
+		StrategicSource: StrategicMutationSource,
+	}}
+
+	got := normalizeStrategicMutations(mutations)
+	require.Len(t, got, 1)
+	require.False(t, got[0].Deferred)
+	require.Equal(t, StrategicMutationSource, got[0].StrategicSource)
+	require.Nil(t, got[0].Priority)
+	require.Equal(t, "Auto decomposition: split request validation into tasks", got[0].Title)
 }
 
 // TestPlanRejected verifies that rejecting the plan short-circuits the workflow.

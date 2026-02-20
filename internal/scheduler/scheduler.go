@@ -4,6 +4,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -18,12 +19,32 @@ import (
 	"github.com/antigravity-dev/cortex/internal/temporal"
 )
 
+type temporalClient interface {
+	ExecuteWorkflow(ctx context.Context, options client.StartWorkflowOptions, workflow interface{}, args ...interface{}) (client.WorkflowRun, error)
+	ListWorkflow(ctx context.Context, request *workflowservice.ListWorkflowExecutionsRequest) (*workflowservice.ListWorkflowExecutionsResponse, error)
+	TerminateWorkflow(ctx context.Context, workflowID string, runID string, reason string, details ...interface{}) error
+}
+
+type openWorkflowExecution struct {
+	workflowID string
+	runID      string
+	startTime  time.Time
+}
+
+const (
+	staleReasonBeadClosed   = "bead_closed"
+	staleReasonBeadDeferred = "bead_deferred"
+	staleReasonTimeout      = "stuck_timeout"
+)
+
 // Scheduler runs the dispatch tick loop.
 type Scheduler struct {
 	cfgMgr config.ConfigManager
-	tc     client.Client
+	tc     temporalClient
 	logger *slog.Logger
 	lock   leaderLock
+
+	beadLister func(context.Context, string) ([]beads.Bead, error)
 }
 
 // New creates a Scheduler that reads config from cfgMgr on each tick.
@@ -33,6 +54,7 @@ func New(cfgMgr config.ConfigManager, tc client.Client, logger *slog.Logger) *Sc
 		tc:     tc,
 		logger: logger,
 		lock:   noopLeaderLock{},
+		beadLister: beads.ListBeadsCtx,
 	}
 }
 
@@ -70,6 +92,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 // tick performs a single dispatch cycle.
 func (s *Scheduler) tick(ctx context.Context) {
 	cfg := s.cfgMgr.Get()
+	s.logger.Info("scheduler tick")
 
 	// List all open workflows once — used for both total and per-project counts.
 	openWFs, err := s.listOpenAgentWorkflows(ctx)
@@ -77,6 +100,13 @@ func (s *Scheduler) tick(ctx context.Context) {
 		s.logger.Error("scheduler tick: failed to list running workflows", "error", err)
 		return
 	}
+
+	openWFs, err = s.cleanStaleWorkflows(ctx, cfg, openWFs)
+	if err != nil {
+		s.logger.Error("scheduler tick: skipping dispatch after janitor failure", "error", err)
+		return
+	}
+
 	running := len(openWFs)
 
 	maxTotal := cfg.General.MaxConcurrentTotal
@@ -97,11 +127,13 @@ func (s *Scheduler) tick(ctx context.Context) {
 		slots = maxPerTick
 	}
 
-	// Track per-project running counts for max_concurrent_per_project.
+	// Build set of running workflow IDs to skip re-dispatch, and per-project counts.
+	runningSet := make(map[string]struct{}, len(openWFs))
 	projectRunning := make(map[string]int)
-	for _, wfID := range openWFs {
-		if idx := strings.LastIndex(wfID, "-"); idx > 0 {
-			projectRunning[wfID[:idx]]++
+	for _, wf := range openWFs {
+		runningSet[wf.workflowID] = struct{}{}
+		if idx := strings.LastIndex(wf.workflowID, "-"); idx > 0 {
+			projectRunning[wf.workflowID[:idx]]++
 		}
 	}
 
@@ -115,6 +147,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 		bead    beads.Bead
 		project string
 		workDir string
+		deferred bool
 	}
 	var candidates []candidate
 
@@ -133,7 +166,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 			continue
 		}
 
-		all, listErr := beads.ListBeadsCtx(ctx, beadsDir)
+		all, listErr := s.beadLister(ctx, beadsDir)
 		if listErr != nil {
 			s.logger.Error("scheduler tick: failed to list beads", "project", name, "error", listErr)
 			continue
@@ -147,14 +180,40 @@ func (s *Scheduler) tick(ctx context.Context) {
 				bead:    b,
 				project: name,
 				workDir: config.ExpandHome(strings.TrimSpace(proj.Workspace)),
+				deferred: isStrategicDeferredBead(b),
 			})
 		}
 	}
 
-	// Sort candidates: lower priority number first, then by estimate.
+	hasNonDeferredCandidates := false
+	for _, c := range candidates {
+		if !c.deferred {
+			hasNonDeferredCandidates = true
+			break
+		}
+	}
+	if hasNonDeferredCandidates {
+		filtered := candidates[:0]
+		for _, c := range candidates {
+			if c.deferred {
+				continue
+			}
+			filtered = append(filtered, c)
+		}
+		candidates = filtered
+	}
+
+	// Sort candidates: priority first, then DAG beads (has parent) before loose backlog,
+	// then by estimate. This ensures structured epic work gets dispatched before
+	// unparented backlog items at the same priority level.
 	sort.Slice(candidates, func(i, j int) bool {
 		if candidates[i].bead.Priority != candidates[j].bead.Priority {
 			return candidates[i].bead.Priority < candidates[j].bead.Priority
+		}
+		iHasParent := candidates[i].bead.ParentID != ""
+		jHasParent := candidates[j].bead.ParentID != ""
+		if iHasParent != jHasParent {
+			return iHasParent
 		}
 		return candidates[i].bead.EstimateMinutes < candidates[j].bead.EstimateMinutes
 	})
@@ -163,6 +222,10 @@ func (s *Scheduler) tick(ctx context.Context) {
 	for _, c := range candidates {
 		if dispatched >= slots {
 			break
+		}
+		// Skip beads that already have a running workflow.
+		if _, alreadyRunning := runningSet[c.bead.ID]; alreadyRunning {
+			continue
 		}
 		if projectRunning[c.project] >= maxPerProject {
 			continue
@@ -185,6 +248,30 @@ func (s *Scheduler) tick(ctx context.Context) {
 	}
 }
 
+// isPlannedWork returns true if the bead came from a planning ceremony
+// (has a parent-child dependency to an epic). Planned work skips the human
+// gate — "if CHUM is in the water, feed."
+func isPlannedWork(b beads.Bead) bool {
+	if b.ParentID != "" {
+		return true
+	}
+	for _, dep := range b.Dependencies {
+		if dep.Type == "parent-child" {
+			return true
+		}
+	}
+	return false
+}
+
+func isStrategicDeferredBead(b beads.Bead) bool {
+	for _, label := range b.Labels {
+		if strings.EqualFold(strings.TrimSpace(label), temporal.StrategicDeferredLabel) {
+			return true
+		}
+	}
+	return false
+}
+
 // dispatch starts a CortexAgentWorkflow for a single bead.
 func (s *Scheduler) dispatch(ctx context.Context, cfg *config.Config, b beads.Bead, project, workDir string) error {
 	prompt := buildPrompt(b)
@@ -196,13 +283,14 @@ func (s *Scheduler) dispatch(ctx context.Context, cfg *config.Config, b beads.Be
 	}
 
 	req := temporal.TaskRequest{
-		BeadID:    b.ID,
-		Project:   project,
-		Prompt:    prompt,
-		Agent:     "codex",
-		WorkDir:   workDir,
-		Provider:  resolveProvider(cfg),
-		DoDChecks: dodChecks,
+		BeadID:      b.ID,
+		Project:     project,
+		Prompt:      prompt,
+		Agent:       "codex",
+		WorkDir:     workDir,
+		Provider:    resolveProvider(cfg),
+		DoDChecks:   dodChecks,
+		AutoApprove: isPlannedWork(b),
 	}
 
 	wo := client.StartWorkflowOptions{
@@ -225,23 +313,205 @@ func (s *Scheduler) dispatch(ctx context.Context, cfg *config.Config, b beads.Be
 	return nil
 }
 
-// listOpenAgentWorkflows returns the workflow IDs of all running CortexAgentWorkflow executions.
-func (s *Scheduler) listOpenAgentWorkflows(ctx context.Context) ([]string, error) {
+// beadIDFromWorkflow extracts the bead ID from a workflow execution.
+// Currently dispatch sets workflow ID = bead ID; centralise here so if the
+// mapping ever changes there is one place to update.
+func beadIDFromWorkflow(wf openWorkflowExecution) string {
+	return wf.workflowID
+}
+
+// cleanStaleWorkflows classifies running workflows by bead status and age then
+// terminates stale executions. Healthy executions are returned for normal
+// scheduling calculations.
+func (s *Scheduler) cleanStaleWorkflows(ctx context.Context, cfg *config.Config, running []openWorkflowExecution) ([]openWorkflowExecution, error) {
+	if len(running) == 0 || cfg == nil {
+		return running, nil
+	}
+
+	beadStatusByID, fullyListed, lookupErr := s.buildBeadStatusLookup(ctx, cfg)
+	if lookupErr != nil {
+		if !fullyListed && len(beadStatusByID) == 0 {
+			// Total failure: no project data at all — unsafe to classify, abort janitor.
+			s.logger.Error("scheduler janitor: unable to build reliable bead status lookup", "error", lookupErr)
+			return running, lookupErr
+		}
+		// Partial failure: some projects succeeded. Unknown beads are conservatively
+		// retained (only timeout check applies for known-open beads).
+		s.logger.Warn("scheduler janitor: partial bead status data; unknown beads will be conservatively retained", "error", lookupErr)
+	}
+	partialData := lookupErr != nil
+
+	stuckTimeout := cfg.General.StuckTimeout.Duration
+	if stuckTimeout < 0 {
+		stuckTimeout = 0
+	}
+
+	now := time.Now()
+	cleaned := make([]openWorkflowExecution, 0, len(running))
+	for _, wf := range running {
+		beadID := beadIDFromWorkflow(wf)
+		reason, age := classifyStaleWorkflow(wf, beadID, beadStatusByID, partialData, stuckTimeout, now)
+		if reason == "" {
+			cleaned = append(cleaned, wf)
+			continue
+		}
+
+		if termErr := s.tc.TerminateWorkflow(ctx, wf.workflowID, wf.runID, reason); termErr != nil {
+			s.logger.Error(
+				"scheduler janitor: failed to terminate stale workflow",
+				"workflow_id", wf.workflowID,
+				"run_id", wf.runID,
+				"bead_id", beadID,
+				"reason", reason,
+				"error", termErr,
+			)
+			cleaned = append(cleaned, wf)
+			continue
+		}
+
+		fields := []any{
+			"workflow_id", wf.workflowID,
+			"run_id", wf.runID,
+			"bead_id", beadID,
+			"reason", reason,
+		}
+		if reason == staleReasonTimeout {
+			fields = append(fields, "age", age)
+		}
+		s.logger.Info("scheduler janitor: terminated stale workflow", fields...)
+	}
+
+	return cleaned, nil
+}
+
+// classifyStaleWorkflow determines whether a running workflow should be
+// terminated and the reason. Returns empty reason for healthy workflows.
+//
+// Classification rules:
+//  1. Known closed/deferred bead → terminate immediately.
+//  2. Unknown bead with partial project data → conservatively retain (no
+//     classification is safe when some projects failed to list).
+//  3. Unknown bead with full data → fall through to timeout (may be a race
+//     condition with bead creation between ticks).
+//  4. Known or unknown bead older than stuckTimeout → terminate as stuck.
+//  5. stuckTimeout == 0 → timeout check disabled.
+func classifyStaleWorkflow(
+	wf openWorkflowExecution,
+	beadID string,
+	beadStatusByID map[string]string,
+	partialData bool,
+	stuckTimeout time.Duration,
+	now time.Time,
+) (string, time.Duration) {
+	status, known := beadStatusByID[beadID]
+	if known {
+		switch strings.ToLower(strings.TrimSpace(status)) {
+		case "closed":
+			return staleReasonBeadClosed, 0
+		case "deferred":
+			return staleReasonBeadDeferred, 0
+		}
+	}
+
+	// Unknown bead with partial data: skip all classification to avoid false positives.
+	if !known && partialData {
+		return "", 0
+	}
+
+	// Timeout check applies to both known-open and unknown-with-full-data beads.
+	if stuckTimeout > 0 && !wf.startTime.IsZero() && now.Sub(wf.startTime) > stuckTimeout {
+		return staleReasonTimeout, now.Sub(wf.startTime)
+	}
+	return "", 0
+}
+
+// listOpenAgentWorkflows returns all currently running CortexAgentWorkflow
+// executions with metadata needed for deterministic stale cleanup.
+func (s *Scheduler) listOpenAgentWorkflows(ctx context.Context) ([]openWorkflowExecution, error) {
 	query := `WorkflowType = 'CortexAgentWorkflow' AND ExecutionStatus = 'Running'`
 
-	resp, err := s.tc.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
-		Query:    query,
-		PageSize: 200,
-	})
-	if err != nil {
-		return nil, err
+	var pageToken []byte
+	executions := make([]openWorkflowExecution, 0, 200)
+	for {
+		resp, err := s.tc.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
+			Query:    query,
+			PageSize: 200,
+			NextPageToken: pageToken,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if resp == nil {
+			return nil, fmt.Errorf("temporal list workflow returned nil response")
+		}
+
+		for _, exec := range resp.Executions {
+			execInfo := exec.GetExecution()
+			if execInfo == nil {
+				continue
+			}
+			workflowID := execInfo.GetWorkflowId()
+			if workflowID == "" {
+				continue
+			}
+			startTime := time.Time{}
+			if exec.StartTime != nil {
+				startTime = exec.StartTime.AsTime()
+			}
+			executions = append(executions, openWorkflowExecution{
+				workflowID: workflowID,
+				runID:      execInfo.GetRunId(),
+				startTime:  startTime,
+			})
+		}
+
+		if len(resp.NextPageToken) == 0 {
+			break
+		}
+		pageToken = resp.NextPageToken
 	}
 
-	ids := make([]string, 0, len(resp.Executions))
-	for _, exec := range resp.Executions {
-		ids = append(ids, exec.GetExecution().GetWorkflowId())
+	return executions, nil
+}
+
+// buildBeadStatusLookup returns a bead status map (bead_id -> status) for all
+// enabled projects by reading beads data once per project.
+func (s *Scheduler) buildBeadStatusLookup(ctx context.Context, cfg *config.Config) (map[string]string, bool, error) {
+	statuses := make(map[string]string)
+	if cfg == nil {
+		return statuses, true, nil
 	}
-	return ids, nil
+
+	var errs []string
+	fullyListed := true
+
+	for projectName, proj := range cfg.Projects {
+		if !proj.Enabled {
+			continue
+		}
+		beadsDir := strings.TrimSpace(config.ExpandHome(proj.BeadsDir))
+		if beadsDir == "" {
+			fullyListed = false
+			errs = append(errs, fmt.Sprintf("project %s missing beads_dir", projectName))
+			continue
+		}
+
+		listed, err := s.beadLister(ctx, beadsDir)
+		if err != nil {
+			fullyListed = false
+			errs = append(errs, fmt.Sprintf("project %s: %v", projectName, err))
+			continue
+		}
+
+		for _, bead := range listed {
+			statuses[bead.ID] = strings.ToLower(strings.TrimSpace(bead.Status))
+		}
+	}
+
+	if len(errs) > 0 {
+		return statuses, fullyListed, errors.New(strings.Join(errs, "; "))
+	}
+	return statuses, true, nil
 }
 
 // buildPrompt constructs the agent prompt from bead metadata.

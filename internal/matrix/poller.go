@@ -497,7 +497,7 @@ func (p *Poller) handleCreateCommand(project, title, description string) (string
 		return "", fmt.Errorf("project %q is missing beads_dir", project)
 	}
 
-	id, err := beads.CreateIssueCtx(context.Background(), config.ExpandHome(beadsDir), title, "task", 2, description, nil)
+	id, err := beads.CreateIssueCtx(context.Background(), config.ExpandHome(beadsDir), title, "task", 2, description, "", "", 0, nil, nil)
 	if err != nil {
 		return "", err
 	}

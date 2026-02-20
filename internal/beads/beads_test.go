@@ -562,3 +562,123 @@ func TestSyncImportCtxFallsBackOnScannerTokenTooLong(t *testing.T) {
 		t.Fatalf("expected fallback sync call, got %q", got)
 	}
 }
+
+func TestCreateIssueCtxIncludesExecutionMetadata(t *testing.T) {
+	projectDir := t.TempDir()
+	beadsDir := filepath.Join(projectDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+	logPath := filepath.Join(projectDir, "args.log")
+
+	fakeBin := t.TempDir()
+	bdPath := filepath.Join(fakeBin, "bd")
+	script := "#!/bin/sh\n" +
+		"echo \"$@\" >> \"$BD_ARGS_LOG\"\n" +
+		"echo 'bead-exec-metadata'\n"
+	if err := os.WriteFile(bdPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake bd: %v", err)
+	}
+
+	t.Setenv("BD_ARGS_LOG", logPath)
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+	label := []string{"source:strategic", "strategy:deferred"}
+	id, err := CreateIssueCtx(context.Background(), beadsDir, "Refactor request", "task", 2, "Add metadata tests", "Acceptance", "Design", 90, label, []string{"dep-1"})
+	if err != nil {
+		t.Fatalf("CreateIssueCtx failed: %v", err)
+	}
+	if id != "bead-exec-metadata" {
+		t.Fatalf("unexpected bead id: %q", id)
+	}
+
+	args, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	got := string(args)
+	for _, expect := range []string{
+		"create",
+		"--title", "Refactor request",
+		"--description", "Add metadata tests",
+		"--acceptance-criteria", "Acceptance",
+		"--design", "Design",
+		"--estimate", "90",
+		"--labels", strings.Join(label, ","),
+		"--deps", "dep-1",
+	} {
+		if !strings.Contains(got, expect) {
+			t.Fatalf("expected command output to include %q, got %q", expect, got)
+		}
+	}
+}
+
+func TestCreateIssueCtxFallsBackUnsupportedMetadataFlags(t *testing.T) {
+	projectDir := t.TempDir()
+	beadsDir := filepath.Join(projectDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir beads dir: %v", err)
+	}
+	logPath := filepath.Join(projectDir, "args.log")
+
+	fakeBin := t.TempDir()
+	bdPath := filepath.Join(fakeBin, "bd")
+	script := "#!/bin/sh\n" +
+		"echo \"$@\" >> \"$BD_ARGS_LOG\"\n" +
+		"case \"$*\" in\n" +
+		"  *\"--acceptance-criteria\"*)\n" +
+		"    echo 'unknown flag: --acceptance-criteria' >&2\n" +
+		"    exit 1\n" +
+		"    ;;\n" +
+		"  *\"--design-notes\"*)\n" +
+		"    echo 'unknown flag: --design-notes' >&2\n" +
+		"    exit 1\n" +
+		"    ;;\n" +
+		"  *\"--estimated_minutes\"*)\n" +
+		"    echo 'unknown flag: --estimated_minutes' >&2\n" +
+		"    exit 1\n" +
+		"    ;;\n" +
+		"  *\"--estimate-minutes\"*)\n" +
+		"    echo 'unknown flag: --estimate-minutes' >&2\n" +
+		"    exit 1\n" +
+		"    ;;\n" +
+		"  *\"--estimate\"*)\n" +
+		"    echo 'bead-fallback'\n" +
+		"    ;;\n" +
+		"  *)\n" +
+		"    echo 'unknown flag' >&2\n" +
+		"    exit 1\n" +
+		"    ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(bdPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake bd: %v", err)
+	}
+
+	t.Setenv("BD_ARGS_LOG", logPath)
+	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+
+	_, err := CreateIssueCtx(context.Background(), beadsDir, "Refactor request", "task", 2, "Add metadata tests", "Acceptance", "Design", 90, nil, nil)
+	if err != nil {
+		t.Fatalf("CreateIssueCtx failed: %v", err)
+	}
+
+	args, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read args log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(args)), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected at least one retry, got %q", string(args))
+	}
+	first := lines[0]
+	last := lines[len(lines)-1]
+	if !strings.Contains(first, "--acceptance-criteria") {
+		t.Fatalf("expected first attempt to try acceptance-criteria fallback, got %q", first)
+	}
+	if strings.Contains(last, "--acceptance-criteria") {
+		t.Fatalf("expected fallback attempt to omit acceptance-criteria, got %q", last)
+	}
+	if !strings.Contains(last, "--acceptance") || !strings.Contains(last, "--estimate") {
+		t.Fatalf("expected fallback attempt to use --acceptance and --estimate flags, got %q", last)
+	}
+}

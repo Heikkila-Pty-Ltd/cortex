@@ -2,14 +2,15 @@ package temporal
 
 // TaskRequest is submitted via the API to start a workflow.
 type TaskRequest struct {
-	BeadID    string   `json:"bead_id"`
-	Project   string   `json:"project"`
-	Prompt    string   `json:"prompt"`
-	Agent     string   `json:"agent"`     // primary coding agent (claude, codex)
-	Reviewer  string   `json:"reviewer"`  // review agent — auto-assigned if empty
-	WorkDir   string   `json:"work_dir"`
-	Provider  string   `json:"provider"`
-	DoDChecks []string `json:"dod_checks"` // e.g. ["go build ./cmd/cortex", "go test ./..."]
+	BeadID      string   `json:"bead_id"`
+	Project     string   `json:"project"`
+	Prompt      string   `json:"prompt"`
+	Agent       string   `json:"agent"`        // primary coding agent (claude, codex)
+	Reviewer    string   `json:"reviewer"`     // review agent — auto-assigned if empty
+	WorkDir     string   `json:"work_dir"`
+	Provider    string   `json:"provider"`
+	DoDChecks   []string `json:"dod_checks"`   // e.g. ["go build ./cmd/cortex", "go test ./..."]
+	AutoApprove bool     `json:"auto_approve"` // skip human gate for pre-planned work
 }
 
 // DefaultReviewer returns the cross-model reviewer for a given primary agent.
@@ -288,9 +289,23 @@ type BeadMutation struct {
 	DependsOnID string   `json:"depends_on_id,omitempty"`
 	Title       string   `json:"title,omitempty"`         // for create
 	Description string   `json:"description,omitempty"`   // for create
+	Acceptance  string   `json:"acceptance_criteria,omitempty"` // for create
+	Design      string   `json:"design,omitempty"`         // for create
+	EstimateMinutes int      `json:"estimate_minutes,omitempty"` // for create
 	Labels      []string `json:"labels,omitempty"`
 	Reason      string   `json:"reason,omitempty"`        // for close
+	StrategicSource string `json:"strategic_source,omitempty"`
+	Deferred    bool     `json:"deferred,omitempty"`       // for strategic decomposition-only suggestions
 }
+
+const (
+	// StrategicMutationSource identifies strategic-groomer-generated mutations.
+	StrategicMutationSource = "strategic"
+	// StrategicSourceLabel marks bead metadata sourced from strategic grooming.
+	StrategicSourceLabel = "source:strategic"
+	// StrategicDeferredLabel marks deferred strategic suggestions.
+	StrategicDeferredLabel = "strategy:deferred"
+)
 
 // GroomResult is the output of a grooming activity.
 type GroomResult struct {

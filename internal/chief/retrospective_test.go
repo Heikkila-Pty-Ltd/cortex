@@ -62,7 +62,7 @@ func TestRecordRetrospectiveResultsReturnsAggregatedErrors(t *testing.T) {
 	}
 
 	rr := NewRetrospectiveRecorder(cfg, nil, dispatcher, logger)
-	rr.createIssue = func(ctx context.Context, beadsDir, title, issueType string, priority int, description string, deps []string) (string, error) {
+	rr.createIssue = func(ctx context.Context, beadsDir, title, issueType string, priority int, description, acceptance, design string, estimateMinutes int, labels, deps []string) (string, error) {
 		callOrder = append(callOrder, "create")
 		return "", errors.New("bead create failed")
 	}
@@ -131,7 +131,7 @@ func TestRecordRetrospectiveResultsDispatchesAndCreatesActionItems(t *testing.T)
 
 	created := make([]string, 0, 1)
 	rr := NewRetrospectiveRecorder(cfg, nil, dispatcher, logger)
-	rr.createIssue = func(ctx context.Context, beadsDir, title, issueType string, priority int, description string, deps []string) (string, error) {
+	rr.createIssue = func(ctx context.Context, beadsDir, title, issueType string, priority int, description, acceptance, design string, estimateMinutes int, labels, deps []string) (string, error) {
 		callOrder = append(callOrder, "create")
 		if priority != 0 {
 			t.Fatalf("expected normalized priority 0, got %d", priority)

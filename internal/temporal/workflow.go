@@ -87,12 +87,8 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 	)
 
 	// ===== PHASE 2: HUMAN GATE =====
-	// Nothing enters the coding engine until a human approves the plan.
-	// "Plan space is cheap, implementation is expensive."
-	logger.Info("Phase 2: Waiting for human approval")
-
-	signalChan := workflow.GetSignalChannel(ctx, "human-approval")
-	var signalVal string
+	// Pre-planned work (has acceptance criteria) skips the gate.
+	// "If CHUM is in the water, feed."
 
 	currentAgent := req.Agent
 	currentReviewer := req.Reviewer
@@ -117,12 +113,19 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 	}
 	resetAttemptTokens()
 
-	signalChan.Receive(ctx, &signalVal)
+	if req.AutoApprove {
+		logger.Info("Phase 2: Auto-approved (pre-planned work)")
+	} else {
+		logger.Info("Phase 2: Waiting for human approval")
+		signalChan := workflow.GetSignalChannel(ctx, "human-approval")
+		var signalVal string
+		signalChan.Receive(ctx, &signalVal)
 
-	if signalVal == "REJECTED" {
-		recordOutcome(ctx, recordOpts, a, req, "rejected", 0, 0, false, "Plan rejected by human", startTime, 0,
-			totalTokens, activityTokens)
-		return fmt.Errorf("plan rejected by human")
+		if signalVal == "REJECTED" {
+			recordOutcome(ctx, recordOpts, a, req, "rejected", 0, 0, false, "Plan rejected by human", startTime, 0,
+				totalTokens, activityTokens)
+			return fmt.Errorf("plan rejected by human")
+		}
 	}
 
 	// ===== PHASE 3-6: EXECUTE → REVIEW → DOD LOOP =====

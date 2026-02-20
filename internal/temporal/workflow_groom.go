@@ -2,6 +2,7 @@ package temporal
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -87,24 +88,20 @@ func StrategicGroomWorkflow(ctx workflow.Context, req StrategicGroomRequest) err
 		return fmt.Errorf("strategic analysis failed: %w", err)
 	}
 
-	// Step 4: Apply suggested mutations (capped at 5)
-	if len(analysis.Mutations) > 0 {
-		mutations := analysis.Mutations
+	// Step 4: Apply pre-normalized strategic mutations directly (no re-invocation of LLM).
+	mutations := normalizeStrategicMutations(analysis.Mutations)
+	if len(mutations) > 0 {
 		if len(mutations) > 5 {
 			mutations = mutations[:5]
 		}
 
-		mutateReq := TacticalGroomRequest{
-			BeadID:   "strategic-daily",
-			Project:  req.Project,
-			WorkDir:  req.WorkDir,
-			BeadsDir: req.BeadsDir,
-			Tier:     "fast", // mutations are cheap
-		}
 		mutateCtx := workflow.WithActivityOptions(ctx, shortAO)
 		var mutResult GroomResult
-		_ = workflow.ExecuteActivity(mutateCtx, a.MutateBeadsActivity, mutateReq).Get(ctx, &mutResult)
-		logger.Info("Strategic mutations applied", "Applied", mutResult.MutationsApplied)
+		if err := workflow.ExecuteActivity(mutateCtx, a.ApplyStrategicMutationsActivity, req.BeadsDir, mutations).Get(ctx, &mutResult); err != nil {
+			logger.Warn("Strategic mutations failed (non-fatal)", "error", err)
+		} else {
+			logger.Info("Strategic mutations applied", "Applied", mutResult.MutationsApplied, "Failed", mutResult.MutationsFailed)
+		}
 	}
 
 	// Step 5: Generate morning briefing
@@ -120,4 +117,71 @@ func StrategicGroomWorkflow(ctx workflow.Context, req StrategicGroomRequest) err
 		"Risks", len(analysis.Risks),
 	)
 	return nil
+}
+
+func normalizeStrategicMutations(mutations []BeadMutation) []BeadMutation {
+	if len(mutations) == 0 {
+		return nil
+	}
+
+	out := make([]BeadMutation, 0, len(mutations))
+	for _, m := range mutations {
+		if strings.TrimSpace(m.StrategicSource) == "" {
+			m.StrategicSource = StrategicMutationSource
+		}
+
+		m.Title = normalizeMutationTitle(m.Title)
+
+		if m.Action != "create" {
+			out = append(out, m)
+			continue
+		}
+
+		// Any strategic create that lacks full actionable fields is deferred.
+		// This catches both explicit deferred flags and model outputs that drift
+		// from the prompt contract (e.g. vague decomposition suggestions without
+		// acceptance/design/estimate).
+		if m.Deferred || !isStrategicCreateActionable(m) {
+			m.Deferred = true
+		}
+
+		if m.Deferred {
+			if strings.TrimSpace(m.Title) == "" {
+				m.Title = "Strategic deferred suggestion"
+			}
+			if strings.TrimSpace(m.Description) == "" {
+				m.Description = "Deferred strategic recommendation pending breakdown."
+			}
+			if strings.TrimSpace(m.Acceptance) == "" {
+				m.Acceptance = "This is deferred strategy guidance. Review and expand before execution."
+			}
+			if strings.TrimSpace(m.Design) == "" {
+				m.Design = "Clarify design and acceptance criteria before creating executable subtasks."
+			}
+			if m.EstimateMinutes <= 0 {
+				m.EstimateMinutes = 30
+			}
+			m.Priority = intPtrCopy(4)
+			out = append(out, m)
+			continue
+		}
+
+		if isStrategicCreateActionable(m) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func isStrategicCreateActionable(m BeadMutation) bool {
+	return strings.TrimSpace(m.Title) != "" &&
+		strings.TrimSpace(m.Description) != "" &&
+		strings.TrimSpace(m.Acceptance) != "" &&
+		strings.TrimSpace(m.Design) != "" &&
+		m.EstimateMinutes > 0
+}
+
+func intPtrCopy(v int) *int {
+	value := v
+	return &value
 }
