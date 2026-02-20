@@ -2,10 +2,10 @@
 
 [general]
 tick_interval = "2m"
-max_per_tick = 1
-max_concurrent_coders = 1
+max_per_tick = 3
+max_concurrent_coders = 3
 max_concurrent_reviewers = 1
-max_concurrent_total = 2
+max_concurrent_total = 3
 stuck_timeout = "30m"
 max_retries = 6
 log_level = "info"
@@ -125,7 +125,7 @@ premium = "120m"
 branch_prefix = "cortex/"
 branch_cleanup_days = 7
 merge_strategy = "squash"
-max_concurrent_per_project = 1
+max_concurrent_per_project = 3
 
 [dispatch.tmux]
 history_limit = 50000

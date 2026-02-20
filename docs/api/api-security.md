@@ -184,24 +184,84 @@ Full authentication with audit logging for production environments.
 
 ### Reverse Proxy with TLS
 
-For production deployments, place Cortex behind a reverse proxy:
+Cortex binds to localhost and delegates TLS termination to a reverse proxy.
 
 ```nginx
+# /etc/nginx/sites-available/cortex-api
+
+# Rate limiting zone: 10 req/s per IP for control endpoints
+limit_req_zone $binary_remote_addr zone=cortex_control:10m rate=10r/s;
+
 server {
-    listen 443 ssl;
-    server_name cortex-api.company.com;
-    
-    ssl_certificate /etc/ssl/certs/cortex.crt;
-    ssl_certificate_key /etc/ssl/private/cortex.key;
-    
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_set_header X-Real-IP $remote_addr;
+    listen 80;
+    server_name cortex-api.internal;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name cortex-api.internal;
+
+    # --- TLS ---
+    ssl_certificate     /etc/ssl/certs/cortex-api.pem;
+    ssl_certificate_key /etc/ssl/private/cortex-api.key;
+    ssl_protocols       TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_timeout 1d;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_tickets off;
+
+    # OCSP stapling
+    ssl_stapling on;
+    ssl_stapling_verify on;
+    ssl_trusted_certificate /etc/ssl/certs/ca-chain.pem;
+    resolver 1.1.1.1 8.8.8.8 valid=300s;
+    resolver_timeout 5s;
+
+    # --- Security Headers ---
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header X-Content-Type-Options    "nosniff" always;
+    add_header X-Frame-Options           "DENY" always;
+    add_header Referrer-Policy           "no-referrer" always;
+    add_header Content-Security-Policy   "default-src 'none'; frame-ancestors 'none'" always;
+
+    # --- Read-only endpoints (no rate limit) ---
+    location ~ ^/(status|health|metrics|projects|teams|dispatches|recommendations|scheduler/status) {
+        proxy_pass http://127.0.0.1:8900;
+        proxy_set_header X-Real-IP       $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header Host $host;
+        proxy_set_header Host            $host;
+        proxy_read_timeout  10s;
+        proxy_send_timeout  10s;
+    }
+
+    # --- Control endpoints (rate limited) ---
+    location ~ ^/(scheduler/(pause|resume|plan)|dispatches/\d+/(cancel|retry)) {
+        limit_req zone=cortex_control burst=5 nodelay;
+        limit_req_status 429;
+
+        proxy_pass http://127.0.0.1:8900;
+        proxy_set_header X-Real-IP       $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Host            $host;
+        proxy_read_timeout  30s;
+        proxy_send_timeout  30s;
+    }
+
+    # --- Health check for load balancers ---
+    location = /healthz {
+        proxy_pass http://127.0.0.1:8900/health;
+        access_log off;
+    }
+
+    # Deny everything else
+    location / {
+        return 404;
     }
 }
 ```
+
+> **Note:** Adapt `server_name`, certificate paths, and port to your environment. If running behind a cloud load balancer (ALB, GCE LB), TLS may terminate at the LB and this block simplifies to plain HTTP proxy.
 
 ## Token Management
 
@@ -239,22 +299,115 @@ Store tokens securely:
 
 ## Monitoring
 
-### Metrics
+### Audit Log Queries
 
-Monitor authentication failures via logs or metrics:
+The audit log is structured JSON (one object per line), queryable with `jq`:
 
 ```bash
 # Count failed auth attempts in last hour
-grep '"authorized":false' /var/log/cortex/audit.log | \
-  grep "$(date -d '1 hour ago' '+%Y-%m-%d')" | wc -l
+jq -r 'select(.authorized == false) | .timestamp' \
+  /var/log/cortex/api-audit.log | \
+  awk -v cutoff="$(date -u -d '1 hour ago' '+%Y-%m-%dT%H:%M')" '$0 >= cutoff' | wc -l
+
+# List distinct source IPs hitting control endpoints (last 24h)
+jq -r 'select(.method == "POST") | .remote_addr' \
+  /var/log/cortex/api-audit.log | \
+  cut -d: -f1 | sort -u
+
+# Show all failed requests with full context
+jq 'select(.authorized == false)' /var/log/cortex/api-audit.log | tail -20
+
+# Response time percentiles for control endpoints
+jq -r 'select(.method == "POST") | .duration' \
+  /var/log/cortex/api-audit.log | \
+  sed 's/ms//' | sort -n | awk '{a[NR]=$1} END {
+    print "p50:", a[int(NR*0.5)], "ms";
+    print "p95:", a[int(NR*0.95)], "ms";
+    print "p99:", a[int(NR*0.99)], "ms"
+  }'
 ```
 
-### Alerts
+### Prometheus Metrics
 
-Set up alerts for:
-- High rate of authentication failures
-- Unexpected source IPs accessing control endpoints
-- Control operations outside business hours
+Cortex exposes a `/metrics` endpoint (no auth required). Key security-related metrics:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `cortex_api_requests_total` | Counter | Total API requests by method, path, status |
+| `cortex_api_auth_failures_total` | Counter | Authentication failures by remote_addr |
+| `cortex_api_request_duration_seconds` | Histogram | Request latency by endpoint |
+| `cortex_dispatches_total` | Counter | Dispatches by project, status |
+| `cortex_scheduler_status` | Gauge | Current scheduler state (1=running, 0=paused) |
+
+### Alerting Rules
+
+Example Prometheus alerting rules for production:
+
+```yaml
+# prometheus/rules/cortex-security.yml
+groups:
+  - name: cortex-api-security
+    rules:
+      - alert: CortexHighAuthFailureRate
+        expr: rate(cortex_api_auth_failures_total[5m]) > 0.5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High authentication failure rate on Cortex API"
+          description: "{{ $value | printf \"%.1f\" }} auth failures/sec over last 5 minutes"
+
+      - alert: CortexBruteForceDetected
+        expr: increase(cortex_api_auth_failures_total[15m]) > 50
+        labels:
+          severity: critical
+        annotations:
+          summary: "Possible brute-force attack on Cortex API"
+          description: "{{ $value }} failed auth attempts in 15 minutes"
+
+      - alert: CortexUnauthorizedControlAccess
+        expr: increase(cortex_api_requests_total{method="POST", status="401"}[5m]) > 10
+        labels:
+          severity: critical
+        annotations:
+          summary: "Repeated unauthorized access to Cortex control endpoints"
+
+      - alert: CortexAPILatencyHigh
+        expr: histogram_quantile(0.95, rate(cortex_api_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cortex API p95 latency exceeds 2 seconds"
+
+      - alert: CortexSchedulerPaused
+        expr: cortex_scheduler_status == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cortex scheduler has been paused for 30+ minutes"
+```
+
+### Log Rotation
+
+Configure logrotate for the audit log:
+
+```
+# /etc/logrotate.d/cortex
+/var/log/cortex/api-audit.log {
+    daily
+    rotate 90
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 cortex cortex
+    postrotate
+        systemctl reload cortex 2>/dev/null || true
+    endscript
+}
+```
 
 ## Security Considerations
 
