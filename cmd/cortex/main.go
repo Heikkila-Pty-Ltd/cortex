@@ -9,17 +9,16 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
+	"errors"
+
+	"go.temporal.io/api/serviceerror"
+	tclient "go.temporal.io/sdk/client"
+
 	"github.com/antigravity-dev/cortex/internal/api"
 	"github.com/antigravity-dev/cortex/internal/config"
-	"github.com/antigravity-dev/cortex/internal/dispatch"
-	"github.com/antigravity-dev/cortex/internal/health"
-	"github.com/antigravity-dev/cortex/internal/learner"
-	"github.com/antigravity-dev/cortex/internal/matrix"
-	"github.com/antigravity-dev/cortex/internal/scheduler"
 	"github.com/antigravity-dev/cortex/internal/store"
 	"github.com/antigravity-dev/cortex/internal/temporal"
 )
@@ -63,9 +62,7 @@ func validateRuntimeConfigReload(oldCfg, newCfg *config.Config) error {
 
 func main() {
 	configPath := flag.String("config", "cortex.toml", "path to config file")
-	once := flag.Bool("once", false, "run a single tick then exit")
 	dev := flag.Bool("dev", false, "use text log format (default is JSON)")
-	dryRun := flag.Bool("dry-run", false, "run tick logic without actually dispatching agents")
 	disableAnthropic := flag.Bool("disable-anthropic", false, "remove Anthropic/Claude providers from config and exit")
 	setTickInterval := flag.String("set-tick-interval", "", "set [general].tick_interval in config (e.g. 2m) and exit")
 	fallbackModel := flag.String("fallback-model", "gpt-5.3-codex", "fallback chief model used with -disable-anthropic")
@@ -139,35 +136,23 @@ func main() {
 		return
 	}
 
-	for _, project := range cfg.MissingProjectRoomRouting() {
-		logger.Warn("project has no matrix_room and reporter.default_room is unset",
-			"project", project)
-	}
-
 	logger = configureLogger(cfg.General.LogLevel, *dev)
 	slog.SetDefault(logger)
 
-	// Acquire single-instance lock
-	lockPath := "/tmp/cortex.lock"
-	if cfg.General.LockFile != "" {
-		lockPath = config.ExpandHome(cfg.General.LockFile)
-	}
-	lockFile, err := health.AcquireFlock(lockPath)
+	// Open store
+	dbPath := config.ExpandHome(cfg.General.StateDB)
+	st, err := store.Open(dbPath)
 	if err != nil {
-		logger.Error("failed to acquire lock", "error", err)
+		logger.Error("failed to open store", "path", dbPath, "error", err)
 		os.Exit(1)
 	}
-	defer health.ReleaseFlock(lockFile)
+	defer st.Close()
 
-	var schedulerRef *scheduler.Scheduler
-	var rateLimiter *dispatch.RateLimiter
-	var healthMonitor *health.Monitor
-	var dispatcher dispatch.DispatcherInterface
-	var cfgMu sync.RWMutex
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// SIGHUP config reload
 	applyReload := func() error {
-		cfgMu.Lock()
-		defer cfgMu.Unlock()
-
 		updatedCfg, err := config.Reload(*configPath)
 		if err != nil {
 			return err
@@ -179,90 +164,64 @@ func main() {
 		cfg = updatedCfg
 		logger = configureLogger(cfg.General.LogLevel, *dev)
 		slog.SetDefault(logger)
-
-		schedulerRef.SetConfig(cfg)
-		rateLimiter.SetConfig(cfg.RateLimits)
-		healthMonitor.SetConfig(cfg)
 		return nil
-	}
-
-	dbPath := config.ExpandHome(cfg.General.StateDB)
-	st, err := store.Open(dbPath)
-	if err != nil {
-		logger.Error("failed to open store", "path", dbPath, "error", err)
-		os.Exit(1)
-	}
-	defer st.Close()
-
-	// Create components
-	rateLimiter = dispatch.NewRateLimiter(st, cfg.RateLimits)
-
-	resolver := scheduler.NewDispatcherResolver(cfg)
-	if err := resolver.ValidateConfiguration(); err != nil {
-		logger.Error("dispatcher configuration failed", "error", err)
-		os.Exit(1)
-	}
-	dispatcher, err = resolver.CreateDispatcher()
-	if err != nil {
-		logger.Error("failed to create dispatcher", "error", err)
-		os.Exit(1)
-	}
-
-	schedulerRef = scheduler.NewWithConfigManager(cfgManager, st, rateLimiter, dispatcher, logger.With("component", "scheduler"), *dryRun)
-	healthMonitor = health.NewMonitor(cfg, st, dispatcher, logger.With("component", "health"))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if *once {
-		logger.Info("running single tick (--once mode)")
-		schedulerRef.RunTick(ctx)
-		logger.Info("single tick complete, waiting for dispatched agents to finish")
-		schedulerRef.WaitForRunningDispatches(ctx, 1*time.Second)
-		logger.Info("single tick complete, exiting")
-		return
-	}
-
-	// Start scheduler
-	go schedulerRef.Start(ctx)
-
-	// Start health monitor
-	go healthMonitor.Start(ctx)
-
-	// Start learner cycle worker
-	lw := learner.NewCycleWorker(cfg.Learner, st, logger.With("component", "learner"))
-	go lw.Start(ctx)
-
-	// Start Matrix inbound poller (optional)
-	if cfg.Matrix.Enabled {
-		roomMap := matrix.BuildRoomProjectMap(cfg)
-		if len(roomMap) == 0 {
-			logger.Warn("matrix polling enabled but no room mapping is configured")
-		}
-		matrixClient := matrix.NewOpenClawClient(nil, cfg.Matrix.ReadLimit)
-		matrixPollerSender := matrix.NewOpenClawSender(nil, cfg.Reporter.MatrixBotAccount)
-		matrixPoller := matrix.NewPoller(matrix.PollerConfig{
-			Enabled:       cfg.Matrix.Enabled,
-			PollInterval:  cfg.Matrix.PollInterval.Duration,
-			BotUser:       cfg.Matrix.BotUser,
-			RoomToProject: roomMap,
-			Projects:      cfg.Projects,
-			Sender:        matrixPollerSender,
-			Store:         st,
-			Canceler:      schedulerRef,
-		}, matrixClient, dispatcher, logger.With("component", "matrix"))
-		go matrixPoller.Run(ctx)
 	}
 
 	// Start Temporal worker
 	go func() {
 		logger.Info("starting temporal worker")
-		if err := temporal.StartWorker(); err != nil {
+		if err := temporal.StartWorker(st); err != nil {
 			logger.Error("temporal worker error", "error", err)
 		}
 	}()
 
-	apiSrv, err := api.NewServer(cfg, st, rateLimiter, schedulerRef, dispatcher, logger.With("component", "api"))
+	// Start strategic groom cron schedules for each enabled project
+	go func() {
+		// Let the worker register workflows before we start cron executions
+		time.Sleep(5 * time.Second)
+
+		c, err := tclient.Dial(tclient.Options{
+			HostPort: "127.0.0.1:7233",
+		})
+		if err != nil {
+			logger.Error("failed to create temporal client for strategic cron", "error", err)
+			return
+		}
+		defer c.Close()
+
+		for name, project := range cfg.Projects {
+			if !project.Enabled {
+				continue
+			}
+
+			workflowID := fmt.Sprintf("strategic-groom-%s", name)
+			req := temporal.StrategicGroomRequest{
+				Project:  name,
+				WorkDir:  config.ExpandHome(project.Workspace),
+				BeadsDir: config.ExpandHome(project.BeadsDir),
+				Tier:     "premium",
+			}
+
+			_, err := c.ExecuteWorkflow(ctx, tclient.StartWorkflowOptions{
+				ID:           workflowID,
+				TaskQueue:    "cortex-task-queue",
+				CronSchedule: "0 5 * * *",
+			}, temporal.StrategicGroomWorkflow, req)
+			if err != nil {
+				var alreadyStarted *serviceerror.WorkflowExecutionAlreadyStarted
+				if errors.As(err, &alreadyStarted) {
+					logger.Info("strategic cron already running", "project", name, "workflow_id", workflowID)
+					continue
+				}
+				logger.Error("failed to start strategic cron", "project", name, "error", err)
+				continue
+			}
+			logger.Info("strategic cron registered", "project", name, "workflow_id", workflowID, "schedule", "0 5 * * *")
+		}
+	}()
+
+	// Start API server
+	apiSrv, err := api.NewServer(cfg, st, logger.With("component", "api"))
 	if err != nil {
 		logger.Error("failed to create api server", "error", err)
 		os.Exit(1)
@@ -277,8 +236,6 @@ func main() {
 
 	logger.Info("cortex running",
 		"bind", cfg.API.Bind,
-		"tick_interval", cfg.General.TickInterval.Duration.String(),
-		"max_per_tick", cfg.General.MaxPerTick,
 	)
 
 	sigCh := make(chan os.Signal, 1)
@@ -297,14 +254,6 @@ func main() {
 			shutdownStart := time.Now()
 			logger.Info("received signal, shutting down", "signal", sig)
 			cancel()
-
-			interrupted, err := st.InterruptRunningDispatches()
-			if err != nil {
-				logger.Error("failed to interrupt running dispatches", "error", err)
-			} else if interrupted > 0 {
-				logger.Info("interrupted running dispatches", "count", interrupted)
-			}
-
 			logger.Info("cortex stopped", "shutdown_duration", time.Since(shutdownStart).String())
 			return
 		default:
