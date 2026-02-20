@@ -418,13 +418,20 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// Reload reads and validates a Cortex TOML configuration file.
+//
+// This mirrors Load but is intentionally named to reflect runtime refresh paths.
+func Reload(path string) (*Config, error) {
+	return Load(path)
+}
+
 // LoadManager reads config from path and returns an RWMutex-backed thread-safe manager.
 func LoadManager(path string) (ConfigManager, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("config path is required")
 	}
 
-	cfg, err := Load(path)
+	cfg, err := Reload(path)
 	if err != nil {
 		return nil, err
 	}

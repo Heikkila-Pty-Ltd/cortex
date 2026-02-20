@@ -15,6 +15,13 @@ type RateLimiter struct {
 	mu    sync.Mutex
 }
 
+// SetConfig swaps the in-memory rate limit configuration.
+func (r *RateLimiter) SetConfig(cfg config.RateLimits) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cfg = cfg
+}
+
 type dispatchReserveResult int
 
 const (

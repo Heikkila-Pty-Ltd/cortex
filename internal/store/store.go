@@ -104,6 +104,20 @@ type DispatchOutput struct {
 	OutputBytes int64
 }
 
+// QualityScore stores computed quality metrics for completed dispatches.
+type QualityScore struct {
+	DispatchID   int64
+	Provider     string
+	Role         string
+	Overall      float64
+	TestsPassed  *bool
+	BeadClosed   bool
+	CommitMade   bool
+	FilesChanged int
+	LinesChanged int
+	Duration     float64
+}
+
 // StageHistoryEntry tracks per-stage lifecycle for a bead workflow.
 type StageHistoryEntry struct {
 	Stage       string     `json:"stage"`
@@ -240,6 +254,20 @@ CREATE TABLE IF NOT EXISTS dispatch_output (
 	output_bytes INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS quality_scores (
+	dispatch_id INTEGER PRIMARY KEY NOT NULL REFERENCES dispatches(id),
+	provider TEXT NOT NULL DEFAULT '',
+	role TEXT NOT NULL DEFAULT '',
+	overall REAL NOT NULL DEFAULT 0,
+	tests_passed INTEGER,
+	bead_closed INTEGER NOT NULL DEFAULT 0,
+	commit_made INTEGER NOT NULL DEFAULT 0,
+	files_changed INTEGER NOT NULL DEFAULT 0,
+	lines_changed INTEGER NOT NULL DEFAULT 0,
+	duration REAL NOT NULL DEFAULT 0,
+	recorded_at DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS bead_stages (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	project TEXT NOT NULL,
@@ -306,6 +334,27 @@ CREATE INDEX IF NOT EXISTS idx_sprint_boundaries_end ON sprint_boundaries(sprint
 CREATE INDEX IF NOT EXISTS idx_execution_plan_gate_active ON execution_plan_gate(active_plan_id);
 CREATE INDEX IF NOT EXISTS idx_usage_provider ON provider_usage(provider, dispatched_at);
 CREATE INDEX IF NOT EXISTS idx_dispatch_output_dispatch ON dispatch_output(dispatch_id);
+CREATE INDEX IF NOT EXISTS idx_quality_scores_provider_role ON quality_scores(provider, role, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_quality_scores_role ON quality_scores(role, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_quality_scores_provider ON quality_scores(provider, recorded_at);
+
+CREATE TABLE IF NOT EXISTS token_usage (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	dispatch_id INTEGER NOT NULL DEFAULT 0,
+	bead_id TEXT NOT NULL DEFAULT '',
+	project TEXT NOT NULL DEFAULT '',
+	activity_name TEXT NOT NULL DEFAULT '',
+	agent TEXT NOT NULL DEFAULT '',
+	input_tokens INTEGER NOT NULL DEFAULT 0,
+	output_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+	cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+	cost_usd REAL NOT NULL DEFAULT 0,
+	recorded_at DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_token_usage_dispatch ON token_usage(dispatch_id);
+CREATE INDEX IF NOT EXISTS idx_token_usage_project ON token_usage(project, recorded_at);
+CREATE INDEX IF NOT EXISTS idx_token_usage_agent ON token_usage(agent, recorded_at);
 `
 
 // Open creates or opens a SQLite database at the given path and ensures the schema exists.
@@ -622,8 +671,41 @@ func migrate(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_safety_blocks_blocked_until ON safety_blocks(blocked_until)`); err != nil {
 		return fmt.Errorf("create safety blocks blocked_until index: %w", err)
 	}
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS quality_scores (
+			dispatch_id INTEGER PRIMARY KEY NOT NULL REFERENCES dispatches(id),
+			provider TEXT NOT NULL DEFAULT '',
+			role TEXT NOT NULL DEFAULT '',
+			overall REAL NOT NULL DEFAULT 0,
+			tests_passed INTEGER,
+			bead_closed INTEGER NOT NULL DEFAULT 0,
+			commit_made INTEGER NOT NULL DEFAULT 0,
+			files_changed INTEGER NOT NULL DEFAULT 0,
+			lines_changed INTEGER NOT NULL DEFAULT 0,
+			duration REAL NOT NULL DEFAULT 0,
+			recorded_at DATETIME NOT NULL DEFAULT (datetime('now'))
+		)`); err != nil {
+		return fmt.Errorf("create quality_scores table: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_quality_scores_provider_role ON quality_scores(provider, role, recorded_at)`); err != nil {
+		return fmt.Errorf("create quality_scores provider+role index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_quality_scores_role ON quality_scores(role, recorded_at)`); err != nil {
+		return fmt.Errorf("create quality_scores role index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_quality_scores_provider ON quality_scores(provider, recorded_at)`); err != nil {
+		return fmt.Errorf("create quality_scores provider index: %w", err)
+	}
 
 	if err := migrateBeadStagesTable(db); err != nil {
+		return err
+	}
+
+	if err := migrateLessonsTable(db); err != nil {
+		return err
+	}
+
+	if err := migrateTokenUsageTable(db); err != nil {
 		return err
 	}
 
@@ -1737,6 +1819,102 @@ func (s *Store) GetOutputTail(dispatchID int64) (string, error) {
 	return outputTail, nil
 }
 
+// UpsertQualityScore stores or replaces quality scoring for a dispatch.
+func (s *Store) UpsertQualityScore(score QualityScore) error {
+	if score.DispatchID <= 0 {
+		return fmt.Errorf("store: upsert quality score: dispatch_id must be greater than 0")
+	}
+
+	var testsPassed any
+	if score.TestsPassed != nil {
+		if *score.TestsPassed {
+			testsPassed = 1
+		} else {
+			testsPassed = 0
+		}
+	}
+
+	_, err := s.db.Exec(
+		`INSERT INTO quality_scores (
+			dispatch_id, provider, role, overall, tests_passed, bead_closed, commit_made, files_changed, lines_changed, duration
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(dispatch_id) DO UPDATE SET
+			provider = excluded.provider,
+			role = excluded.role,
+			overall = excluded.overall,
+			tests_passed = excluded.tests_passed,
+			bead_closed = excluded.bead_closed,
+			commit_made = excluded.commit_made,
+			files_changed = excluded.files_changed,
+			lines_changed = excluded.lines_changed,
+			duration = excluded.duration,
+			recorded_at = datetime('now')`,
+		score.DispatchID,
+		score.Provider,
+		score.Role,
+		score.Overall,
+		testsPassed,
+		boolToInt(score.BeadClosed),
+		boolToInt(score.CommitMade),
+		score.FilesChanged,
+		score.LinesChanged,
+		score.Duration,
+	)
+	if err != nil {
+		return fmt.Errorf("store: upsert quality score: %w", err)
+	}
+	return nil
+}
+
+// GetProviderRoleQualityAverages returns provider-role average quality in the time window.
+func (s *Store) GetProviderRoleQualityAverages(window time.Duration) (map[string]map[string]float64, error) {
+	if window <= 0 {
+		window = 24 * time.Hour
+	}
+	cutoff := time.Now().Add(-window).UTC().Format(time.DateTime)
+
+	rows, err := s.db.Query(`
+		SELECT provider, role, AVG(overall)
+		FROM quality_scores
+		WHERE recorded_at > ?
+		  AND provider != ''
+		  AND role != ''
+		GROUP BY provider, role
+		ORDER BY provider, role`,
+		cutoff,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query provider role quality averages: %w", err)
+	}
+	defer rows.Close()
+
+	averages := make(map[string]map[string]float64)
+	for rows.Next() {
+		var provider, role string
+		var average float64
+		if err := rows.Scan(&provider, &role, &average); err != nil {
+			return nil, fmt.Errorf("store: scan provider role quality average: %w", err)
+		}
+		roleAverages, ok := averages[provider]
+		if !ok {
+			roleAverages = make(map[string]float64)
+			averages[provider] = roleAverages
+		}
+		roleAverages[role] = average
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate provider role quality averages: %w", err)
+	}
+	return averages, nil
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
 // extractTail returns the last N lines from text.
 func extractTail(text string, lines int) string {
 	if text == "" {
@@ -2215,4 +2393,175 @@ func normalizeDispatchLabels(labels []string) []string {
 		out = append(out, label)
 	}
 	return out
+}
+
+// --- Token Usage ---
+
+// TokenUsage is a compact token usage payload for per-activity persistence.
+type TokenUsage struct {
+	InputTokens         int
+	OutputTokens        int
+	CacheReadTokens     int
+	CacheCreationTokens int
+	CostUSD             float64
+}
+
+// TokenUsageRecord represents a per-activity token consumption record.
+type TokenUsageRecord struct {
+	ID                  int64
+	DispatchID          int64
+	BeadID              string
+	Project             string
+	ActivityName        string
+	Agent               string
+	InputTokens         int
+	OutputTokens        int
+	CacheReadTokens     int
+	CacheCreationTokens int
+	CostUSD             float64
+	RecordedAt          time.Time
+}
+
+// migrateTokenUsageTable creates the per-activity token tracking table.
+func migrateTokenUsageTable(db *sql.DB) error {
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS token_usage (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			dispatch_id INTEGER NOT NULL DEFAULT 0,
+			bead_id TEXT NOT NULL DEFAULT '',
+			project TEXT NOT NULL DEFAULT '',
+			activity_name TEXT NOT NULL DEFAULT '',
+			agent TEXT NOT NULL DEFAULT '',
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+			cost_usd REAL NOT NULL DEFAULT 0,
+			recorded_at DATETIME NOT NULL DEFAULT (datetime('now'))
+		)
+	`); err != nil {
+		return fmt.Errorf("create token_usage table: %w", err)
+	}
+
+	// Backfill older token_usage schemas that may predate cache metrics columns.
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('token_usage') WHERE name = 'cache_read_tokens'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check token_usage cache_read_tokens column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE token_usage ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add token_usage cache_read_tokens column: %w", err)
+		}
+	}
+
+	err = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('token_usage') WHERE name = 'cache_creation_tokens'`).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("check token_usage cache_creation_tokens column: %w", err)
+	}
+	if count == 0 {
+		if _, err := db.Exec(`ALTER TABLE token_usage ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("add token_usage cache_creation_tokens column: %w", err)
+		}
+	}
+
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_token_usage_dispatch ON token_usage(dispatch_id)`); err != nil {
+		return fmt.Errorf("create token_usage dispatch index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_token_usage_project ON token_usage(project, recorded_at)`); err != nil {
+		return fmt.Errorf("create token_usage project index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_token_usage_agent ON token_usage(agent, recorded_at)`); err != nil {
+		return fmt.Errorf("create token_usage agent index: %w", err)
+	}
+	return nil
+}
+
+// StoreTokenUsage inserts a per-activity token consumption record.
+func (s *Store) StoreTokenUsage(dispatchID int64, beadID, project, activityName, agent string, usage TokenUsage) error {
+	_, err := s.db.Exec(
+		`INSERT INTO token_usage (dispatch_id, bead_id, project, activity_name, agent, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		dispatchID, beadID, project, activityName, agent, usage.InputTokens, usage.OutputTokens, usage.CacheReadTokens, usage.CacheCreationTokens, usage.CostUSD,
+	)
+	if err != nil {
+		return fmt.Errorf("store: store token usage: %w", err)
+	}
+	return nil
+}
+
+// GetTokenUsageByDispatch returns all per-activity token records for a dispatch.
+func (s *Store) GetTokenUsageByDispatch(dispatchID int64) ([]TokenUsageRecord, error) {
+	rows, err := s.db.Query(
+		`SELECT id, dispatch_id, bead_id, project, activity_name, agent, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, recorded_at
+		 FROM token_usage WHERE dispatch_id = ? ORDER BY id`,
+		dispatchID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: get token usage by dispatch: %w", err)
+	}
+	defer rows.Close()
+
+	var records []TokenUsageRecord
+	for rows.Next() {
+		var r TokenUsageRecord
+		if err := rows.Scan(&r.ID, &r.DispatchID, &r.BeadID, &r.Project, &r.ActivityName, &r.Agent,
+			&r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CacheCreationTokens, &r.CostUSD, &r.RecordedAt); err != nil {
+			return nil, fmt.Errorf("store: scan token usage: %w", err)
+		}
+		records = append(records, r)
+	}
+	return records, rows.Err()
+}
+
+// TokenUsageSummary holds aggregate token stats for a grouping key.
+type TokenUsageSummary struct {
+	Key                   string  // grouping key (project, agent, or activity_name)
+	TotalInputTokens      int
+	TotalOutputTokens     int
+	TotalCacheReadTokens   int
+	TotalCacheCreationTokens int
+	TotalCostUSD          float64
+	RecordCount           int
+}
+
+// GetTokenUsageSummary returns aggregate token usage grouped by the specified column.
+// Valid groupBy values: "project", "agent", "activity_name".
+func (s *Store) GetTokenUsageSummary(groupBy string, since time.Time) ([]TokenUsageSummary, error) {
+	// Whitelist column names to prevent injection
+	switch groupBy {
+	case "project", "agent", "activity_name":
+	default:
+		return nil, fmt.Errorf("store: invalid groupBy column: %s", groupBy)
+	}
+
+	query := fmt.Sprintf(
+		`SELECT %s, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(cache_creation_tokens), SUM(cost_usd), COUNT(*)
+		 FROM token_usage WHERE recorded_at >= ? GROUP BY %s ORDER BY SUM(cost_usd) DESC`,
+		groupBy, groupBy,
+	)
+
+	rows, err := s.db.Query(query, since.UTC().Format(time.DateTime))
+	if err != nil {
+		return nil, fmt.Errorf("store: get token usage summary: %w", err)
+	}
+	defer rows.Close()
+
+	var summaries []TokenUsageSummary
+	for rows.Next() {
+		var s TokenUsageSummary
+		if err := rows.Scan(
+			&s.Key,
+			&s.TotalInputTokens,
+			&s.TotalOutputTokens,
+			&s.TotalCacheReadTokens,
+			&s.TotalCacheCreationTokens,
+			&s.TotalCostUSD,
+			&s.RecordCount,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan token usage summary: %w", err)
+		}
+		summaries = append(summaries, s)
+	}
+	return summaries, rows.Err()
 }

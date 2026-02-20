@@ -2,7 +2,7 @@
 
 ## Installation
 
-Run the install script to set up hooks:
+Run the install script to install or refresh local hooks:
 
 ```bash
 ./scripts/hooks/install.sh
@@ -11,36 +11,57 @@ Run the install script to set up hooks:
 ## Hooks
 
 ### pre-commit
-Prevents direct commits to master/main branch.
+Prevents direct commits to `master`/`main` and enforces approved branch naming.
 
-**Rationale:** All work must happen on feature branches to:
-- Prevent breaking the main branch
-- Enable proper code review via PRs
-- Allow easy rollbacks
-- Maintain clean git history
+**Rationale:** All work must happen on a dedicated branch to:
+- Prevent breaking the primary branch
+- Enable review isolation
+- Keep history clean and reversible
 
 **Bypass (emergencies only):**
 ```bash
+export CORTEX_ALLOW_MASTER_HOTFIX=1
 git commit --no-verify
 ```
 
 ## Branch Workflow
 
-Always create a feature branch before starting work:
+Before starting work:
 
 ```bash
-# Create and switch to feature branch
-git checkout -b feature/your-feature-name
+# 1. Start from clean master
+git checkout master
+git pull --rebase
 
-# Or use worktrees for parallel work
+# 2. Create a branch
+git checkout -b feature/your-feature-name
+# or:
+git checkout -b chore/cleanup-old-jobs
+git checkout -b fix/repro-fix
+git checkout -b refactor/scheduler-loop
+```
+
+Allowed branch naming for standard work:
+- `feature/*` - New features
+- `chore/*` - Maintenance tasks
+- `fix/*` - Bug fixes
+- `refactor/*` - Code refactoring
+
+Hotfix handling:
+- `hotfix/*` is allowed only for approved production hotfixes.
+- If blocked by this hook during approved hotfix flow, use `CORTEX_ALLOW_MASTER_HOTFIX=1`.
+
+## Worktree Setup
+
+For parallel work, use `git worktree`:
+
+```bash
 git worktree add ../cortex-feature feature/your-feature-name
 cd ../cortex-feature
 ```
 
-### Branch Naming
+When done:
 
-- `feature/*` - New features
-- `fix/*` - Bug fixes  
-- `chore/*` - Maintenance tasks
-- `refactor/*` - Code refactoring
-- `test/*` - Test improvements
+```bash
+git worktree remove ../cortex-feature
+```

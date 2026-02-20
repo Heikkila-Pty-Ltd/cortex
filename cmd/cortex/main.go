@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -11,21 +12,57 @@ import (
 	"syscall"
 	"time"
 
+	"errors"
+
+	"go.temporal.io/api/serviceerror"
+	tclient "go.temporal.io/sdk/client"
+
 	"github.com/antigravity-dev/cortex/internal/api"
 	"github.com/antigravity-dev/cortex/internal/config"
-	"github.com/antigravity-dev/cortex/internal/dispatch"
-	"github.com/antigravity-dev/cortex/internal/health"
-	"github.com/antigravity-dev/cortex/internal/learner"
-	"github.com/antigravity-dev/cortex/internal/matrix"
-	"github.com/antigravity-dev/cortex/internal/scheduler"
 	"github.com/antigravity-dev/cortex/internal/store"
+	"github.com/antigravity-dev/cortex/internal/temporal"
 )
+
+func configureLogger(logLevel string, useDev bool) *slog.Logger {
+	level := slog.LevelInfo
+	switch strings.ToLower(strings.TrimSpace(logLevel)) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	}
+
+	opts := &slog.HandlerOptions{Level: level}
+	if useDev {
+		return slog.New(slog.NewTextHandler(os.Stderr, opts))
+	}
+	return slog.New(slog.NewJSONHandler(os.Stderr, opts))
+}
+
+func validateRuntimeConfigReload(oldCfg, newCfg *config.Config) error {
+	if oldCfg == nil || newCfg == nil {
+		return fmt.Errorf("invalid config state during reload")
+	}
+
+	oldStateDB := strings.TrimSpace(oldCfg.General.StateDB)
+	newStateDB := strings.TrimSpace(newCfg.General.StateDB)
+	if oldStateDB != newStateDB {
+		return fmt.Errorf("state_db changed (%q -> %q) and requires restart", oldStateDB, newStateDB)
+	}
+
+	oldAPIBind := strings.TrimSpace(oldCfg.API.Bind)
+	newAPIBind := strings.TrimSpace(newCfg.API.Bind)
+	if oldAPIBind != newAPIBind {
+		return fmt.Errorf("api.bind changed (%q -> %q) and requires restart", oldAPIBind, newAPIBind)
+	}
+	return nil
+}
 
 func main() {
 	configPath := flag.String("config", "cortex.toml", "path to config file")
-	once := flag.Bool("once", false, "run a single tick then exit")
 	dev := flag.Bool("dev", false, "use text log format (default is JSON)")
-	dryRun := flag.Bool("dry-run", false, "run tick logic without actually dispatching agents")
 	disableAnthropic := flag.Bool("disable-anthropic", false, "remove Anthropic/Claude providers from config and exit")
 	setTickInterval := flag.String("set-tick-interval", "", "set [general].tick_interval in config (e.g. 2m) and exit")
 	fallbackModel := flag.String("fallback-model", "gpt-5.3-codex", "fallback chief model used with -disable-anthropic")
@@ -34,7 +71,6 @@ func main() {
 	normalizeBeadsDryRun := flag.Bool("normalize-beads-dry-run", false, "preview normalize-beads changes without writing files")
 	flag.Parse()
 
-	// Bootstrap logger (text, info) for early startup
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
@@ -59,7 +95,6 @@ func main() {
 		return
 	}
 
-	// Load config via manager for refreshable runtime snapshots.
 	cfgManager, err := config.LoadManager(*configPath)
 	if err != nil {
 		logger.Error("failed to load config", "error", err)
@@ -70,6 +105,7 @@ func main() {
 		logger.Error("failed to load config snapshot", "config", *configPath)
 		os.Exit(1)
 	}
+
 	if projectName := strings.TrimSpace(*normalizeBeadsProject); projectName != "" {
 		projectCfg, ok := cfg.Projects[projectName]
 		if !ok {
@@ -99,42 +135,9 @@ func main() {
 		)
 		return
 	}
-	for _, project := range cfg.MissingProjectRoomRouting() {
-		logger.Warn("project has no matrix_room and reporter.default_room is unset",
-			"project", project)
-	}
 
-	// Configure logger from config
-	var level slog.Level
-	switch cfg.General.LogLevel {
-	case "debug":
-		level = slog.LevelDebug
-	case "warn":
-		level = slog.LevelWarn
-	case "error":
-		level = slog.LevelError
-	default:
-		level = slog.LevelInfo
-	}
-	opts := &slog.HandlerOptions{Level: level}
-	if *dev {
-		logger = slog.New(slog.NewTextHandler(os.Stderr, opts))
-	} else {
-		logger = slog.New(slog.NewJSONHandler(os.Stderr, opts))
-	}
+	logger = configureLogger(cfg.General.LogLevel, *dev)
 	slog.SetDefault(logger)
-
-	// Acquire single-instance lock
-	lockPath := "/tmp/cortex.lock"
-	if cfg.General.LockFile != "" {
-		lockPath = config.ExpandHome(cfg.General.LockFile)
-	}
-	lockFile, err := health.AcquireFlock(lockPath)
-	if err != nil {
-		logger.Error("failed to acquire lock", "error", err)
-		os.Exit(1)
-	}
-	defer health.ReleaseFlock(lockFile)
 
 	// Open store
 	dbPath := config.ExpandHome(cfg.General.StateDB)
@@ -145,69 +148,80 @@ func main() {
 	}
 	defer st.Close()
 
-	// Create components
-	rl := dispatch.NewRateLimiter(st, cfg.RateLimits)
-
-	// Create dispatcher using config-driven resolver
-	resolver := scheduler.NewDispatcherResolver(cfg)
-
-	// Validate dispatcher configuration before proceeding
-	if err := resolver.ValidateConfiguration(); err != nil {
-		logger.Error("dispatcher configuration validation failed", "error", err)
-		os.Exit(1)
-	}
-
-	d, err := resolver.CreateDispatcher()
-	if err != nil {
-		logger.Error("failed to create dispatcher", "error", err)
-		os.Exit(1)
-	}
-
-	logger.Info("dispatcher created", "type", d.GetHandleType())
-
-	sched := scheduler.NewWithConfigManager(cfgManager, st, rl, d, logger.With("component", "scheduler"), *dryRun)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if *once {
-		logger.Info("running single tick (--once mode)")
-		sched.RunTick(ctx)
-		logger.Info("single tick complete, waiting for dispatched agents to finish")
-		sched.WaitForRunningDispatches(ctx, 1*time.Second)
-		logger.Info("single tick complete, exiting")
-		return
-	}
-
-	// Start scheduler
-	go sched.Start(ctx)
-
-	// Start health monitor
-	hm := health.NewMonitor(cfg, st, d, logger.With("component", "health"))
-	go hm.Start(ctx)
-
-	// Start learner cycle worker
-	lw := learner.NewCycleWorker(cfg.Learner, st, logger.With("component", "learner"))
-	go lw.Start(ctx)
-
-	// Start Matrix inbound poller (optional)
-	if cfg.Matrix.Enabled {
-		roomMap := matrix.BuildRoomProjectMap(cfg)
-		if len(roomMap) == 0 {
-			logger.Warn("matrix polling enabled but no room mapping is configured")
+	// SIGHUP config reload
+	applyReload := func() error {
+		updatedCfg, err := config.Reload(*configPath)
+		if err != nil {
+			return err
 		}
-		matrixClient := matrix.NewOpenClawClient(nil, cfg.Matrix.ReadLimit)
-		matrixPoller := matrix.NewPoller(matrix.PollerConfig{
-			Enabled:       cfg.Matrix.Enabled,
-			PollInterval:  cfg.Matrix.PollInterval.Duration,
-			BotUser:       cfg.Matrix.BotUser,
-			RoomToProject: roomMap,
-		}, matrixClient, d, logger.With("component", "matrix"))
-		go matrixPoller.Run(ctx)
+		if err := validateRuntimeConfigReload(cfg, updatedCfg); err != nil {
+			return err
+		}
+		cfgManager.Set(updatedCfg)
+		cfg = updatedCfg
+		logger = configureLogger(cfg.General.LogLevel, *dev)
+		slog.SetDefault(logger)
+		return nil
 	}
 
-	// Start API server with scheduler reference
-	apiSrv, err := api.NewServer(cfg, st, rl, sched, d, logger.With("component", "api"))
+	// Start Temporal worker
+	go func() {
+		logger.Info("starting temporal worker")
+		if err := temporal.StartWorker(st, cfg.Tiers); err != nil {
+			logger.Error("temporal worker error", "error", err)
+		}
+	}()
+
+	// Start strategic groom cron schedules for each enabled project
+	go func() {
+		// Let the worker register workflows before we start cron executions
+		time.Sleep(5 * time.Second)
+
+		c, err := tclient.Dial(tclient.Options{
+			HostPort: "127.0.0.1:7233",
+		})
+		if err != nil {
+			logger.Error("failed to create temporal client for strategic cron", "error", err)
+			return
+		}
+		defer c.Close()
+
+		for name, project := range cfg.Projects {
+			if !project.Enabled {
+				continue
+			}
+
+			workflowID := fmt.Sprintf("strategic-groom-%s", name)
+			req := temporal.StrategicGroomRequest{
+				Project:  name,
+				WorkDir:  config.ExpandHome(project.Workspace),
+				BeadsDir: config.ExpandHome(project.BeadsDir),
+				Tier:     "premium",
+			}
+
+			_, err := c.ExecuteWorkflow(ctx, tclient.StartWorkflowOptions{
+				ID:           workflowID,
+				TaskQueue:    "cortex-task-queue",
+				CronSchedule: "0 5 * * *",
+			}, temporal.StrategicGroomWorkflow, req)
+			if err != nil {
+				var alreadyStarted *serviceerror.WorkflowExecutionAlreadyStarted
+				if errors.As(err, &alreadyStarted) {
+					logger.Info("strategic cron already running", "project", name, "workflow_id", workflowID)
+					continue
+				}
+				logger.Error("failed to start strategic cron", "project", name, "error", err)
+				continue
+			}
+			logger.Info("strategic cron registered", "project", name, "workflow_id", workflowID, "schedule", "0 5 * * *")
+		}
+	}()
+
+	// Start API server
+	apiSrv, err := api.NewServer(cfg, st, logger.With("component", "api"))
 	if err != nil {
 		logger.Error("failed to create api server", "error", err)
 		os.Exit(1)
@@ -222,32 +236,32 @@ func main() {
 
 	logger.Info("cortex running",
 		"bind", cfg.API.Bind,
-		"tick_interval", cfg.General.TickInterval.Duration.String(),
-		"max_per_tick", cfg.General.MaxPerTick,
 	)
 
-	// Block on signal
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
 
-	sig := <-sigCh
-	shutdownStart := time.Now()
-	logger.Info("received signal, shutting down", "signal", sig)
-	cancel()
-
-	// Graceful shutdown: drain dispatches if using tmux
-	if d.GetHandleType() == "session" {
-		logger.Info("draining tmux sessions", "timeout", "30s")
-		dispatch.GracefulShutdown(30 * time.Second)
+	for {
+		sig := <-sigCh
+		switch sig {
+		case syscall.SIGHUP:
+			if err := applyReload(); err != nil {
+				logger.Error(fmt.Sprintf("config reload failed: %v", err))
+				continue
+			}
+			logger.Info("config reloaded")
+		case syscall.SIGINT, syscall.SIGTERM:
+			shutdownStart := time.Now()
+			logger.Info("received signal, shutting down", "signal", sig)
+			cancel()
+			logger.Info("cortex stopped", "shutdown_duration", time.Since(shutdownStart).String())
+			return
+		default:
+			shutdownStart := time.Now()
+			logger.Info("received unexpected signal, shutting down", "signal", sig)
+			cancel()
+			logger.Info("cortex stopped", "shutdown_duration", time.Since(shutdownStart).String())
+			return
+		}
 	}
-
-	// Mark all remaining running dispatches as interrupted
-	interrupted, err := st.InterruptRunningDispatches()
-	if err != nil {
-		logger.Error("failed to interrupt running dispatches", "error", err)
-	} else if interrupted > 0 {
-		logger.Info("interrupted running dispatches", "count", interrupted)
-	}
-
-	logger.Info("cortex stopped", "shutdown_duration", time.Since(shutdownStart).String())
 }

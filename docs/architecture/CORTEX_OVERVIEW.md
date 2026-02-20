@@ -1,140 +1,192 @@
-# Cortex Overview
+# Cortex Design Rationale
 
-Related docs:
+> _Why this architecture? Why these trade-offs? This doc explains the reasoning behind every major decision in Cortex._
 
-- `docs/CORTEX_QUICK_BRIEF.md` for a one-page summary.
-- `docs/CORTEX_LLM_INTERACTION_GUIDE.md` for LLM operation playbooks.
-
-## What Cortex Does
-
-Cortex is an autonomous development orchestration daemon. It continuously scans one or more projects for ready beads, selects the next best work, dispatches role-specific agents, and records lifecycle + health telemetry in SQLite.
-
-In practice, Cortex does five core jobs:
-
-1. Continuously pull executable work from Beads across projects.
-2. Decide who should execute each bead (role, tier, provider, backend).
-3. Execute work through agent runtimes (OpenClaw + configured CLIs).
-4. Keep execution healthy (timeouts, retries, restarts, zombie cleanup).
-5. Learn from outcomes (failure signatures, tier/provider performance, cost).
+---
 
 ## Why Cortex Exists
 
-The goal is reliable, continuous, multi-project software delivery with minimal manual coordination. Cortex is designed for:
+Most AI coding workflows are manual: pick a task, prompt an agent, review the output, commit, repeat. This works for one person on one project. It breaks when you want:
 
-- `self-driving` task dispatch (scheduler + policy)
-- `self-healing` execution and gateway recovery
-- `self-improving` recommendations from observed outcomes
+- **Continuous execution** across multiple projects overnight
+- **Deterministic quality gates** that aren't "the LLM said it's fine"
+- **Learning from mistakes** so the same bug category doesn't burn tokens twice
+- **Fault tolerance** when an agent hangs, crashes, or hallucinates `rm -rf /`
 
-## How Cortex Does It
+Cortex is the orchestration layer that sits between your task backlog (Beads) and your agent runtimes (Claude, Codex, etc.) and makes all of the above automatic.
 
-### Scheduler Control Loop (Primary Engine)
+---
 
-The scheduler runs on `tick_interval` and executes a deterministic pipeline each tick:
+## Core Design Decisions
 
-1. Reconcile running dispatches.
-2. Process backoff-eligible retries.
-3. Run dispatch health checks (stuck/zombie flows).
-4. Enumerate enabled projects ordered by `priority`.
-5. Build local and cross-project dependency graphs.
-6. Select unblocked, open, non-epic beads.
-7. Enrich selected beads with full details (`acceptance`, `design`, estimates).
-8. Infer role from stage/type labels.
-9. Infer complexity tier (`fast`/`balanced`/`premium`).
-10. Pick provider with downgrade/upgrade fallback if constrained.
-11. Claim bead ownership lock before dispatch to avoid collisions.
-12. Optionally prepare branch workflow artifacts.
-13. Dispatch via backend (PID or tmux session).
-14. Persist dispatch record and stage transitions in SQLite.
+### ADR-001: Temporal over In-Process Scheduler
 
-This loop makes Cortex policy-driven: work selection and execution are explicit, measurable, and repeatable.
+**Context:** The original Cortex v0 used a tick-based in-process scheduler with SQLite state. Every 60 seconds, it would scan beads, dispatch agents, and reconcile. This worked but had a fatal flaw: if the process crashed mid-dispatch, state was lost.
 
-### Dispatch Execution Model
+**Decision:** Migrate the execution engine to Temporal workflows.
 
-- Cortex uses a pluggable dispatcher interface.
-- It can run short-lived PID-backed execution or crash-resilient tmux session execution.
-- Dispatch records include bead, project, role agent, provider model, tier, backend handle, output, timings, retries, and failure diagnosis.
-- Completion reconciliation is explicit: Cortex checks live state, captures output, classifies outcome, and updates stage/state.
+**Rationale:**
+- **Durability.** If Cortex dies mid-workflow, Temporal replays from exactly where it left off. No state reconstruction needed.
+- **Visibility.** Temporal UI shows every workflow execution, activity attempt, and failure — free observability.
+- **Fan-out.** Temporal makes it trivial to run N parallel child workflows (future: Monte Carlo execution).
+- **Signals.** The human gate is a Temporal signal — clean, built-in, no polling.
+- **Timers and cron.** StrategicGroom runs on `CronSchedule: "0 5 * * *"` — Temporal handles it natively.
 
-### Reliability and Recovery Model
+**Rejected alternatives:**
+- *In-process scheduler with WAL recovery:* Fragile, requires custom replay logic.
+- *Celery / Bull / Sidekiq:* Python/Node/Ruby ecosystems. We're Go-native.
+- *AWS Step Functions:* Vendor lock-in, latency, cost at scale.
 
-- Single active orchestrator instance (flock lock).
-- Bead-level ownership lock during dispatch launch.
-- Stuck dispatch timeout + kill + retry escalation.
-- Exponential backoff and max retry limits.
-- Failure quarantine for repeated local failures.
-- OpenClaw gateway liveness checks with restart and critical escalation.
-- Zombie/orphan process and tmux session cleanup.
+---
 
-### Learning and Adaptation Model
+### ADR-002: Beads over Jira/Linear/GitHub Issues
 
-- Parse agent outputs for failure signatures.
-- Record token/cost metrics per dispatch.
-- Run periodic learner cycles over recent windows.
-- Emit operational recommendations (provider/tier/cost actions) into persisted events.
+**Context:** We needed a dependency-aware task graph. Commercial tools (Jira, Linear) are cloud-hosted and API-rate-limited. GitHub Issues lack first-class dependency edges.
 
-## Core Runtime Components
+**Decision:** Use Beads — a Git-backed, local-first issue tracker with dependency DAG support.
 
-- `cmd/cortex/main.go`: process wiring, lifecycle, single-instance lock.
-- `internal/scheduler`: orchestration loop (selection, dispatch, retries, cooldowns, quarantine).
-- `internal/beads`: bead querying, dependency graphing, cross-project resolution, ownership lock claim/release.
-- `internal/dispatch`: agent execution (PID or tmux), session control, output capture.
-- `internal/health`: gateway restart logic, stuck dispatch handling, zombie cleanup integration.
-- `internal/learner`: periodic analytics and recommendation generation.
-- `internal/store`: SQLite persistence for dispatches, outputs, health events, costs, stage history.
-- `internal/api`: operational API (`/status`, `/health`, `/metrics`, `/teams`, `/dispatches/*`, scheduler controls, recommendations).
+**Rationale:**
+- **Local-first.** No network calls to read the backlog. Zero-latency task queries.
+- **Git-backed.** Issues are JSONL files in the repo. Full version history via `git log`. No vendor lock.
+- **Dependency DAG.** `bd` natively supports `blocks:`, `parent-child:`, `discovered-from:` edges. Cross-project deps work out of the box.
+- **Programmable.** The `beads` Go package lets Cortex query, create, update, and mutate beads programmatically — no REST API, no rate limits, no OAuth tokens.
 
-## Positioning: Cortex vs OpenClaw vs Gas Town
+**Trade-offs accepted:**
+- No web UI for non-technical stakeholders (acceptable: Cortex is a developer tool).
+- Merge conflicts on `issues.jsonl` in multi-agent environments (mitigated by bead ownership locks).
 
-### OpenClaw
+---
 
-OpenClaw is the runtime and gateway platform. It provides agent execution, messaging/channel integrations, session management, and tool/runtime surfaces.
+### ADR-003: Cross-Model Review (Claude ↔ Codex)
 
-Cortex uses OpenClaw as an execution substrate. Cortex does not replace OpenClaw.
+**Context:** LLMs reviewing their own output exhibit confirmation bias. A model that wrote buggy code will often approve it in review.
 
-Boundary:
+**Decision:** The implementing agent and reviewing agent must be *different models*. Claude reviews Codex's work. Codex reviews Claude's.
 
-- OpenClaw answers "how agents run and communicate."
-- Cortex answers "what should run next, where, and with what policy."
+**Rationale:**
+- **Different blind spots.** Each model family has characteristic failure modes. Cross-pollination catches what self-review misses.
+- **Agent swap on rejection.** When a review fails, the reviewer becomes the implementer with the review context injected. The rejected code becomes negative examples. Up to 3 handoffs before escalation.
+- **Measurable.** We record which model pairs have the highest first-pass review acceptance rate. This data feeds the learner.
 
-### Gas Town
+**Why not just test?** Tests catch functional bugs. Reviews catch architectural mistakes, naming confusion, missing edge cases, and "technically works but is wrong in spirit" code. Both layers are necessary.
 
-Gas Town is a multi-agent workspace/coordination system (town/rig/mayor/hooks/convoys model) centered on workspace topology and persistent agent coordination workflows.
+---
 
-Cortex is narrower and more policy/operations-driven:
+### ADR-004: Human Gate Before Execution
 
-- Tick-based autonomous scheduling rather than mayor-led town orchestration.
-- SQLite-first operational telemetry and health/learning loops.
-- Direct bead dependency dispatch across configured projects.
-- API + metrics oriented toward reliability operations.
+**Context:** Autonomous code execution without human oversight is dangerous. The system can generate and commit code that compiles and passes tests but is semantically wrong.
 
-Boundary:
+**Decision:** Every plan must be approved by a human via Temporal signal before entering the coding engine.
 
-- Gas Town emphasizes workspace and orchestration UX primitives.
-- Cortex emphasizes autonomous dispatch policy, reliability controls, and operational feedback loops.
+**Rationale:**
+- **Plan space is cheap, implementation is expensive.** An LLM generating a structured plan costs ~1K tokens. Implementing that plan costs ~50K tokens. It's 50x cheaper to reject a bad plan than to reject bad code.
+- **Explicit scope control.** The human gate prevents scope creep — the agent can only implement what was approved.
+- **Audit trail.** Every approval is a Temporal event with timestamp and signal payload. Full accountability.
 
-## Quick Comparison
+**Future:** As confidence grows, the gate can be relaxed for low-risk beads (e.g., `priority >= P3`, `complexity = fast`).
 
-| System | Primary Role | Cortex Relationship |
-| --- | --- | --- |
-| OpenClaw | Agent runtime + gateway/control plane | Cortex executes work through it |
-| Gas Town | Multi-agent workspace/orchestration framework | Cortex focuses on policy/ops automation, not town topology |
-| Cortex | Autonomous dispatch policy + reliability loop | Sits above runtime and task graph |
+---
 
-## Practical Stack View
+### ADR-005: Semgrep as Immune System (LATM)
 
-Typical layering in this repo's architecture:
+**Context:** LLMs make the same categories of mistakes repeatedly. The classic fix is "add it to the prompt," but prompts grow unbounded and don't enforce deterministically.
 
-1. Beads graph defines work and dependencies.
-2. Cortex decides assignment/order/policy.
-3. OpenClaw executes agent work.
-4. Cortex captures outcomes and adapts future behavior.
+**Decision:** The ContinuousLearner extracts lessons from failures and generates `.semgrep/` rules that run as a pre-filter before DoD.
+
+**Rationale:**
+- **Deterministic enforcement.** A Semgrep rule either matches or doesn't. No LLM inference, no temperature variance, no hallucination.
+- **Free at runtime.** Semgrep AST matching is ~100ms. Compare to `go build` (5-10s) or `go test` (30s+). The pre-filter catches repeat offenses before burning expensive compute.
+- **Self-growing.** Every mistake teaches the system. Over time, the rule set grows to cover the project's specific antipattern surface. *The factory builds its own immune system.*
+- **LATM principle.** This is "LLM as Tool Maker" — the stochastic model generates deterministic artifacts (Semgrep rules) that outlive any single conversation.
+
+**This is the architectural insight most people miss.** The value isn't in the LLM generating code. The value is in the LLM generating *rules* that prevent future LLMs from making the same mistakes.
+
+---
+
+### ADR-006: CHUM as Abandoned Child Workflows
+
+**Context:** After a bead completes, the system should extract lessons and groom the backlog. But these operations must never block the next bead's execution.
+
+**Decision:** ContinuousLearner and TacticalGroom run as child workflows with `PARENT_CLOSE_POLICY_ABANDON`.
+
+**Rationale:**
+- **Non-blocking.** The parent workflow completes immediately after spawning children. Zero added latency to the main loop.
+- **Durable.** If the learner crashes mid-extraction, Temporal retries it. No lesson is lost.
+- **Isolation.** A bug in lesson extraction doesn't affect code execution. Different failure domains.
+- **Wait-for-start pattern.** We call `GetChildWorkflowExecution().Get()` to ensure the child is actually scheduled before the parent exits. This prevents Temporal from garbage-collecting unstarted children.
+
+---
+
+### ADR-007: SQLite over Postgres
+
+**Context:** Cortex needs a persistence layer for dispatches, outcomes, lessons, and health events.
+
+**Decision:** SQLite with WAL mode and FTS5 for full-text lesson search.
+
+**Rationale:**
+- **Zero infrastructure.** No database server to provision, connect to, or maintain. The state database is a single file.
+- **Colocated with the worker.** The Temporal worker and SQLite database run on the same host. Sub-millisecond reads.
+- **FTS5 for lessons.** Full-text search over accumulated lessons without deploying Elasticsearch. `SELECT * FROM lessons_fts WHERE lessons_fts MATCH 'nil pointer'` just works.
+- **Backup is `cp`.** Copy the `.db` file. Done.
+
+**When to upgrade:** If Cortex ever needs multi-worker horizontal scaling, SQLite becomes the bottleneck. That day is not today.
+
+---
+
+### ADR-008: Go over Python
+
+**Context:** Most AI tooling is Python-first. Why is Cortex in Go?
+
+**Decision:** Go for the orchestrator, LLMs via CLI subprocesses.
+
+**Rationale:**
+- **Temporal SDK.** The Go Temporal SDK is first-class, battle-tested at Uber-scale.
+- **Single-binary deployment.** `go build` produces one static binary. No virtualenvs, no `pip install`, no Docker required (though supported).
+- **Concurrency model.** Goroutines and channels are a natural fit for fan-out/fan-in workflow patterns.
+- **Type safety.** Workflow parameters and activity signatures are compile-time checked. A Python `dict` flowing through Temporal activities is a runtime bomb.
+
+**The LLMs don't care what language calls them.** Claude and Codex are invoked via CLI (`claude --print`, `codex exec`). The orchestrator's language is irrelevant to the agent runtime.
+
+---
+
+### ADR-009: Dual-Speed Grooming (Tactical + Strategic)
+
+**Context:** Backlog hygiene is critical but has two different rhythms.
+
+**Decision:** Two separate grooming workflows operating at different speeds.
+
+**Rationale:**
+
+| | Tactical Groom | Strategic Groom |
+|---|---|---|
+| **Trigger** | Per bead completion | Cron: daily at 5 AM |
+| **LLM tier** | Fast (cheap) | Premium (expensive) |
+| **Scope** | Adjacent beads only | Entire backlog + repo map |
+| **Actions** | Reprioritize, add deps, close stale | Deep analysis, split/merge beads, morning briefing |
+| **Latency budget** | < 30 seconds | < 5 minutes |
+
+This mirrors real Scrum: tactical grooming happens in standup (fast, narrow), strategic grooming happens in sprint planning (slow, broad).
+
+---
+
+## Positioning: Cortex vs Everything Else
+
+| System | Primary Role | Relationship |
+|--------|-------------|--------------|
+| **OpenClaw** | Agent runtime + gateway/control plane | Cortex executes work through it |
+| **Gas Town** | Multi-agent workspace/orchestration framework | Cortex focuses on policy/ops, not town topology |
+| **Beads** | Git-backed issue tracker + dependency DAG | Cortex's input layer |
+| **Temporal** | Durable workflow execution engine | Cortex's execution substrate |
+| **Cortex** | Autonomous dispatch policy + learning loop | Sits above all of the above |
+
+---
 
 ## Non-Goals
 
-Cortex is not trying to be:
+Cortex is explicitly **not** trying to be:
 
-- A personal multi-channel assistant product (OpenClaw domain).
-- A complete town/workspace management framework (Gas Town domain).
-- A raw issue tracker (Beads domain).
-
-It is the reliability-and-policy orchestration layer for development execution.
+- A chatbot or assistant (that's OpenClaw)
+- A workspace management UI (that's Gas Town)
+- An issue tracker (that's Beads)
+- A CI/CD pipeline (Cortex triggers code-level work, not build/deploy)
+- A replacement for human architects (the human gate exists for a reason)

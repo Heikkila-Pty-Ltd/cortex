@@ -1,68 +1,60 @@
-# Cortex Quick Brief
+# Cortex — Quick Brief
 
-## One-Line Definition
+**One-liner:** Autonomous agent orchestrator that turns a Git-backed task DAG into reliable, self-improving code execution via Temporal workflows.
 
-Cortex is an autonomous development orchestrator that turns Beads work queues into reliable, observable, multi-agent execution.
+---
 
-## What Cortex Does
+## What It Does
 
-1. Scans enabled projects for ready beads.
-2. Resolves local and cross-project dependencies.
-3. Selects role, complexity tier, provider, and backend for each dispatch.
-4. Launches agents and tracks lifecycle in SQLite.
-5. Self-heals around failures (timeouts, retries, gateway restarts, cleanup).
-6. Produces operational telemetry and improvement recommendations.
+1. Reads micro-tasks from [Beads](https://github.com/steveyegge/beads) — a dependency-aware Git-backed backlog
+2. Generates a structured plan with acceptance criteria (LLM)
+3. Waits for human approval (Temporal signal)
+4. Dispatches an AI agent (Claude/Codex) to implement the plan
+5. Cross-model review — a *different* agent reviews the work
+6. DoD gate — `go build`, `go test`, lint. Binary pass/fail
+7. After success: learns from the work and grooms the backlog automatically
 
-## Why It Matters
+## Why It's Different
 
-- Reduces manual task assignment and coordination overhead.
-- Makes agent work execution repeatable and policy-driven.
-- Improves reliability with explicit recovery behavior.
-- Creates measurable operations via API + metrics + persisted state.
+| Feature | Typical AI Workflow | Cortex |
+|---------|-------------------|--------|
+| Task management | Manual prompt → agent → hope | Beads DAG with dependency resolution |
+| Durability | Script crashes = lost state | Temporal replays from failure point |
+| Quality gate | "The LLM said it's fine" | Deterministic: compile, test, lint, Semgrep |
+| Review | Self-review (confirmation bias) | Cross-model: Claude reviews Codex, Codex reviews Claude |
+| Learning | None | Failures → lessons → Semgrep rules (self-growing immune system) |
+| Backlog | Manual grooming | Tactical (per-bead) + Strategic (daily cron) automated grooming |
 
-## How It Works (Control Loop)
+## How It Works
 
-Every tick, Cortex:
+```
+Beads DAG → Plan → Human Gate → Execute → Review → Semgrep → DoD
+                                   ↑               ↓ (fail)      ↓ (pass)
+                                   └───────────────┘              ↓
+                                                            CHUM Loop
+                                                     ┌──────────┴──────────┐
+                                                  Learner            Tactical Groom
+                                              (extract lessons)    (reprioritize beads)
+                                              (store in FTS5)      (add dependencies)
+                                              (generate Semgrep)   (close stale items)
+```
 
-1. Reconciles running dispatches.
-2. Processes pending retries with backoff.
-3. Runs stuck/zombie health routines.
-4. Builds ready workset from Beads graphs.
-5. Claims bead ownership lock.
-6. Dispatches through PID or tmux backend.
-7. Persists status/output/failure/cost data.
+## Stack
 
-## Interfaces
+| Component | Technology | Why |
+|-----------|-----------|-----|
+| Language | Go 1.24+ | Single binary, type-safe Temporal SDK, goroutine concurrency |
+| Orchestration | Temporal | Durable execution, signal-based gating, native cron |
+| Task Graph | Beads | Git-backed, local-first, dependency DAG |
+| Persistence | SQLite + FTS5 | Zero-infra, full-text lesson search |
+| Agents | Claude CLI, Codex CLI | Model-agnostic via pluggable CLI interface |
+| Static Analysis | Semgrep | CHUM-generated rules for deterministic pattern enforcement |
 
-- CLI process:
-  - `./cortex --config cortex.toml --once --dev`
-  - `./cortex --config cortex.toml --dev`
-- HTTP API:
-  - `/status`, `/health`, `/metrics`
-  - `/projects`, `/teams`
-  - `/dispatches/{bead_id}`
-  - `/scheduler/pause`, `/scheduler/resume`, `/scheduler/status`
-  - `/recommendations`
-- Data plane:
-  - Beads (`bd`) for work graph
-  - SQLite store for runtime/health history
+## Key Docs
 
-## Cortex vs Others (Short)
-
-- OpenClaw: runtime/gateway execution substrate.
-- Gas Town: workspace/town orchestration framework.
-- Cortex: dispatch policy + reliability automation loop above task graph and runtime.
-
-## Current Readiness
-
-Cortex is best treated as an internal orchestration system until the hardening backlog is closed and stable operations are demonstrated over sustained runtime windows.
-
-## Launch Path (When Ready)
-
-1. Freeze MVP scope (core scheduling, locking, health, API, docs).
-2. Close critical hardening beads.
-3. Run burn-in with production-like load and incident review.
-4. Publish operator docs + LLM interaction guide.
-5. Ship tagged release with install/runbook.
-
-Use `docs/LAUNCH_READINESS_CHECKLIST.md` as the formal go/no-go gate.
+| Doc | Purpose |
+|-----|---------|
+| [CORTEX_OVERVIEW.md](CORTEX_OVERVIEW.md) | Full design rationale with ADRs |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Technical architecture with diagrams |
+| [CHUM_BACKLOG.md](CHUM_BACKLOG.md) | Strategic roadmap |
+| [CONFIG.md](CONFIG.md) | Configuration reference |
