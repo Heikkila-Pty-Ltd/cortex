@@ -88,6 +88,12 @@ type Scheduler struct {
 	lastUtilizationSample     time.Time
 	utilizationSampleInterval time.Duration
 
+	// Services
+	leaderLock      leaderLock
+	riskController RiskController
+	claimManager   ClaimManager
+	dispatchEngine DispatchEngine
+
 	// Async DoD processing queue to avoid blocking scheduler ticks.
 	dodWorkerOnce sync.Once
 	dodQueue      chan dodQueueItem
@@ -242,6 +248,20 @@ func NewWithConfigManager(cfgManager config.ConfigManager, s *store.Store, rl *d
 
 	// Initialize concurrency controller for admission control
 	scheduler.concurrencyController = NewConcurrencyController(cfg, s, logger)
+
+	// Initialize services
+	scheduler.riskController = NewRiskController(s, logger, cfg, scheduler, scheduler.listBeads)
+	scheduler.claimManager = NewClaimManager(s, logger, cfg, scheduler.claimBeadOwnership, scheduler.releaseBeadOwnership)
+	scheduler.dispatchEngine = NewDispatchEngine(s, logger, cfg, d, rl, scheduler.claimManager, scheduler.riskController, scheduler.reportBeadLifecycle, scheduler.handleOpsQaCompletion, scheduler.backends)
+	if rc, ok := scheduler.riskController.(*riskController); ok {
+		rc.setScheduler(scheduler)
+	}
+	if cm, ok := scheduler.claimManager.(*claimManager); ok {
+		cm.setScheduler(scheduler)
+	}
+	if de, ok := scheduler.dispatchEngine.(*dispatchEngine); ok {
+		de.setScheduler(scheduler)
+	}
 
 	// Initialize ceremony scheduler
 	scheduler.ceremonyScheduler = NewCeremonyScheduler(cfg, s, d, logger)
@@ -540,42 +560,12 @@ func (s *Scheduler) resolveDispatchRole(projectName string, bead beads.Bead) (st
 	return selectedStage.Role, stage
 }
 
-func requiresStructuredBeadBeforeDispatch(role string) bool {
-	switch role {
-	case "coder", "reviewer", "ops":
-		return true
-	default:
-		return false
-	}
-}
-
-func (s *Scheduler) validateBeadStructureForDispatch(project config.Project, bead beads.Bead, role string) []string {
-	if !requiresStructuredBeadBeforeDispatch(role) {
-		return nil
-	}
-
-	failures := make([]string, 0, 2)
-	if project.DoD.RequireEstimate && bead.EstimateMinutes <= 0 {
-		failures = append(failures, "missing estimate (required before assignment)")
-	}
-	if project.DoD.RequireAcceptance && strings.TrimSpace(bead.Acceptance) == "" {
-		failures = append(failures, "missing acceptance criteria (required before assignment)")
-	}
-	return failures
-}
-
 func (s *Scheduler) reportDispatchBlockedByStructure(ctx context.Context, projectName string, bead beads.Bead, role string, failures []string) {
 	if len(failures) == 0 {
 		return
 	}
 	reason := strings.Join(failures, "; ")
 	stage := workflowStageForBead(bead)
-	key := "dispatch_structure_blocked:" + projectName + ":" + bead.ID
-	now := time.Now()
-	if last, ok := s.dispatchBlockAnomaly[key]; ok && now.Sub(last) < dispatchBlockLogWindow {
-		return
-	}
-	s.dispatchBlockAnomaly[key] = now
 
 	s.logger.Warn("dispatch blocked by bead structure requirements",
 		"project", projectName,
@@ -682,13 +672,13 @@ func (s *Scheduler) IsPaused() bool {
 	return s.paused
 }
 
-func (s *Scheduler) systemPauseState() (active bool, reason string, since time.Time) {
+func (s *Scheduler) SystemPauseState() (active bool, reason string, since time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.systemPauseReason != "", s.systemPauseReason, s.systemPauseSince
 }
 
-func (s *Scheduler) setSystemPause(ctx context.Context, reason string, details string) {
+func (s *Scheduler) SetSystemPause(ctx context.Context, reason string, details string) {
 	now := time.Now()
 	s.mu.Lock()
 	s.systemPauseReason = reason
@@ -704,7 +694,7 @@ func (s *Scheduler) setSystemPause(ctx context.Context, reason string, details s
 	s.notifySchedulerEscalation(ctx, details)
 }
 
-func (s *Scheduler) clearSystemPause(reason string) {
+func (s *Scheduler) ClearSystemPause(reason string) {
 	s.mu.Lock()
 	wasSystemPaused := s.systemPauseReason != ""
 	s.systemPauseReason = ""
@@ -720,105 +710,172 @@ func (s *Scheduler) clearSystemPause(reason string) {
 	s.notifySchedulerEscalation(context.Background(), reason)
 }
 
-func (s *Scheduler) handleSystemEscalationPause(ctx context.Context) bool {
-	shouldPause, reason, details := s.systemPauseDecision(ctx)
-	systemPauseActive, activeReason, since := s.systemPauseState()
-	if systemPauseActive {
-		if shouldPause {
-			if activeReason == reason {
-				return true
-			}
-			_ = s.store.RecordHealthEvent("scheduler_pause_reason_changed", fmt.Sprintf("system pause reason changed from %s to %s after %s", activeReason, reason, time.Since(since)))
-			s.setSystemPause(ctx, reason, details)
-			return true
-		}
-		s.clearSystemPause("system escalation conditions no longer exceeded")
-		return false
-	}
 
-	if shouldPause {
-		s.setSystemPause(ctx, reason, details)
-		return true
-	}
-	return false
-}
 
-func (s *Scheduler) systemPauseDecision(ctx context.Context) (bool, string, string) {
-	cc := s.cfg.Dispatch.CostControl
-	if !cc.Enabled {
-		return false, "", ""
-	}
-	now := time.Now()
 
-	if shouldPause, details := s.shouldPauseForTokenWaste(ctx, now, cc); shouldPause {
-		return true, systemPauseReasonTokenWaste, details
-	}
-	if shouldPause, details := s.shouldPauseForChurn(ctx, now, cc); shouldPause {
-		return true, systemPauseReasonChurn, details
-	}
-	return false, "", ""
-}
-
-func (s *Scheduler) shouldPauseForChurn(ctx context.Context, now time.Time, cc config.DispatchCostControl) (bool, string) {
-	if !cc.PauseOnChurn {
-		return false, ""
-	}
-	window := cc.ChurnPauseWindow.Duration
-	if window <= 0 {
-		window = churnWindow
-	}
-	cutoff := now.Add(-window)
-	failureLike, err := s.store.CountDispatchesSince(cutoff, systemChurnFailureStatuses)
-	if err != nil {
-		s.logger.Error("failed to evaluate system churn pause (failure-like count)", "error", err)
-		return false, ""
-	}
-	allDispatches, err := s.store.CountDispatchesSince(cutoff, systemChurnAllStatuses)
-	if err != nil {
-		s.logger.Error("failed to evaluate system churn pause (all count)", "error", err)
-		return false, ""
-	}
-
-	thresholdFailure := cc.ChurnPauseFailure
-	thresholdTotal := cc.ChurnPauseTotal
-	if thresholdFailure <= 0 {
-		thresholdFailure = 12
-	}
-	if thresholdTotal <= 0 {
-		thresholdTotal = 24
-	}
-
-	if failureLike >= thresholdFailure {
-		return true, fmt.Sprintf("failure-like dispatches in last %s: %d (threshold: %d)", window, failureLike, thresholdFailure)
-	}
-	if allDispatches >= thresholdTotal {
-		return true, fmt.Sprintf("total dispatches in last %s: %d (threshold: %d)", window, allDispatches, thresholdTotal)
-	}
-	return false, ""
+func (s *Scheduler) systemPauseState() (bool, string, time.Time) {
+	return s.SystemPauseState()
 }
 
 func (s *Scheduler) shouldPauseForTokenWaste(ctx context.Context, now time.Time, cc config.DispatchCostControl) (bool, string) {
-	if !cc.PauseOnTokenWastage {
-		return false, ""
-	}
-	if cc.DailyCostCapUSD <= 0 {
+	if cc.DailyCostCapUSD <= 0 || !cc.PauseOnTokenWastage || !cc.Enabled {
 		return false, ""
 	}
 	window := cc.TokenWasteWindow.Duration
 	if window <= 0 {
 		window = 24 * time.Hour
 	}
-	cutoff := now.Add(-window)
-	cost, err := s.store.GetTotalCostSince("", cutoff)
-	if err != nil {
-		s.logger.Error("failed to evaluate system token-waste pause (recent cost)", "error", err)
+	cutoff := now.Add(-window).UTC().Format(time.DateTime)
+	if s == nil || s.store == nil {
+		return false, ""
+	}
+	db := s.store.DB()
+	if db == nil {
+		return false, ""
+	}
+	var totalSpend float64
+	if err := db.QueryRow(`
+		SELECT COALESCE(SUM(cost_usd), 0)
+		FROM dispatches
+		WHERE status = 'completed'
+		 AND completed_at IS NOT NULL
+		 AND completed_at >= ?
+	`, cutoff).Scan(&totalSpend); err != nil {
+		if s.logger != nil {
+			s.logger.Warn("failed to query recent dispatch spend", "error", err)
+		}
+		_ = ctx
+		return false, ""
+	}
+	if totalSpend > cc.DailyCostCapUSD {
+		return true, fmt.Sprintf("recent token spend %.2f exceeds cap %.2f in %s", totalSpend, cc.DailyCostCapUSD, window)
+	}
+	return false, ""
+}
+
+func (s *Scheduler) shouldPauseForChurn(ctx context.Context, now time.Time, cc config.DispatchCostControl) (bool, string) {
+	_ = ctx
+	if !cc.Enabled || !cc.PauseOnChurn {
+		return false, ""
+	}
+	window := cc.ChurnPauseWindow.Duration
+	if window <= 0 {
+		window = time.Hour
+	}
+	failureThreshold := cc.ChurnPauseFailure
+	totalThreshold := cc.ChurnPauseTotal
+	if failureThreshold <= 0 || totalThreshold <= 0 {
 		return false, ""
 	}
 
-	if cost >= cc.DailyCostCapUSD {
-		return true, fmt.Sprintf("recent token spend in last %s is $%.4f (cap: $%.2f)", window, cost, cc.DailyCostCapUSD)
+	failureLike, err := s.countRecentDispatchesByStatus(now, systemChurnFailureStatuses, window)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("failed to count recent churn failure-like dispatches", "error", err)
+		}
+		return false, ""
+	}
+	total, err := s.countRecentDispatchesByStatus(now, systemChurnAllStatuses, window)
+	if err != nil {
+		if s.logger != nil {
+			s.logger.Warn("failed to count recent churn dispatches", "error", err)
+		}
+		return false, ""
+	}
+	if failureLike >= failureThreshold {
+		return true, fmt.Sprintf("failure-like dispatches in %s: %d/%d", window, failureLike, failureThreshold)
+	}
+	if total >= totalThreshold {
+		return true, fmt.Sprintf("recent total dispatches in %s: %d/%d", window, total, totalThreshold)
 	}
 	return false, ""
+}
+
+func (s *Scheduler) systemPauseDecision(ctx context.Context) (bool, string, string) {
+	now := time.Now()
+	if s == nil || s.cfg == nil || !s.cfg.Dispatch.CostControl.Enabled {
+		return false, "", ""
+	}
+	if shouldPause, details := s.shouldPauseForChurn(ctx, now, s.cfg.Dispatch.CostControl); shouldPause {
+		return true, systemPauseReasonChurn, details
+	}
+	if shouldPause, details := s.shouldPauseForTokenWaste(ctx, now, s.cfg.Dispatch.CostControl); shouldPause {
+		return true, systemPauseReasonTokenWaste, details
+	}
+	return false, "", ""
+}
+
+func (s *Scheduler) handleSystemEscalationPause(ctx context.Context) bool {
+	shouldPause, reason, details := s.systemPauseDecision(ctx)
+	systemPauseActive, activeReason, since := s.SystemPauseState()
+	if systemPauseActive {
+		if shouldPause {
+			if activeReason == reason {
+				return true
+			}
+			if s.store != nil {
+				_ = s.store.RecordHealthEvent("scheduler_pause_reason_changed", fmt.Sprintf("system pause reason changed from %s to %s after %s", activeReason, reason, time.Since(since)))
+			}
+			s.SetSystemPause(ctx, reason, details)
+			return true
+		}
+		s.ClearSystemPause("system escalation conditions no longer exceeded")
+		return false
+	}
+	if shouldPause {
+		s.SetSystemPause(ctx, reason, details)
+		return true
+	}
+	return false
+}
+
+func (s *Scheduler) validateBeadStructureForDispatch(project config.Project, bead beads.Bead, role string) []string {
+	if !requiresStructuredBeadBeforeDispatch(role) {
+		return nil
+	}
+	var failures []string
+	dod := project.DoD
+	if dod.RequireEstimate && bead.EstimateMinutes <= 0 {
+		failures = append(failures, "EstimateMinutes is 0 or missing")
+	}
+	if dod.RequireAcceptance && strings.TrimSpace(bead.Acceptance) == "" {
+		failures = append(failures, "Acceptance criteria is missing")
+	}
+	return failures
+}
+
+func requiresStructuredBeadBeforeDispatch(role string) bool {
+	switch strings.TrimSpace(role) {
+	case "coder", "reviewer", "qa":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Scheduler) countRecentDispatchesByStatus(now time.Time, statuses []string, window time.Duration) (int, error) {
+	if s == nil || s.store == nil || len(statuses) == 0 || window <= 0 {
+		return 0, nil
+	}
+	db := s.store.DB()
+	if db == nil {
+		return 0, nil
+	}
+	placeholders := strings.Repeat("?,", len(statuses))
+	if len(placeholders) > 0 {
+		placeholders = placeholders[:len(placeholders)-1]
+	}
+	args := make([]interface{}, 0, len(statuses)+1)
+	for _, status := range statuses {
+		args = append(args, status)
+	}
+	args = append(args, now.Add(-window).UTC().Format(time.DateTime))
+	query := fmt.Sprintf("SELECT COUNT(*) FROM dispatches WHERE status IN (%s) AND dispatched_at >= ?", placeholders)
+	var total int
+	if err := db.QueryRow(query, args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("count recent dispatches by status: %w", err)
+	}
+	return total, nil
 }
 
 func (s *Scheduler) notifySchedulerEscalation(ctx context.Context, details string) {
@@ -888,7 +945,7 @@ func (s *Scheduler) CancelDispatch(id int64) error {
 // RunTick executes a single scheduler tick.
 func (s *Scheduler) RunTick(ctx context.Context) {
 	// Check for active pause conditions before dispatching.
-	if s.handleSystemEscalationPause(ctx) {
+	if s.riskController.HandleSystemEscalationPause(ctx) {
 		return
 	}
 	if s.IsPaused() {
@@ -916,17 +973,17 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 	s.rebuildProfilesIfNeeded()
 
 	// Check running dispatches first
-	s.checkRunningDispatches(ctx)
+	s.dispatchEngine.CheckRunningDispatches(ctx)
 	s.processApprovedPRMerges(ctx)
 
 	// Sample concurrency utilization and check for alerts
 	s.sampleConcurrencyUtilization()
 
 	// Try to dequeue overflow items now that running dispatches have been reconciled
-	s.processOverflowQueue(ctx)
+	s.dispatchEngine.ProcessOverflowQueue(ctx)
 
 	// Process pending retries with backoff
-	s.processPendingRetries(ctx)
+	s.dispatchEngine.ProcessPendingRetries(ctx)
 
 	// Run health checks - stuck dispatch detection and zombie cleanup
 	s.runHealthChecks()
@@ -935,8 +992,8 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 	s.syncBeadsImports(ctx)
 
 	// Reconcile stale ownership locks and evaluate gateway breaker before new dispatches.
-	s.reconcileExpiredClaimLeases(ctx)
-	gatewayCircuitOpen := s.evaluateGatewayCircuit(ctx)
+	s.claimManager.ReconcileExpiredClaimLeases(ctx)
+	gatewayCircuitOpen := s.riskController.EvaluateGatewayCircuit(ctx)
 
 	// Enforce optional execution gate: implementation dispatch requires an active approved plan.
 	if required, active, plan, err := s.PlanGateStatus(); err != nil {
@@ -1009,7 +1066,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			s.logger.Error("failed to list beads", "project", np.name, "error", err)
 			continue
 		}
-		s.reconcileProjectClaimHealth(ctx, np.name, np.proj, beadList)
+		s.claimManager.ReconcileProjectClaimHealth(ctx, np.name, np.proj, beadList)
 		s.ensureEpicBreakdowns(ctx, beadsDir, beadList, np.name)
 		s.reconcileCompletedEpicBreakdowns(ctx, beadsDir, beadList, np.name)
 
@@ -1077,7 +1134,7 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		if already {
 			continue
 		}
-		if s.isChurnBlocked(ctx, item.bead, item.name, itemBeadsDir) {
+		if s.riskController.IsChurnBlocked(ctx, item.bead, item.name, itemBeadsDir) {
 			continue
 		}
 
@@ -1087,17 +1144,17 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 			continue
 		}
 
-		if failures := s.validateBeadStructureForDispatch(item.project, item.bead, role); len(failures) > 0 {
+		if failures := s.riskController.ValidateBeadStructureForDispatch(item.project, item.bead, role); len(failures) > 0 {
 			s.reportDispatchBlockedByStructure(ctx, item.name, item.bead, role, failures)
 			continue
 		}
 
 		// Check agent-busy guard: one dispatch per agent per project per tick
 		agent := ResolveAgent(item.name, role)
-		if s.isDispatchCoolingDown(item.bead.ID, agent) {
+		if s.riskController.IsDispatchCoolingDown(item.bead.ID, agent) {
 			continue
 		}
-		if s.isFailureQuarantined(item.bead.ID) {
+		if s.riskController.IsFailureQuarantined(item.bead.ID) {
 			continue
 		}
 
@@ -1147,6 +1204,12 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 				}
 				continue
 			}
+		}
+
+		// Check structural requirements for specific roles
+		if failures := s.riskController.ValidateBeadStructureForDispatch(item.project, item.bead, role); len(failures) > 0 {
+			s.reportDispatchBlockedByStructure(ctx, item.name, item.bead, role, failures)
+			continue
 		}
 
 		// Detect complexity -> tier
@@ -1438,6 +1501,367 @@ func (s *Scheduler) WaitForRunningDispatches(ctx context.Context, pollInterval t
 		case <-timer.C:
 		}
 	}
+}
+
+func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
+	running, err := s.store.GetRunningDispatches()
+	if err != nil {
+		s.logger.Error("failed to get running dispatches", "error", err)
+		return
+	}
+
+	for _, d := range running {
+		alive := s.isDispatchAlive(d)
+		if alive {
+			if err := s.store.HeartbeatClaimLease(d.BeadID); err != nil {
+				s.logger.Debug("failed to heartbeat claim lease for running dispatch", "bead", d.BeadID, "dispatch_id", d.ID, "error", err)
+			}
+			if d.Stage != "running" {
+				if err := s.store.UpdateDispatchStage(d.ID, "running"); err != nil {
+					s.logger.Warn("failed to update running dispatch stage", "dispatch_id", d.ID, "error", err)
+				}
+			}
+			continue
+		}
+
+		duration := time.Since(d.DispatchedAt).Seconds()
+		status := "completed"
+		exitCode := 0
+		finalStage := "completed"
+		retryPending := false
+		retryReason := ""
+
+		if d.Backend == "tmux" || strings.TrimSpace(d.SessionName) != "" {
+			sessStatus, sessExit := dispatch.SessionStatus(d.SessionName)
+			switch sessStatus {
+			case "gone":
+				status = "failed"
+				exitCode = -1
+				finalStage = "failed_needs_check"
+				s.logger.Error("dispatch session disappeared - needs manual diagnosis",
+					"bead", d.BeadID,
+					"session", d.SessionName,
+					"agent", d.AgentID,
+					"provider", d.Provider,
+					"duration_s", duration)
+
+				healthDetails := fmt.Sprintf("bead %s session %s (agent=%s, provider=%s) disappeared after %.1fs - session may have crashed or been terminated externally",
+					d.BeadID, d.SessionName, d.AgentID, d.Provider, duration)
+				_ = s.store.RecordHealthEventWithDispatch("dispatch_session_gone", healthDetails, d.ID, d.BeadID)
+
+				category := "session_disappeared"
+				summary := fmt.Sprintf("Tmux session %s disappeared unexpectedly during execution. This may indicate a system crash, out-of-memory condition, or external termination. Manual investigation required.", d.SessionName)
+				if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
+					s.logger.Error("failed to store failure diagnosis for gone session", "dispatch_id", d.ID, "error", err)
+				}
+			case "exited":
+				if sessExit != 0 {
+					status = "failed"
+					exitCode = sessExit
+					finalStage = "failed"
+				}
+			}
+		} else {
+			handle := s.dispatchHandleFromRecord(d)
+			backend := s.backendByName(d.Backend)
+			state := dispatch.DispatchStatus{State: "unknown", ExitCode: -1}
+			output := ""
+			if backend != nil {
+				backendState, statusErr := backend.Status(handle)
+				if statusErr != nil {
+					s.logger.Warn("failed to query backend status", "dispatch_id", d.ID, "backend", d.Backend, "error", statusErr)
+				} else {
+					state = backendState
+				}
+				if captured, captureErr := backend.CaptureOutput(handle); captureErr != nil {
+					s.logger.Warn("failed to capture backend output", "dispatch_id", d.ID, "backend", d.Backend, "error", captureErr)
+				} else {
+					output = captured
+				}
+				switch state.State {
+				case "running":
+					continue
+				case "completed":
+					status = "completed"
+					exitCode = 0
+					finalStage = "completed"
+				case "failed":
+					status = "failed"
+					exitCode = state.ExitCode
+					finalStage = "failed"
+				default:
+					status = "failed"
+					exitCode = -1
+					finalStage = "failed_needs_check"
+
+					s.logger.Error("dispatch process state unknown - exit status unavailable",
+						"bead", d.BeadID,
+						"pid", d.PID,
+						"agent", d.AgentID,
+						"provider", d.Provider,
+						"duration_s", duration)
+
+					healthDetails := fmt.Sprintf("bead %s pid %d (agent=%s, provider=%s) died after %.1fs but exit status could not be determined - may indicate system instability",
+						d.BeadID, d.PID, d.AgentID, d.Provider, duration)
+					_ = s.store.RecordHealthEventWithDispatch("dispatch_pid_unknown_exit", healthDetails, d.ID, d.BeadID)
+
+					category := "unknown_exit_state"
+					summary := fmt.Sprintf("Process %d died but exit code could not be captured. This may indicate the process was killed by the system (OOM killer, etc.) or tracking was lost.", d.PID)
+					if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
+						s.logger.Error("failed to store failure diagnosis for unknown exit", "dispatch_id", d.ID, "error", err)
+					}
+				}
+			} else {
+				processState := s.dispatcher.GetProcessState(d.PID)
+				switch processState.State {
+				case "running":
+					continue
+				case "exited":
+					if processState.ExitCode == 0 {
+						status = "completed"
+						exitCode = 0
+						finalStage = "completed"
+					} else {
+						status = "failed"
+						exitCode = processState.ExitCode
+						finalStage = "failed"
+					}
+					if strings.TrimSpace(processState.OutputPath) != "" {
+						if outputBytes, err := os.ReadFile(processState.OutputPath); err == nil {
+							output = string(outputBytes)
+						}
+					}
+				default:
+					status = "failed"
+					exitCode = -1
+					finalStage = "failed_needs_check"
+
+					s.logger.Error("dispatch process state unknown - exit status unavailable",
+						"bead", d.BeadID,
+						"pid", d.PID,
+						"agent", d.AgentID,
+						"provider", d.Provider,
+						"duration_s", duration)
+
+					healthDetails := fmt.Sprintf("bead %s pid %d (agent=%s, provider=%s) died after %.1fs but exit status could not be determined - may indicate system instability",
+						d.BeadID, d.PID, d.AgentID, d.Provider, duration)
+					_ = s.store.RecordHealthEventWithDispatch("dispatch_pid_unknown_exit", healthDetails, d.ID, d.BeadID)
+
+					category := "unknown_exit_state"
+					summary := fmt.Sprintf("Process %d died but exit code could not be captured. This may indicate the process was killed by the system (OOM killer, etc.) or tracking was lost.", d.PID)
+					if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
+						s.logger.Error("failed to store failure diagnosis for unknown exit", "dispatch_id", d.ID, "error", err)
+					}
+				}
+
+				if pidDispatcher, ok := s.dispatcher.(*dispatch.Dispatcher); ok {
+					pidDispatcher.CleanupProcess(d.PID)
+				}
+			}
+			if strings.TrimSpace(output) == "" && strings.TrimSpace(d.LogPath) != "" {
+				if outputBytes, readErr := os.ReadFile(d.LogPath); readErr == nil {
+					output = string(outputBytes)
+				} else {
+					s.logger.Debug("failed to read dispatch log output", "dispatch_id", d.ID, "path", d.LogPath, "error", readErr)
+				}
+			}
+			if strings.TrimSpace(output) != "" {
+				if err := s.store.CaptureOutput(d.ID, output); err != nil {
+					s.logger.Error("failed to store process output", "dispatch_id", d.ID, "error", err)
+				}
+				if category, summary, flagged := detectTerminalOutputFailure(output); flagged {
+					if status == "completed" {
+						status = "failed"
+						exitCode = -1
+						finalStage = "failed"
+					}
+					if category == "gateway_closed" {
+						retryPending = true
+						finalStage = "pending_retry"
+						retryReason = "gateway_closed"
+					} else {
+						retryReason = "terminal_output_failure"
+					}
+					if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
+						s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
+					}
+				}
+			}
+			if backend := s.backendByName(d.Backend); backend != nil {
+				_ = backend.Cleanup(handle)
+			}
+		}
+
+		if status == "failed" && !retryPending && retryReason == "" && finalStage == "failed" && duration <= 10 && exitCode != 0 {
+			retryPending = true
+			retryReason = "cli_broken"
+			if err := s.store.UpdateFailureDiagnosis(d.ID, "cli_broken",
+				fmt.Sprintf("dispatch failed quickly (%.1fs, exit=%d); scheduling within-tier CLI fallback", duration, exitCode)); err != nil {
+				s.logger.Warn("failed to store cli fallback diagnosis", "dispatch_id", d.ID, "error", err)
+			}
+		}
+
+		s.logger.Info("dispatch completed",
+			"bead", d.BeadID,
+			"handle", d.PID,
+			"session", d.SessionName,
+			"duration_s", duration,
+			"status", status,
+			"exit_code", exitCode,
+		)
+
+		if err := s.store.UpdateDispatchStatus(d.ID, status, exitCode, duration); err != nil {
+			s.logger.Error("failed to update dispatch status", "id", d.ID, "error", err)
+		} else {
+			if status == "failed" && retryPending {
+				nextTier := d.Tier
+				if nextTier == "" {
+					nextTier = "balanced"
+				}
+				if retryReason == "cli_broken" {
+					if !s.hasAlternativeProviderInTier(nextTier, d.Provider) {
+						if shifted := nextTierAfterExhaustion(nextTier); shifted != "" {
+							nextTier = shifted
+						}
+					}
+				}
+				policy := resolveRetryPolicy(s.cfg, d.Project, nextTier)
+				delay, nextAttemptTier, shouldRetry := policy.NextRetry(d.Retries, nextTier)
+				if !shouldRetry {
+					s.logger.Warn("max retries exceeded, marking failed after transient completion failure",
+						"bead", d.BeadID,
+						"retries", d.Retries,
+						"max_retries", policy.MaxRetries)
+					finalStage = "failed_needs_check"
+				} else {
+					var nextRetryAt time.Time
+					if delay > 0 {
+						nextRetryAt = time.Now().Add(delay)
+					}
+					if err := s.store.MarkDispatchPendingRetry(d.ID, nextAttemptTier, nextRetryAt); err != nil {
+						s.logger.Warn("failed to queue gateway retry; leaving dispatch failed", "dispatch_id", d.ID, "bead", d.BeadID, "error", err)
+						finalStage = "failed_needs_check"
+					} else {
+						status = "pending_retry"
+						finalStage = "pending_retry"
+						eventType := "dispatch_retry_queued_gateway"
+						details := fmt.Sprintf("bead %s dispatch %d queued for retry due to transient gateway closure", d.BeadID, d.ID)
+						if retryReason == "cli_broken" {
+							eventType = "dispatch_retry_queued_cli_fallback"
+							details = fmt.Sprintf("bead %s dispatch %d queued for CLI fallback retry in tier %s", d.BeadID, d.ID, nextAttemptTier)
+						}
+						_ = s.store.RecordHealthEventWithDispatch(
+							eventType,
+							details,
+							d.ID,
+							d.BeadID,
+						)
+					}
+				}
+			}
+
+			if status == "completed" {
+				output, _ := s.store.GetOutput(d.ID)
+				usage := cost.ExtractTokenUsage(output, d.Prompt)
+				var inputPrice, outputPrice float64
+				if provider, ok := s.cfg.Providers[d.Provider]; ok {
+					inputPrice = provider.CostInputPerMtok
+					outputPrice = provider.CostOutputPerMtok
+				} else {
+					for _, provider := range s.cfg.Providers {
+						if provider.Model == d.Provider {
+							inputPrice = provider.CostInputPerMtok
+							outputPrice = provider.CostOutputPerMtok
+							break
+						}
+					}
+				}
+				totalCost := cost.CalculateCost(usage, inputPrice, outputPrice)
+				if err := s.store.RecordDispatchCost(d.ID, usage.Input, usage.Output, totalCost); err != nil {
+					s.logger.Error("failed to record dispatch cost", "dispatch_id", d.ID, "error", err)
+				}
+
+				if err := s.store.UpdateDispatchStage(d.ID, "completed"); err != nil {
+					s.logger.Warn("failed to update dispatch stage", "dispatch_id", d.ID, "stage", "completed", "error", err)
+				}
+
+				s.handleOpsQaCompletion(ctx, d)
+			} else {
+				if err := s.store.UpdateDispatchStage(d.ID, finalStage); err != nil {
+					s.logger.Warn("failed to update dispatch stage", "dispatch_id", d.ID, "stage", finalStage, "error", err)
+				}
+			}
+
+			if status == "completed" || status == "failed" || status == "cancelled" || status == "interrupted" {
+				if err := s.reconcileDispatchClaimOnTerminal(ctx, d, status); err != nil {
+					s.logger.Warn("failed to reconcile claim after terminal dispatch", "dispatch_id", d.ID, "bead", d.BeadID, "status", status, "error", err)
+				}
+			} else if status == "pending_retry" {
+				if err := s.store.HeartbeatClaimLease(d.BeadID); err != nil {
+					s.logger.Debug("failed to heartbeat claim lease after retry queue", "dispatch_id", d.ID, "bead", d.BeadID, "error", err)
+				}
+			}
+
+			note := ""
+			if retryReason != "" {
+				note = fmt.Sprintf("retry_reason=%s", retryReason)
+			}
+			s.reportBeadLifecycle(ctx, beadLifecycleEvent{
+				Project:       d.Project,
+				BeadID:        d.BeadID,
+				DispatchID:    d.ID,
+				Event:         lifecycleEventForDispatchStatus(status),
+				WorkflowStage: workflowStageFromLabelsCSV(d.Labels),
+				DispatchStage: finalStage,
+				Status:        status,
+				AgentID:       d.AgentID,
+				Provider:      d.Provider,
+				Tier:          d.Tier,
+				ExitCode:      exitCode,
+				DurationS:     duration,
+				Note:          note,
+			})
+		}
+
+		if status == "failed" {
+			if output, err := s.store.GetOutput(d.ID); err == nil && output != "" {
+				if diag := learner.DiagnoseFailure(output); diag != nil {
+					if err := s.store.UpdateFailureDiagnosis(d.ID, diag.Category, diag.Summary); err != nil {
+						s.logger.Error("failed to store failure diagnosis", "dispatch_id", d.ID, "error", err)
+					} else {
+						s.logger.Warn("dispatch failure diagnosed",
+							"bead", d.BeadID,
+							"category", diag.Category,
+							"summary", diag.Summary,
+						)
+					}
+				}
+			}
+		}
+	}
+}
+
+func (s *Scheduler) processOverflowQueue(_ context.Context) {
+	if s.concurrencyController == nil {
+		return
+	}
+}
+
+func (s *Scheduler) isDispatchCoolingDown(beadID, agent string) bool {
+	_ = agent
+	if s == nil || s.cfg == nil || s.store == nil {
+		return false
+	}
+	cooldown := s.cfg.General.DispatchCooldown.Duration
+	if cooldown <= 0 {
+		return false
+	}
+	recent, err := s.store.WasBeadDispatchedRecently(beadID, cooldown)
+	if err != nil {
+		s.logger.Warn("failed to evaluate dispatch cooldown", "bead", beadID, "error", err)
+		return false
+	}
+	return recent
 }
 
 // checkCeremonies evaluates ceremony schedules and triggers them if due
@@ -2245,36 +2669,6 @@ func (s *Scheduler) sampleConcurrencyUtilization() {
 	s.concurrencyController.CheckUtilizationAlerts(snapshot)
 }
 
-// processOverflowQueue attempts to dispatch queued items that now have capacity.
-func (s *Scheduler) processOverflowQueue(ctx context.Context) {
-	// Try to dequeue up to maxPerTick items
-	maxDequeue := s.cfg.General.MaxPerTick
-	if maxDequeue <= 0 {
-		maxDequeue = 3
-	}
-
-	dequeued := s.concurrencyController.TryDequeue(maxDequeue)
-	if len(dequeued) == 0 {
-		return
-	}
-
-	s.logger.Debug("overflow queue items ready for dispatch", "count", len(dequeued))
-
-	snapshot, err := s.concurrencyController.GetSnapshot()
-	if err != nil {
-		s.logger.Warn("failed to get concurrency snapshot for overflow dispatch", "error", err)
-		return
-	}
-
-	for _, item := range dequeued {
-		s.concurrencyController.LogCapacityDispatch(item.Role, item.BeadID, item.Project, snapshot)
-	}
-
-	// Note: The dequeued items will be picked up in the normal dispatch loop
-	// since they remain represented in the ready beads list. The dequeue just
-	// removes them from the overflow queue to prevent duplicate tracking.
-	// If we wanted direct dispatch from overflow, we'd need to add that logic here.
-}
 
 // GetConcurrencySnapshot returns the current concurrency state for API exposure.
 func (s *Scheduler) GetConcurrencySnapshot() (ConcurrencySnapshot, error) {
@@ -2286,395 +2680,7 @@ func (s *Scheduler) GetOverflowQueue() []QueueItem {
 	return s.concurrencyController.ListQueue()
 }
 
-func (s *Scheduler) isDispatchCoolingDown(beadID, agent string) bool {
-	if s.cfg.General.DispatchCooldown.Duration <= 0 {
-		return false
-	}
 
-	recentlyDispatched, err := s.store.WasBeadAgentDispatchedRecently(beadID, agent, s.cfg.General.DispatchCooldown.Duration)
-	if err != nil {
-		s.logger.Error("failed to check recent dispatch history", "bead", beadID, "agent", agent, "error", err)
-		return false
-	}
-	if recentlyDispatched {
-		s.logger.Debug("bead-agent recently dispatched, cooling down",
-			"bead", beadID,
-			"agent", agent,
-			"cooldown", s.cfg.General.DispatchCooldown.Duration)
-		return true
-	}
-	return false
-}
-
-// checkRunningDispatches polls running dispatches and marks completed/failed.
-func (s *Scheduler) checkRunningDispatches(ctx context.Context) {
-	running, err := s.store.GetRunningDispatches()
-	if err != nil {
-		s.logger.Error("failed to get running dispatches", "error", err)
-		return
-	}
-
-	for _, d := range running {
-		alive := s.isDispatchAlive(d)
-		if alive {
-			if err := s.store.HeartbeatClaimLease(d.BeadID); err != nil {
-				s.logger.Debug("failed to heartbeat claim lease for running dispatch", "bead", d.BeadID, "dispatch_id", d.ID, "error", err)
-			}
-			if d.Stage != "running" {
-				if err := s.store.UpdateDispatchStage(d.ID, "running"); err != nil {
-					s.logger.Warn("failed to update running dispatch stage", "dispatch_id", d.ID, "error", err)
-				}
-			}
-			continue
-		}
-
-		// Process is dead - determine status
-		duration := time.Since(d.DispatchedAt).Seconds()
-		status := "completed"
-		exitCode := 0
-		finalStage := "completed"
-		retryPending := false
-		retryReason := ""
-
-		// For tmux sessions, capture output and get exit code from the session
-		if d.Backend == "tmux" || d.SessionName != "" {
-			sessStatus, sessExit := dispatch.SessionStatus(d.SessionName)
-			switch sessStatus {
-			case "gone":
-				status = "failed"
-				exitCode = -1
-				finalStage = "failed_needs_check"
-				s.logger.Error("dispatch session disappeared - needs manual diagnosis",
-					"bead", d.BeadID,
-					"session", d.SessionName,
-					"agent", d.AgentID,
-					"provider", d.Provider,
-					"duration_s", duration)
-
-				// Record detailed health event for tracking
-				healthDetails := fmt.Sprintf("bead %s session %s (agent=%s, provider=%s) disappeared after %.1fs - session may have crashed or been terminated externally",
-					d.BeadID, d.SessionName, d.AgentID, d.Provider, duration)
-				_ = s.store.RecordHealthEventWithDispatch("dispatch_session_gone", healthDetails, d.ID, d.BeadID)
-
-				// Set failure diagnosis for manual review
-				category := "session_disappeared"
-				summary := fmt.Sprintf("Tmux session %s disappeared unexpectedly during execution. This may indicate a system crash, out-of-memory condition, or external termination. Manual investigation required.", d.SessionName)
-				if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
-					s.logger.Error("failed to store failure diagnosis for gone session", "dispatch_id", d.ID, "error", err)
-				}
-			case "exited":
-				if sessExit != 0 {
-					status = "failed"
-					exitCode = sessExit
-					finalStage = "failed"
-				}
-			}
-			if sessStatus != "gone" {
-				if output, err := dispatch.CaptureOutput(d.SessionName); err != nil {
-					s.logger.Warn("failed to capture output", "session", d.SessionName, "error", err)
-				} else if output != "" {
-					if err := s.store.CaptureOutput(d.ID, output); err != nil {
-						s.logger.Error("failed to store output", "dispatch_id", d.ID, "error", err)
-					}
-					if category, summary, flagged := detectTerminalOutputFailure(output); flagged {
-						if status == "completed" {
-							status = "failed"
-							exitCode = -1
-							finalStage = "failed"
-						}
-						if category == "gateway_closed" {
-							retryPending = true
-							finalStage = "pending_retry"
-							retryReason = "gateway_closed"
-						} else {
-							retryReason = "terminal_output_failure"
-						}
-						if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
-							s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
-						}
-					}
-				}
-			}
-		} else {
-			handle := s.dispatchHandleFromRecord(d)
-			backend := s.backendByName(d.Backend)
-			state := dispatch.DispatchStatus{State: "unknown", ExitCode: -1}
-			output := ""
-			if backend != nil {
-				backendState, statusErr := backend.Status(handle)
-				if statusErr != nil {
-					s.logger.Warn("failed to query backend status", "dispatch_id", d.ID, "backend", d.Backend, "error", statusErr)
-				} else {
-					state = backendState
-				}
-				if captured, captureErr := backend.CaptureOutput(handle); captureErr != nil {
-					s.logger.Warn("failed to capture backend output", "dispatch_id", d.ID, "backend", d.Backend, "error", captureErr)
-				} else {
-					output = captured
-				}
-				switch state.State {
-				case "running":
-					continue
-				case "completed":
-					status = "completed"
-					exitCode = 0
-					finalStage = "completed"
-				case "failed":
-					status = "failed"
-					exitCode = state.ExitCode
-					finalStage = "failed"
-				default:
-					status = "failed"
-					exitCode = -1
-					finalStage = "failed_needs_check"
-
-					s.logger.Error("dispatch process state unknown - exit status unavailable",
-						"bead", d.BeadID,
-						"pid", d.PID,
-						"agent", d.AgentID,
-						"provider", d.Provider,
-						"duration_s", duration)
-
-					healthDetails := fmt.Sprintf("bead %s pid %d (agent=%s, provider=%s) died after %.1fs but exit status could not be determined - may indicate system instability",
-						d.BeadID, d.PID, d.AgentID, d.Provider, duration)
-					_ = s.store.RecordHealthEventWithDispatch("dispatch_pid_unknown_exit", healthDetails, d.ID, d.BeadID)
-
-					category := "unknown_exit_state"
-					summary := fmt.Sprintf("Process %d died but exit code could not be captured. This may indicate the process was killed by the system (OOM killer, etc.) or tracking was lost.", d.PID)
-					if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
-						s.logger.Error("failed to store failure diagnosis for unknown exit", "dispatch_id", d.ID, "error", err)
-					}
-				}
-			} else {
-				// Backward compatibility for legacy rows without backend metadata.
-				processState := s.dispatcher.GetProcessState(d.PID)
-				switch processState.State {
-				case "running":
-					continue
-				case "exited":
-					if processState.ExitCode == 0 {
-						status = "completed"
-						exitCode = 0
-						finalStage = "completed"
-					} else {
-						status = "failed"
-						exitCode = processState.ExitCode
-						finalStage = "failed"
-					}
-					if strings.TrimSpace(processState.OutputPath) != "" {
-						if outputBytes, err := os.ReadFile(processState.OutputPath); err == nil {
-							output = string(outputBytes)
-						}
-					}
-				default:
-					status = "failed"
-					exitCode = -1
-					finalStage = "failed_needs_check"
-
-					s.logger.Error("dispatch process state unknown - exit status unavailable",
-						"bead", d.BeadID,
-						"pid", d.PID,
-						"agent", d.AgentID,
-						"provider", d.Provider,
-						"duration_s", duration)
-
-					healthDetails := fmt.Sprintf("bead %s pid %d (agent=%s, provider=%s) died after %.1fs but exit status could not be determined - may indicate system instability",
-						d.BeadID, d.PID, d.AgentID, d.Provider, duration)
-					_ = s.store.RecordHealthEventWithDispatch("dispatch_pid_unknown_exit", healthDetails, d.ID, d.BeadID)
-
-					category := "unknown_exit_state"
-					summary := fmt.Sprintf("Process %d died but exit code could not be captured. This may indicate the process was killed by the system (OOM killer, etc.) or tracking was lost.", d.PID)
-					if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
-						s.logger.Error("failed to store failure diagnosis for unknown exit", "dispatch_id", d.ID, "error", err)
-					}
-				}
-				if pidDispatcher, ok := s.dispatcher.(*dispatch.Dispatcher); ok {
-					pidDispatcher.CleanupProcess(d.PID)
-				}
-			}
-			if strings.TrimSpace(output) == "" && strings.TrimSpace(d.LogPath) != "" {
-				if outputBytes, readErr := os.ReadFile(d.LogPath); readErr == nil {
-					output = string(outputBytes)
-				} else {
-					s.logger.Debug("failed to read dispatch log output", "dispatch_id", d.ID, "path", d.LogPath, "error", readErr)
-				}
-			}
-			if strings.TrimSpace(output) != "" {
-				if err := s.store.CaptureOutput(d.ID, output); err != nil {
-					s.logger.Error("failed to store process output", "dispatch_id", d.ID, "error", err)
-				}
-				if category, summary, flagged := detectTerminalOutputFailure(output); flagged {
-					if status == "completed" {
-						status = "failed"
-						exitCode = -1
-						finalStage = "failed"
-					}
-					if category == "gateway_closed" {
-						retryPending = true
-						finalStage = "pending_retry"
-						retryReason = "gateway_closed"
-					} else {
-						retryReason = "terminal_output_failure"
-					}
-					if err := s.store.UpdateFailureDiagnosis(d.ID, category, summary); err != nil {
-						s.logger.Error("failed to store failure diagnosis for terminal output failure", "dispatch_id", d.ID, "error", err)
-					}
-				}
-			}
-			if backend != nil {
-				_ = backend.Cleanup(handle)
-			}
-		}
-
-		if status == "failed" && !retryPending && retryReason == "" && finalStage == "failed" && duration <= 10 && exitCode != 0 {
-			retryPending = true
-			retryReason = "cli_broken"
-			if err := s.store.UpdateFailureDiagnosis(d.ID, "cli_broken",
-				fmt.Sprintf("dispatch failed quickly (%.1fs, exit=%d); scheduling within-tier CLI fallback", duration, exitCode)); err != nil {
-				s.logger.Warn("failed to store cli fallback diagnosis", "dispatch_id", d.ID, "error", err)
-			}
-		}
-
-		s.logger.Info("dispatch completed",
-			"bead", d.BeadID,
-			"handle", d.PID,
-			"session", d.SessionName,
-			"duration_s", duration,
-			"status", status,
-			"exit_code", exitCode,
-		)
-
-		if err := s.store.UpdateDispatchStatus(d.ID, status, exitCode, duration); err != nil {
-			s.logger.Error("failed to update dispatch status", "id", d.ID, "error", err)
-		} else {
-			if status == "failed" && retryPending {
-				nextTier := d.Tier
-				if nextTier == "" {
-					nextTier = "balanced"
-				}
-				if retryReason == "cli_broken" {
-					if !s.hasAlternativeProviderInTier(nextTier, d.Provider) {
-						if shifted := nextTierAfterExhaustion(nextTier); shifted != "" {
-							nextTier = shifted
-						}
-					}
-				}
-				policy := resolveRetryPolicy(s.cfg, d.Project, nextTier)
-				delay, nextAttemptTier, shouldRetry := policy.NextRetry(d.Retries, nextTier)
-				if !shouldRetry {
-					s.logger.Warn("max retries exceeded, marking failed after transient completion failure",
-						"bead", d.BeadID,
-						"retries", d.Retries,
-						"max_retries", policy.MaxRetries)
-					finalStage = "failed_needs_check"
-				} else {
-					var nextRetryAt time.Time
-					if delay > 0 {
-						nextRetryAt = s.now().Add(delay)
-					}
-					if err := s.store.MarkDispatchPendingRetry(d.ID, nextAttemptTier, nextRetryAt); err != nil {
-						s.logger.Warn("failed to queue gateway retry; leaving dispatch failed", "dispatch_id", d.ID, "bead", d.BeadID, "error", err)
-						finalStage = "failed_needs_check"
-					} else {
-						status = "pending_retry"
-						finalStage = "pending_retry"
-						eventType := "dispatch_retry_queued_gateway"
-						details := fmt.Sprintf("bead %s dispatch %d queued for retry due to transient gateway closure", d.BeadID, d.ID)
-						if retryReason == "cli_broken" {
-							eventType = "dispatch_retry_queued_cli_fallback"
-							details = fmt.Sprintf("bead %s dispatch %d queued for CLI fallback retry in tier %s", d.BeadID, d.ID, nextAttemptTier)
-						}
-						_ = s.store.RecordHealthEventWithDispatch(
-							eventType,
-							details,
-							d.ID,
-							d.BeadID,
-						)
-					}
-				}
-			}
-
-			if status == "completed" {
-				// Calculate and record cost for completed dispatches
-				output, _ := s.store.GetOutput(d.ID)
-				usage := cost.ExtractTokenUsage(output, d.Prompt)
-
-				var inputPrice, outputPrice float64
-				// Lookup provider prices from config
-				for _, p := range s.cfg.Providers {
-					if p.Model == d.Provider {
-						inputPrice = p.CostInputPerMtok
-						outputPrice = p.CostOutputPerMtok
-						break
-					}
-				}
-
-				totalCost := cost.CalculateCost(usage, inputPrice, outputPrice)
-				if err := s.store.RecordDispatchCost(d.ID, usage.Input, usage.Output, totalCost); err != nil {
-					s.logger.Error("failed to record dispatch cost", "dispatch_id", d.ID, "error", err)
-				}
-
-				if err := s.store.UpdateDispatchStage(d.ID, "completed"); err != nil {
-					s.logger.Warn("failed to update dispatch stage", "dispatch_id", d.ID, "stage", "completed", "error", err)
-				}
-
-				// Check if this was ops/qa completion - transition to DoD if configured
-				s.handleOpsQaCompletion(ctx, d)
-			} else {
-				if err := s.store.UpdateDispatchStage(d.ID, finalStage); err != nil {
-					s.logger.Warn("failed to update dispatch stage", "dispatch_id", d.ID, "stage", finalStage, "error", err)
-				}
-			}
-
-			if status == "completed" || status == "failed" || status == "cancelled" || status == "interrupted" {
-				if err := s.reconcileDispatchClaimOnTerminal(ctx, d, status); err != nil {
-					s.logger.Warn("failed to reconcile claim after terminal dispatch", "dispatch_id", d.ID, "bead", d.BeadID, "status", status, "error", err)
-				}
-			} else if status == "pending_retry" {
-				if err := s.store.HeartbeatClaimLease(d.BeadID); err != nil {
-					s.logger.Debug("failed to heartbeat claim lease after retry queue", "dispatch_id", d.ID, "bead", d.BeadID, "error", err)
-				}
-			}
-
-			note := ""
-			if retryReason != "" {
-				note = fmt.Sprintf("retry_reason=%s", retryReason)
-			}
-			s.reportBeadLifecycle(ctx, beadLifecycleEvent{
-				Project:       d.Project,
-				BeadID:        d.BeadID,
-				DispatchID:    d.ID,
-				Event:         lifecycleEventForDispatchStatus(status),
-				WorkflowStage: workflowStageFromLabelsCSV(d.Labels),
-				DispatchStage: finalStage,
-				Status:        status,
-				AgentID:       d.AgentID,
-				Provider:      d.Provider,
-				Tier:          d.Tier,
-				ExitCode:      exitCode,
-				DurationS:     duration,
-				Note:          note,
-			})
-		}
-
-		// Run failure diagnostics on captured output
-		if status == "failed" {
-			if output, err := s.store.GetOutput(d.ID); err == nil && output != "" {
-				if diag := learner.DiagnoseFailure(output); diag != nil {
-					if err := s.store.UpdateFailureDiagnosis(d.ID, diag.Category, diag.Summary); err != nil {
-						s.logger.Error("failed to store failure diagnosis", "dispatch_id", d.ID, "error", err)
-					} else {
-						s.logger.Warn("dispatch failure diagnosed",
-							"bead", d.BeadID,
-							"category", diag.Category,
-							"summary", diag.Summary,
-						)
-					}
-				}
-			}
-		}
-	}
-}
 
 func (s *Scheduler) processApprovedPRMerges(ctx context.Context) {
 	now := time.Now
@@ -3383,346 +3389,8 @@ func (s *Scheduler) syncBeadsImports(ctx context.Context) {
 	}
 }
 
-func (s *Scheduler) isFailureQuarantined(beadID string) bool {
-	quarantined, err := s.store.HasRecentConsecutiveFailures(beadID, failureQuarantineThreshold, failureQuarantineWindow)
-	if err != nil {
-		s.logger.Error("failed to evaluate failure quarantine", "bead", beadID, "error", err)
-		return false
-	}
-	if !quarantined {
-		delete(s.quarantine, beadID)
-		return false
-	}
-
-	now := time.Now()
-	last, seen := s.quarantine[beadID]
-	if !seen || now.Sub(last) >= failureQuarantineLogInterval {
-		s.quarantine[beadID] = now
-		s.logger.Warn("bead quarantined due to repeated failures",
-			"bead", beadID,
-			"threshold", failureQuarantineThreshold,
-			"window", failureQuarantineWindow.String(),
-		)
-		_ = s.store.RecordHealthEvent("bead_quarantined",
-			fmt.Sprintf("bead %s quarantined after %d consecutive failures in %s",
-				beadID, failureQuarantineThreshold, failureQuarantineWindow))
-	}
-	return true
-}
 
 // processPendingRetries handles dispatches marked for retry with exponential backoff.
-func (s *Scheduler) processPendingRetries(ctx context.Context) {
-	retries, err := s.store.GetPendingRetryDispatches()
-	if err != nil {
-		s.logger.Error("failed to get pending retries", "error", err)
-		return
-	}
-
-	if len(retries) == 0 {
-		return
-	}
-
-	s.logger.Debug("processing pending retries", "count", len(retries))
-
-	for _, retry := range retries {
-		if err := s.store.HeartbeatClaimLease(retry.BeadID); err != nil {
-			s.logger.Debug("failed to heartbeat claim lease for pending retry", "bead", retry.BeadID, "dispatch_id", retry.ID, "error", err)
-		}
-
-		policy := resolveRetryPolicy(s.cfg, retry.Project, retry.Tier)
-		_, _, shouldRetry := policy.NextRetry(retry.Retries, retry.Tier)
-
-		// Check if we've exceeded max retries
-		if !shouldRetry {
-			s.logger.Warn("max retries exceeded, marking as failed",
-				"bead", retry.BeadID, "retries", retry.Retries, "max_retries", policy.MaxRetries)
-
-			// Update status to failed permanently
-			duration := time.Since(retry.DispatchedAt).Seconds()
-			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
-				s.logger.Error("failed to update over-retry dispatch", "id", retry.ID, "error", err)
-			} else if err := s.store.UpdateDispatchStage(retry.ID, "failed"); err != nil {
-				s.logger.Warn("failed to update over-retry dispatch stage", "id", retry.ID, "error", err)
-			}
-			if err := s.reconcileDispatchClaimOnTerminal(ctx, retry, "failed"); err != nil {
-				s.logger.Warn("failed to release claim for over-retry dispatch", "dispatch_id", retry.ID, "bead", retry.BeadID, "error", err)
-			}
-			s.reportBeadLifecycle(ctx, beadLifecycleEvent{
-				Project:       retry.Project,
-				BeadID:        retry.BeadID,
-				DispatchID:    retry.ID,
-				Event:         lifecycleEventForDispatchStatus("failed"),
-				WorkflowStage: workflowStageFromLabelsCSV(retry.Labels),
-				DispatchStage: "failed",
-				Status:        "failed",
-				AgentID:       retry.AgentID,
-				Provider:      retry.Provider,
-				Tier:          retry.Tier,
-				ExitCode:      -1,
-				DurationS:     duration,
-				Note:          "max retries exceeded",
-			})
-			continue
-		}
-
-		// Check if bead is already being worked on
-		already, err := s.store.IsBeadDispatched(retry.BeadID)
-		if err != nil {
-			s.logger.Error("failed to check bead dispatch status", "bead", retry.BeadID, "error", err)
-			continue
-		}
-		if already {
-			s.logger.Debug("bead already being worked on, skipping retry", "bead", retry.BeadID)
-			continue
-		}
-
-		// Check agent availability
-		busy, err := s.store.IsAgentBusy(retry.Project, retry.AgentID)
-		if err != nil {
-			s.logger.Error("failed to check agent busy", "agent", retry.AgentID, "error", err)
-			continue
-		}
-		if busy {
-			s.logger.Debug("agent busy, deferring retry", "agent", retry.AgentID, "bead", retry.BeadID)
-			continue
-		}
-
-		// Find the project config
-		project, exists := s.cfg.Projects[retry.Project]
-		if !exists || !project.Enabled {
-			s.logger.Warn("project not found or disabled, failing retry",
-				"project", retry.Project, "bead", retry.BeadID)
-
-			duration := time.Since(retry.DispatchedAt).Seconds()
-			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
-				s.logger.Error("failed to update retry status", "id", retry.ID, "error", err)
-			} else if err := s.store.UpdateDispatchStage(retry.ID, "failed"); err != nil {
-				s.logger.Warn("failed to update retry dispatch stage", "id", retry.ID, "error", err)
-			}
-			if err := s.reconcileDispatchClaimOnTerminal(ctx, retry, "failed"); err != nil {
-				s.logger.Warn("failed to release claim after retry project failure", "dispatch_id", retry.ID, "bead", retry.BeadID, "error", err)
-			}
-			s.reportBeadLifecycle(ctx, beadLifecycleEvent{
-				Project:       retry.Project,
-				BeadID:        retry.BeadID,
-				DispatchID:    retry.ID,
-				Event:         lifecycleEventForDispatchStatus("failed"),
-				WorkflowStage: workflowStageFromLabelsCSV(retry.Labels),
-				DispatchStage: "failed",
-				Status:        "failed",
-				AgentID:       retry.AgentID,
-				Provider:      retry.Provider,
-				Tier:          retry.Tier,
-				ExitCode:      -1,
-				DurationS:     duration,
-				Note:          "retry project missing or disabled",
-			})
-			continue
-		}
-
-		// Attempt to re-dispatch
-		s.logger.Info("retrying dispatch",
-			"bead", retry.BeadID,
-			"attempt", retry.Retries+1,
-			"agent", retry.AgentID,
-			"delay", time.Since(retry.CompletedAt.Time))
-
-		// Create feature branch if needed
-		workspace := config.ExpandHome(project.Workspace)
-		if project.UseBranches {
-			if err := s.ensureFeatureBranchSafe(workspace, retry.BeadID, project.BaseBranch, project.BranchPrefix); err != nil {
-				s.logger.Error("failed to create feature branch for retry", "bead", retry.BeadID, "error", err)
-				continue
-			}
-		}
-
-		retryRole := roleFromAgentID(retry.Project, retry.AgentID)
-		excludedModels := map[string]bool{}
-		if strings.EqualFold(strings.TrimSpace(retry.FailureCategory), "cli_broken") && strings.TrimSpace(retry.Provider) != "" {
-			excludedModels[retry.Provider] = true
-		}
-		provider, _, selectedTier, _, cleanupReservation, err := s.pickAndReserveProviderForRetry(retry.Tier, excludedModels, retry.AgentID, retry.BeadID)
-		if provider == nil {
-			if err != nil {
-				s.logger.Warn("retry provider selection reservation failed", "bead", retry.BeadID, "error", err)
-			} else {
-				s.logger.Error("retry provider selection failed", "bead", retry.BeadID, "tier", retry.Tier, "failure_category", retry.FailureCategory)
-			}
-			duration := time.Since(retry.DispatchedAt).Seconds()
-			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
-				s.logger.Error("failed to update retry status after provider selection failure", "id", retry.ID, "error", err)
-			}
-			if err := s.store.UpdateDispatchStage(retry.ID, "failed_needs_check"); err != nil {
-				s.logger.Warn("failed to update retry stage after provider selection failure", "id", retry.ID, "error", err)
-			}
-			if err := s.reconcileDispatchClaimOnTerminal(ctx, retry, "failed"); err != nil {
-				s.logger.Warn("failed to release claim after retry provider selection failure", "dispatch_id", retry.ID, "bead", retry.BeadID, "error", err)
-			}
-			s.reportBeadLifecycle(ctx, beadLifecycleEvent{
-				Project:       retry.Project,
-				BeadID:        retry.BeadID,
-				DispatchID:    retry.ID,
-				Event:         lifecycleEventForDispatchStatus("failed"),
-				WorkflowStage: workflowStageFromLabelsCSV(retry.Labels),
-				DispatchStage: "failed_needs_check",
-				Status:        "failed",
-				AgentID:       retry.AgentID,
-				Provider:      retry.Provider,
-				Tier:          retry.Tier,
-				ExitCode:      -1,
-				DurationS:     duration,
-				Note:          "retry provider selection failed",
-			})
-			continue
-		}
-
-		backend, backendName, err := s.selectBackend(retryRole, selectedTier, retry.Retries+1)
-		if err != nil {
-			s.logger.Error("retry backend resolution failed", "bead", retry.BeadID, "tier", selectedTier, "role", retryRole, "error", err)
-			duration := time.Since(retry.DispatchedAt).Seconds()
-			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
-				s.logger.Error("failed to update retry status after backend resolution failure", "id", retry.ID, "error", err)
-			}
-			if err := s.store.UpdateDispatchStage(retry.ID, "failed_needs_check"); err != nil {
-				s.logger.Warn("failed to update retry stage after backend resolution failure", "id", retry.ID, "error", err)
-			}
-			if err := s.reconcileDispatchClaimOnTerminal(ctx, retry, "failed"); err != nil {
-				s.logger.Warn("failed to release claim after retry backend resolution failure", "dispatch_id", retry.ID, "bead", retry.BeadID, "error", err)
-			}
-			s.reportBeadLifecycle(ctx, beadLifecycleEvent{
-				Project:       retry.Project,
-				BeadID:        retry.BeadID,
-				DispatchID:    retry.ID,
-				Event:         lifecycleEventForDispatchStatus("failed"),
-				WorkflowStage: workflowStageFromLabelsCSV(retry.Labels),
-				DispatchStage: "failed_needs_check",
-				Status:        "failed",
-				AgentID:       retry.AgentID,
-				Provider:      retry.Provider,
-				Tier:          retry.Tier,
-				ExitCode:      -1,
-				DurationS:     duration,
-				Note:          "retry backend selection failed",
-			})
-			if cleanupReservation != nil {
-				cleanupReservation()
-			}
-			continue
-		}
-
-		cliName := strings.TrimSpace(provider.CLI)
-		if cliName == "" {
-			cliName = s.defaultCLIConfigName()
-		}
-		logPath := s.buildDispatchLogPath(retry.Project, retry.BeadID, backendName)
-
-		handle, err := backend.Dispatch(ctx, dispatch.DispatchOpts{
-			Agent:         retry.AgentID,
-			Prompt:        retry.Prompt,
-			Model:         provider.Model,
-			ThinkingLevel: dispatch.ThinkingLevel(selectedTier),
-			WorkDir:       workspace,
-			CLIConfig:     cliName,
-			Branch:        retry.Branch,
-			LogPath:       logPath,
-		})
-		if err != nil {
-			s.logger.Error("retry dispatch failed", "bead", retry.BeadID, "error", err)
-
-			// Mark as failed since retry dispatch itself failed
-			duration := time.Since(retry.DispatchedAt).Seconds()
-			if err := s.store.UpdateDispatchStatus(retry.ID, "failed", -1, duration); err != nil {
-				s.logger.Error("failed to update failed retry", "id", retry.ID, "error", err)
-			} else if err := s.store.UpdateDispatchStage(retry.ID, "failed"); err != nil {
-				s.logger.Warn("failed to update failed retry stage", "id", retry.ID, "error", err)
-			}
-			if err := s.reconcileDispatchClaimOnTerminal(ctx, retry, "failed"); err != nil {
-				s.logger.Warn("failed to release claim after retry dispatch launch failure", "dispatch_id", retry.ID, "bead", retry.BeadID, "error", err)
-			}
-			s.reportBeadLifecycle(ctx, beadLifecycleEvent{
-				Project:       retry.Project,
-				BeadID:        retry.BeadID,
-				DispatchID:    retry.ID,
-				Event:         lifecycleEventForDispatchStatus("failed"),
-				WorkflowStage: workflowStageFromLabelsCSV(retry.Labels),
-				DispatchStage: "failed",
-				Status:        "failed",
-				AgentID:       retry.AgentID,
-				Provider:      retry.Provider,
-				Tier:          retry.Tier,
-				ExitCode:      -1,
-				DurationS:     duration,
-				Note:          "retry dispatch launch failed",
-			})
-			continue
-		}
-
-		sessionName := handle.SessionName
-
-		// Record new dispatch for the retry
-		newDispatchID, err := s.store.RecordDispatch(
-			retry.BeadID, retry.Project, retry.AgentID, provider.Model, selectedTier,
-			handle.PID, sessionName, retry.Prompt, logPath, retry.Branch, backendName)
-		if err != nil {
-			s.logger.Error("failed to record retry dispatch", "bead", retry.BeadID, "error", err)
-			if cleanupReservation != nil {
-				cleanupReservation()
-			}
-			continue
-		}
-		if err := s.store.UpdateDispatchLabelsCSV(newDispatchID, retry.Labels); err != nil {
-			s.logger.Warn("failed to copy dispatch labels to retry", "dispatch_id", newDispatchID, "bead", retry.BeadID, "error", err)
-		}
-		if err := s.store.UpdateDispatchStage(newDispatchID, "running"); err != nil {
-			s.logger.Warn("failed to set retry dispatch stage", "dispatch_id", newDispatchID, "error", err)
-		}
-		if err := s.store.AttachDispatchToClaimLease(retry.BeadID, newDispatchID); err != nil {
-			s.logger.Warn("failed to attach retry dispatch to claim lease", "bead", retry.BeadID, "dispatch_id", newDispatchID, "error", err)
-		} else if err := s.store.HeartbeatClaimLease(retry.BeadID); err != nil {
-			s.logger.Debug("failed to heartbeat claim lease after retry dispatch", "bead", retry.BeadID, "dispatch_id", newDispatchID, "error", err)
-		}
-
-		// Mark the original dispatch as retried (superseded by the new one)
-		duration := time.Since(retry.DispatchedAt).Seconds()
-		if err := s.store.UpdateDispatchStatus(retry.ID, "retried", 0, duration); err != nil {
-			s.logger.Error("failed to update retry status", "id", retry.ID, "error", err)
-		}
-		s.reportBeadLifecycle(ctx, beadLifecycleEvent{
-			Project:       retry.Project,
-			BeadID:        retry.BeadID,
-			DispatchID:    retry.ID,
-			Event:         lifecycleEventForDispatchStatus("retried"),
-			WorkflowStage: workflowStageFromLabelsCSV(retry.Labels),
-			DispatchStage: "retried",
-			Status:        "retried",
-			AgentID:       retry.AgentID,
-			Provider:      retry.Provider,
-			Tier:          retry.Tier,
-			DurationS:     duration,
-			Note:          fmt.Sprintf("superseded by dispatch %d", newDispatchID),
-		})
-		s.reportBeadLifecycle(ctx, beadLifecycleEvent{
-			Project:       retry.Project,
-			BeadID:        retry.BeadID,
-			DispatchID:    newDispatchID,
-			Event:         "dispatch_retry_started",
-			WorkflowStage: workflowStageFromLabelsCSV(retry.Labels),
-			DispatchStage: "running",
-			Status:        "running",
-			AgentID:       retry.AgentID,
-			Provider:      provider.Model,
-			Tier:          selectedTier,
-			Note:          fmt.Sprintf("retry attempt=%d backend=%s", retry.Retries+1, backendName),
-		})
-
-		s.logger.Info("dispatch retry successful",
-			"bead", retry.BeadID,
-			"old_dispatch_id", retry.ID,
-			"new_dispatch_id", newDispatchID,
-			"handle", handle.PID,
-			"session", sessionName)
-	}
-}
 
 // runHealthChecks executes stuck dispatch detection and zombie cleanup as part of the scheduler loop.
 func (s *Scheduler) runHealthChecks() {
@@ -3858,327 +3526,8 @@ func (s *Scheduler) runCompletionVerification(ctx context.Context) {
 	}
 }
 
-func (s *Scheduler) evaluateGatewayCircuit(ctx context.Context) bool {
-	now := time.Now()
-	wasOpen := !s.gatewayCircuitUntil.IsZero() && now.Before(s.gatewayCircuitUntil)
 
-	if wasOpen {
-		if s.gatewayCircuitLogAt.IsZero() || now.Sub(s.gatewayCircuitLogAt) >= time.Minute {
-			s.gatewayCircuitLogAt = now
-			s.logger.Warn("gateway failure circuit open; suppressing new dispatches",
-				"until", s.gatewayCircuitUntil.Format(time.RFC3339))
-		}
-		return true
-	}
 
-	count, err := s.store.CountRecentDispatchesByFailureCategory("gateway_closed", gatewayFailureWindow)
-	if err != nil {
-		s.logger.Warn("failed to evaluate gateway failure circuit", "error", err)
-		return false
-	}
-	if count < gatewayFailureThreshold {
-		return false
-	}
-
-	s.gatewayCircuitUntil = now.Add(gatewayCircuitDuration)
-	s.gatewayCircuitLogAt = now
-	s.logger.Error("gateway failure circuit opened",
-		"count", count,
-		"window", gatewayFailureWindow.String(),
-		"until", s.gatewayCircuitUntil.Format(time.RFC3339))
-	_ = s.store.RecordHealthEvent("gateway_failure_circuit_open",
-		fmt.Sprintf("gateway circuit opened after %d gateway_closed failures in %s", count, gatewayFailureWindow))
-
-	s.createGatewayCircuitIssue(ctx, count)
-	return true
-}
-
-func (s *Scheduler) createGatewayCircuitIssue(ctx context.Context, count int) {
-	if s.dryRun {
-		return
-	}
-
-	for projectName, project := range s.cfg.Projects {
-		if !project.Enabled {
-			continue
-		}
-		beadsDir := config.ExpandHome(project.BeadsDir)
-		issues, err := s.listBeadsSafe(beadsDir)
-		if err != nil {
-			s.logger.Warn("failed to list beads for gateway circuit escalation dedupe", "project", projectName, "error", err)
-			return
-		}
-		titlePrefix := "Auto: gateway circuit opened"
-		for _, issue := range issues {
-			if strings.EqualFold(strings.TrimSpace(issue.Status), "closed") {
-				continue
-			}
-			if strings.HasPrefix(issue.Title, titlePrefix) {
-				return
-			}
-		}
-
-		title := fmt.Sprintf("Auto: gateway circuit opened (%d failures/%s)", count, gatewayFailureWindow)
-		description := fmt.Sprintf(
-			"Cortex opened the gateway failure circuit after observing %d dispatch failures with signature `gateway_closed` in %s.\n\nNew dispatches are temporarily suppressed for %s to avoid churn and repeated stale claims.\n\nPlease investigate gateway health, provider connectivity, and retry policy hardening.",
-			count, gatewayFailureWindow, gatewayCircuitDuration,
-		)
-		issueID, err := beads.CreateIssueCtx(ctx, beadsDir, title, "bug", 1, description, nil)
-		if err != nil {
-			s.logger.Warn("failed to create gateway circuit escalation issue", "project", projectName, "error", err)
-		} else {
-			s.logger.Warn("gateway circuit escalation issue created", "project", projectName, "issue", issueID)
-			_ = s.store.RecordHealthEvent("gateway_failure_circuit_issue_created",
-				fmt.Sprintf("project %s gateway circuit escalation issue %s created", projectName, issueID))
-		}
-		return
-	}
-}
-
-func (s *Scheduler) reconcileExpiredClaimLeases(ctx context.Context) {
-	expired, err := s.store.GetExpiredClaimLeases(claimLeaseTTL + claimLeaseGrace)
-	if err != nil {
-		s.logger.Warn("failed to query expired claim leases", "error", err)
-		return
-	}
-	for _, lease := range expired {
-		running, err := s.store.IsBeadDispatched(lease.BeadID)
-		if err != nil {
-			s.logger.Warn("failed to check running status for expired lease", "bead", lease.BeadID, "error", err)
-			continue
-		}
-		if running {
-			_ = s.store.HeartbeatClaimLease(lease.BeadID)
-			continue
-		}
-
-		beadsDir := strings.TrimSpace(lease.BeadsDir)
-		if beadsDir == "" {
-			if project, ok := s.cfg.Projects[lease.Project]; ok {
-				beadsDir = config.ExpandHome(project.BeadsDir)
-			}
-		}
-		if beadsDir == "" {
-			s.logClaimAnomalyOnce(
-				"expired_lease_missing_beads_dir:"+lease.BeadID,
-				"claim_reconcile_missing_project",
-				fmt.Sprintf("expired claim lease for bead %s could not be reconciled because beads_dir/project mapping is missing", lease.BeadID),
-				lease.DispatchID,
-				lease.BeadID,
-			)
-			continue
-		}
-
-		if err := s.releaseBeadOwnershipSafe(ctx, beadsDir, lease.BeadID); err != nil {
-			s.logClaimAnomalyOnce(
-				"expired_lease_release_failed:"+lease.BeadID,
-				"claim_reconcile_release_failed",
-				fmt.Sprintf("failed to release expired claim lease for bead %s: %v", lease.BeadID, err),
-				lease.DispatchID,
-				lease.BeadID,
-			)
-			continue
-		}
-		if err := s.store.DeleteClaimLease(lease.BeadID); err != nil {
-			s.logger.Warn("failed to delete expired claim lease after release", "bead", lease.BeadID, "error", err)
-		}
-		_ = s.store.RecordHealthEventWithDispatch(
-			"stale_claim_released",
-			fmt.Sprintf("released stale claim lease for bead %s after heartbeat timeout", lease.BeadID),
-			lease.DispatchID,
-			lease.BeadID,
-		)
-	}
-}
-
-func (s *Scheduler) reconcileProjectClaimHealth(ctx context.Context, projectName string, project config.Project, beadList []beads.Bead) {
-	beadsDir := config.ExpandHome(project.BeadsDir)
-	now := time.Now()
-
-	for _, bead := range beadList {
-		if !strings.EqualFold(strings.TrimSpace(bead.Status), "open") {
-			continue
-		}
-		if strings.TrimSpace(bead.Assignee) == "" {
-			continue
-		}
-
-		running, err := s.store.IsBeadDispatched(bead.ID)
-		if err != nil {
-			s.logger.Warn("failed to evaluate claimed bead dispatch status", "project", projectName, "bead", bead.ID, "error", err)
-			continue
-		}
-		if running {
-			_ = s.store.HeartbeatClaimLease(bead.ID)
-			continue
-		}
-
-		lease, err := s.store.GetClaimLease(bead.ID)
-		if err != nil {
-			s.logger.Warn("failed to load claim lease for claimed bead", "project", projectName, "bead", bead.ID, "error", err)
-			continue
-		}
-		if lease != nil {
-			age := now.Sub(lease.HeartbeatAt)
-			if age < claimLeaseTTL+claimLeaseGrace {
-				continue
-			}
-			if err := s.releaseBeadOwnershipSafe(ctx, beadsDir, bead.ID); err != nil {
-				s.logClaimAnomalyOnce(
-					"lease_claim_release_failed:"+bead.ID,
-					"claim_reconcile_release_failed",
-					fmt.Sprintf("failed to release stale claimed bead %s (lease-backed): %v", bead.ID, err),
-					lease.DispatchID,
-					bead.ID,
-				)
-				continue
-			}
-			if err := s.store.DeleteClaimLease(bead.ID); err != nil {
-				s.logger.Warn("failed to delete lease after stale claimed bead release", "project", projectName, "bead", bead.ID, "error", err)
-			}
-			_ = s.store.RecordHealthEventWithDispatch(
-				"stale_claim_released",
-				fmt.Sprintf("project %s released stale claimed bead %s using lease reconciliation", projectName, bead.ID),
-				lease.DispatchID,
-				bead.ID,
-			)
-			continue
-		}
-
-		latest, err := s.store.GetLatestDispatchForBead(bead.ID)
-		if err != nil {
-			s.logger.Warn("failed to load latest dispatch for claimed bead", "project", projectName, "bead", bead.ID, "error", err)
-			continue
-		}
-		if latest == nil {
-			assignee := strings.TrimSpace(bead.Assignee)
-			if isSchedulerManagedAssignee(projectName, assignee) {
-				if !bead.UpdatedAt.IsZero() && now.Sub(bead.UpdatedAt) >= claimedNoDispatchManagedGrace {
-					if err := s.releaseBeadOwnershipSafe(ctx, beadsDir, bead.ID); err != nil {
-						s.logClaimAnomalyOnce(
-							"claimed_no_dispatch_release_failed:"+projectName+":"+bead.ID,
-							"claim_reconcile_release_failed",
-							fmt.Sprintf("failed to release stale scheduler claim for project %s bead %s (assignee=%s): %v", projectName, bead.ID, assignee, err),
-							0,
-							bead.ID,
-						)
-						continue
-					}
-					_ = s.store.RecordHealthEventWithDispatch(
-						"stale_claim_released",
-						fmt.Sprintf("project %s released stale scheduler claim for bead %s with no dispatch history (assignee=%s)", projectName, bead.ID, assignee),
-						0,
-						bead.ID,
-					)
-				}
-				// Managed assignee with no dispatch history is expected briefly after claim.
-				continue
-			}
-
-			s.logClaimAnomalyOnce(
-				"claimed_no_dispatch:"+projectName,
-				"claimed_no_dispatch",
-				fmt.Sprintf("project %s bead %s is claimed with no dispatch history; manual review required", projectName, bead.ID),
-				0,
-				bead.ID,
-			)
-			continue
-		}
-
-		lastActivity := latest.DispatchedAt
-		if latest.CompletedAt.Valid {
-			lastActivity = latest.CompletedAt.Time
-		}
-		if !isTerminalDispatchStatus(latest.Status) || now.Sub(lastActivity) < terminalClaimGrace {
-			continue
-		}
-
-		if !strings.HasPrefix(strings.TrimSpace(latest.AgentID), projectName+"-") {
-			s.logClaimAnomalyOnce(
-				"claimed_terminal_manual_review:"+projectName+":"+bead.ID,
-				"claimed_terminal_manual_review",
-				fmt.Sprintf("project %s bead %s remains claimed after terminal dispatch %d by non-cortex agent %q", projectName, bead.ID, latest.ID, latest.AgentID),
-				latest.ID,
-				bead.ID,
-			)
-			continue
-		}
-
-		if err := s.releaseBeadOwnershipSafe(ctx, beadsDir, bead.ID); err != nil {
-			s.logClaimAnomalyOnce(
-				"legacy_claim_release_failed:"+projectName+":"+bead.ID,
-				"claim_reconcile_release_failed",
-				fmt.Sprintf("failed to release legacy stale claim for project %s bead %s: %v", projectName, bead.ID, err),
-				latest.ID,
-				bead.ID,
-			)
-			continue
-		}
-		_ = s.store.RecordHealthEventWithDispatch(
-			"stale_claim_released",
-			fmt.Sprintf("project %s released legacy stale claim for bead %s after terminal dispatch %d", projectName, bead.ID, latest.ID),
-			latest.ID,
-			bead.ID,
-		)
-	}
-}
-
-func (s *Scheduler) reconcileDispatchClaimOnTerminal(ctx context.Context, d store.Dispatch, status string) error {
-	if !isTerminalDispatchStatus(status) || strings.TrimSpace(d.BeadID) == "" {
-		return nil
-	}
-
-	beadsDir := ""
-	lease, err := s.store.GetClaimLease(d.BeadID)
-	if err == nil && lease != nil && strings.TrimSpace(lease.BeadsDir) != "" {
-		beadsDir = strings.TrimSpace(lease.BeadsDir)
-	}
-	if beadsDir == "" {
-		if project, ok := s.cfg.Projects[d.Project]; ok {
-			beadsDir = config.ExpandHome(project.BeadsDir)
-		}
-	}
-
-	if beadsDir == "" {
-		if err := s.store.DeleteClaimLease(d.BeadID); err != nil {
-			return err
-		}
-		return nil
-	}
-
-	if err := s.releaseBeadOwnershipSafe(ctx, beadsDir, d.BeadID); err != nil {
-		return fmt.Errorf("release bead ownership: %w", err)
-	}
-	if err := s.store.DeleteClaimLease(d.BeadID); err != nil {
-		return err
-	}
-	_ = s.store.RecordHealthEventWithDispatch(
-		"terminal_claim_reconciled",
-		fmt.Sprintf("released claim for bead %s after terminal dispatch %d (%s)", d.BeadID, d.ID, status),
-		d.ID,
-		d.BeadID,
-	)
-	return nil
-}
-
-func (s *Scheduler) logClaimAnomalyOnce(key, eventType, details string, dispatchID int64, beadID string) {
-	now := time.Now()
-	if last, ok := s.claimAnomaly[key]; ok && now.Sub(last) < claimAnomalyLogWindow {
-		return
-	}
-	s.claimAnomaly[key] = now
-	s.logger.Warn("claim invariant violation", "event_type", eventType, "bead", beadID, "details", details)
-	_ = s.store.RecordHealthEventWithDispatch(eventType, details, dispatchID, beadID)
-}
-
-func isTerminalDispatchStatus(status string) bool {
-	switch strings.TrimSpace(strings.ToLower(status)) {
-	case "completed", "failed", "cancelled", "interrupted", "retried":
-		return true
-	default:
-		return false
-	}
-}
 
 func isStoreUnavailableError(err error) bool {
 	if err == nil {
@@ -4192,24 +3541,6 @@ func isStoreUnavailableError(err error) bool {
 		strings.Contains(msg, "connection is already closed")
 }
 
-func isSchedulerManagedAssignee(projectName, assignee string) bool {
-	cleanAssignee := strings.ToLower(strings.TrimSpace(assignee))
-	if cleanAssignee == "" {
-		return false
-	}
-
-	projectPrefix := strings.ToLower(strings.TrimSpace(projectName))
-	if projectPrefix != "" && strings.HasPrefix(cleanAssignee, projectPrefix+"-") {
-		return true
-	}
-
-	switch cleanAssignee {
-	case "coder", "reviewer", "planner", "scrum", "ops", "qa", "main":
-		return true
-	default:
-		return false
-	}
-}
 
 // rebuildProfilesIfNeeded rebuilds provider performance profiles periodically.
 func (s *Scheduler) rebuildProfilesIfNeeded() {
@@ -4354,52 +3685,6 @@ func (s *Scheduler) pickAndReserveProviderForRetry(initialTier string, excludeMo
 	}
 }
 
-func (s *Scheduler) tierCandidates(tier string) []string {
-	switch tier {
-	case "fast":
-		return s.cfg.Tiers.Fast
-	case "balanced":
-		return s.cfg.Tiers.Balanced
-	case "premium":
-		return s.cfg.Tiers.Premium
-	default:
-		return s.cfg.Tiers.Balanced
-	}
-}
-
-func nextTierAfterExhaustion(tier string) string {
-	switch tier {
-	case "premium":
-		return "balanced"
-	case "balanced":
-		return "fast"
-	case "fast":
-		return "balanced"
-	default:
-		return ""
-	}
-}
-
-func (s *Scheduler) hasAlternativeProviderInTier(tier, failedModel string) bool {
-	trimmed := strings.TrimSpace(failedModel)
-	for _, name := range s.tierCandidates(tier) {
-		provider, ok := s.cfg.Providers[name]
-		if !ok {
-			continue
-		}
-		if trimmed != "" && provider.Model == trimmed {
-			continue
-		}
-		if !provider.Authed {
-			return true
-		}
-		okToDispatch, _ := s.rateLimiter.CanDispatchAuthed()
-		if okToDispatch {
-			return true
-		}
-	}
-	return false
-}
 
 func (s *Scheduler) selectBackend(role, tier string, retryCount int) (dispatch.Backend, string, error) {
 	backendName := s.backendNameFor(role, tier, retryCount)
