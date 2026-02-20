@@ -355,6 +355,20 @@ CREATE TABLE IF NOT EXISTS token_usage (
 CREATE INDEX IF NOT EXISTS idx_token_usage_dispatch ON token_usage(dispatch_id);
 CREATE INDEX IF NOT EXISTS idx_token_usage_project ON token_usage(project, recorded_at);
 CREATE INDEX IF NOT EXISTS idx_token_usage_agent ON token_usage(agent, recorded_at);
+
+CREATE TABLE IF NOT EXISTS step_metrics (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	dispatch_id INTEGER NOT NULL DEFAULT 0,
+	bead_id TEXT NOT NULL DEFAULT '',
+	project TEXT NOT NULL DEFAULT '',
+	step_name TEXT NOT NULL DEFAULT '',
+	duration_s REAL NOT NULL DEFAULT 0,
+	status TEXT NOT NULL DEFAULT '',
+	slow INTEGER NOT NULL DEFAULT 0,
+	recorded_at DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_step_metrics_dispatch ON step_metrics(dispatch_id);
+CREATE INDEX IF NOT EXISTS idx_step_metrics_project ON step_metrics(project, recorded_at);
 `
 
 // Open creates or opens a SQLite database at the given path and ensures the schema exists.
@@ -2628,4 +2642,59 @@ func (s *Store) GetTokenUsageSummary(groupBy string, since time.Time) ([]TokenUs
 		summaries = append(summaries, s)
 	}
 	return summaries, rows.Err()
+}
+
+// StepMetricRecord represents a persisted pipeline step metric.
+type StepMetricRecord struct {
+	ID         int64   `json:"id"`
+	DispatchID int64   `json:"dispatch_id"`
+	BeadID     string  `json:"bead_id"`
+	Project    string  `json:"project"`
+	StepName   string  `json:"step_name"`
+	DurationS  float64 `json:"duration_s"`
+	Status     string  `json:"status"`
+	Slow       bool    `json:"slow"`
+	RecordedAt string  `json:"recorded_at"`
+}
+
+// StoreStepMetric persists a single pipeline step metric.
+func (s *Store) StoreStepMetric(dispatchID int64, beadID, project, stepName string, durationS float64, status string, slow bool) error {
+	slowInt := 0
+	if slow {
+		slowInt = 1
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO step_metrics (dispatch_id, bead_id, project, step_name, duration_s, status, slow)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		dispatchID, beadID, project, stepName, durationS, status, slowInt,
+	)
+	if err != nil {
+		return fmt.Errorf("store: store step metric: %w", err)
+	}
+	return nil
+}
+
+// GetStepMetricsByDispatch returns all step metrics for a dispatch.
+func (s *Store) GetStepMetricsByDispatch(dispatchID int64) ([]StepMetricRecord, error) {
+	rows, err := s.db.Query(
+		`SELECT id, dispatch_id, bead_id, project, step_name, duration_s, status, slow, recorded_at
+		 FROM step_metrics WHERE dispatch_id = ? ORDER BY id`,
+		dispatchID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: get step metrics by dispatch: %w", err)
+	}
+	defer rows.Close()
+
+	var records []StepMetricRecord
+	for rows.Next() {
+		var r StepMetricRecord
+		var slowInt int
+		if err := rows.Scan(&r.ID, &r.DispatchID, &r.BeadID, &r.Project, &r.StepName, &r.DurationS, &r.Status, &slowInt, &r.RecordedAt); err != nil {
+			return nil, fmt.Errorf("store: scan step metric: %w", err)
+		}
+		r.Slow = slowInt != 0
+		records = append(records, r)
+	}
+	return records, rows.Err()
 }
