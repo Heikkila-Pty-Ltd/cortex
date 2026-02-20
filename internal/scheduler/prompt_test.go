@@ -107,6 +107,28 @@ func TestBuildPromptWithRole(t *testing.T) {
 	}
 }
 
+func TestBuildPromptWithRoleReviewerPRNumber(t *testing.T) {
+	bead := beads.Bead{
+		ID:          "task-025",
+		Title:       "Chore/scheduler prompt template task1 #25 - review the PR",
+		Description: "Review and approve PR #25 if all checks pass",
+	}
+	proj := config.Project{Workspace: "/tmp/test"}
+
+	prompt := BuildPromptWithRole(bead, proj, "reviewer")
+
+	for _, check := range []string{
+		"gh pr checkout 25",
+		"gh pr view 25 --comments --review",
+		"gh pr review 25 --approve",
+		"severity (high/medium/low)",
+	} {
+		if !strings.Contains(prompt, check) {
+			t.Errorf("reviewer prompt missing PR workflow command %q", check)
+		}
+	}
+}
+
 func TestExtractFilePaths(t *testing.T) {
 	text := "Edit internal/config/config.go and src/main.ts, also update scripts/build.sh"
 	paths := extractFilePaths(text)
@@ -125,5 +147,27 @@ func TestExtractFilePaths(t *testing.T) {
 	}
 	for p := range expected {
 		t.Errorf("missing path: %s", p)
+	}
+}
+
+func TestExtractPRNumber(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "plain hash", text: "review #25 now", want: "25"},
+		{name: "bracketed hash", text: "( #102 ) task", want: "102"},
+		{name: "explicit PR no hash", text: "Please review PR 77 today", want: "77"},
+		{name: "explicit pull request", text: "pull request #88 needs review", want: "88"},
+		{name: "missing", text: "review PR please", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractPRNumber(tt.text); got != tt.want {
+				t.Fatalf("extractPRNumber(%q) = %q, want %q", tt.text, got, tt.want)
+			}
+		})
 	}
 }
