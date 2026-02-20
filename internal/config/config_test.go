@@ -127,6 +127,42 @@ func TestLoadValidConfig(t *testing.T) {
 	}
 }
 
+func TestReloadAlias(t *testing.T) {
+	path := writeTestConfig(t, validConfig)
+	cfg, err := Reload(path)
+	if err != nil {
+		t.Fatalf("Reload failed: %v", err)
+	}
+	if cfg.General.TickInterval.Duration != 60*time.Second {
+		t.Errorf("expected tick interval from reload config, got %v", cfg.General.TickInterval)
+	}
+}
+
+func TestReloadCanBeCalledMultipleTimes(t *testing.T) {
+	path := writeTestConfig(t, validConfig)
+
+	first, err := Reload(path)
+	if err != nil {
+		t.Fatalf("initial reload failed: %v", err)
+	}
+	if first.General.LogLevel != "info" {
+		t.Fatalf("expected initial log_level info, got %q", first.General.LogLevel)
+	}
+
+	updated := strings.Replace(validConfig, `log_level = "info"`, `log_level = "debug"`, 1)
+	if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
+		t.Fatalf("rewrite config failed: %v", err)
+	}
+
+	second, err := Reload(path)
+	if err != nil {
+		t.Fatalf("second reload failed: %v", err)
+	}
+	if second.General.LogLevel != "debug" {
+		t.Fatalf("expected log_level update to debug, got %q", second.General.LogLevel)
+	}
+}
+
 func TestLoadProjectMergeDefaults(t *testing.T) {
 	cfg := validConfig + `
 

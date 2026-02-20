@@ -520,39 +520,39 @@ func parseScrumCommand(raw string) (scrumCommand, bool, error) {
 	switch keyword {
 	case "status":
 		if len(parts) != 1 {
-			return scrumCommand{}, true, errors.New("status takes no arguments")
+			return scrumCommand{}, true, errors.New("status takes no arguments. Usage: status")
 		}
 		return scrumCommand{kind: scrumCommandStatus}, true, nil
 	case "priority":
 		if len(parts) != 3 {
-			return scrumCommand{}, true, errors.New("malformed priority command")
+			return scrumCommand{}, true, errors.New("malformed priority command. Usage: priority <bead-id> <p0|p1|p2|p3|p4>")
 		}
 		beadID := strings.TrimSpace(parts[1])
 		if beadID == "" {
-			return scrumCommand{}, true, errors.New("priority command requires a bead id")
+			return scrumCommand{}, true, errors.New("priority command requires a bead id. Usage: priority <bead-id> <p0|p1|p2|p3|p4>")
 		}
 		priorityToken := strings.ToLower(strings.TrimSpace(parts[2]))
 		if !strings.HasPrefix(priorityToken, "p") || len(priorityToken) != 2 {
-			return scrumCommand{}, true, errors.New("priority must be p0, p1, p2, p3, or p4")
+			return scrumCommand{}, true, errors.New("priority must be p0, p1, p2, p3, or p4. Usage: priority <bead-id> <p0|p1|p2|p3|p4>")
 		}
 		priority, err := strconv.Atoi(priorityToken[1:])
 		if err != nil || priority < 0 || priority > 4 {
-			return scrumCommand{}, true, errors.New("priority must be p0, p1, p2, p3, or p4")
+			return scrumCommand{}, true, errors.New("priority must be p0, p1, p2, p3, or p4. Usage: priority <bead-id> <p0|p1|p2|p3|p4>")
 		}
 		return scrumCommand{kind: scrumCommandPriority, beadID: beadID, priority: priority}, true, nil
 	case "cancel":
 		if len(parts) != 2 {
-			return scrumCommand{}, true, errors.New("malformed cancel command")
+			return scrumCommand{}, true, errors.New("malformed cancel command. Usage: cancel <dispatch-id>")
 		}
 		dispatchID, err := strconv.ParseInt(strings.TrimSpace(parts[1]), 10, 64)
 		if err != nil || dispatchID <= 0 {
-			return scrumCommand{}, true, errors.New("cancel command requires a positive dispatch id")
+			return scrumCommand{}, true, errors.New("cancel command requires a positive dispatch id. Usage: cancel <dispatch-id>")
 		}
 		return scrumCommand{kind: scrumCommandCancel, dispatchID: dispatchID}, true, nil
 	case "create":
 		matches := createTaskPattern.FindStringSubmatch(text)
 		if len(matches) != 3 {
-			return scrumCommand{}, true, errors.New("create task command requires quoted title and description")
+			return scrumCommand{}, true, errors.New(`create task command requires quoted title and description. Usage: create task "<title>" "<description>"`)
 		}
 		return scrumCommand{kind: scrumCommandCreate, title: matches[1], description: matches[2]}, true, nil
 	default:
@@ -576,7 +576,17 @@ func commandUsageMessage() string {
 - status
 - priority <bead-id> <p0|p1|p2|p3|p4>
 - cancel <dispatch-id>
-- create task "<title>" "<description>"`
+- create task "<title>" "<description>"
+
+Usage:
+- status
+  - Shows a brief project summary and recent completions.
+- priority <bead-id> <p0|p1|p2|p3|p4>
+  - Reprioritizes an existing bead.
+- cancel <dispatch-id>
+  - Cancels a running dispatch by id.
+- create task "<title>" "<description>"
+  - Creates a new task bead with the provided title and description.`
 }
 
 func (p *Poller) cursor(room string) string {

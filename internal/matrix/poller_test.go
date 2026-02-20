@@ -278,6 +278,31 @@ func TestParseScrumCommandRecognizesSupportedCommands(t *testing.T) {
 	}
 }
 
+func TestParseScrumCommandReturnsSpecificGuidance(t *testing.T) {
+	cases := []struct {
+		command string
+		want    string
+	}{
+		{"status now", "Usage: status"},
+		{"priority cortex-1", "Usage: priority <bead-id> <p0|p1|p2|p3|p4>"},
+		{"cancel bad", "positive dispatch id"},
+		{"create task \"Only title\"", "create task command requires quoted title and description"},
+	}
+
+	for _, tc := range cases {
+		_, isCommand, err := parseScrumCommand(tc.command)
+		if !isCommand {
+			t.Fatalf("command %q not recognized", tc.command)
+		}
+		if err == nil {
+			t.Fatalf("command %q should return parse error", tc.command)
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("error for %q = %q, want substring %q", tc.command, err, tc.want)
+		}
+	}
+}
+
 func TestPollOnceRoutesScrumStatusCommandToMatrixSender(t *testing.T) {
 	sender := &fakeSender{}
 	store := &fakeStore{

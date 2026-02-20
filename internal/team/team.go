@@ -13,7 +13,7 @@ import (
 // roleDescriptions provides the ROLE.md content for each agent role.
 var roleDescriptions = map[string]string{
 	"scrum": `# Scrum Master Agent
-<!-- role-version: scrum-master-v3 -->
+<!-- role-version: scrum-master-v4 -->
 
 You are the scrum master and primary point of contact for this project.
 
@@ -48,6 +48,16 @@ You are the scrum master and primary point of contact for this project.
 - priority <bead-id> <p0|p1|p2|p3|p4>
 - cancel <dispatch-id>
 - create task "<title>" "<description>"
+
+### Command Templates
+- status
+  - Output: project summary with running bead count and recent completion count.
+- priority <bead-id> <p0|p1|p2|p3|p4>
+  - Output: Updated <bead-id> priority to <pX>.
+- cancel <dispatch-id>
+  - Output: Cancelled dispatch <dispatch-id> on success or an error reason on failure.
+- create task "<title>" "<description>"
+  - Output: Created new task <bead-id>.
 
 When confirming command responses, keep replies concise and include the result:
 - status -> project summary with running and completion metrics
@@ -236,7 +246,7 @@ func writeRoleMD(agentDir, role string) error {
 		if bytes.Equal(existing, []byte(content)) {
 			return nil
 		}
-		if role == "scrum" && !bytes.Contains(existing, []byte("role-version: scrum-master-v3")) {
+		if role == "scrum" && !bytes.Contains(existing, []byte("role-version: scrum-master-v4")) {
 			return os.WriteFile(rolePath, []byte(content), 0644)
 		}
 		return nil

@@ -456,3 +456,72 @@ func isBlocked(b Bead, graph *DepGraph) bool {
 	}
 	return false
 }
+
+// --- Mutation helpers (used by CHUM groombot workflows) ---
+
+// UpdateNotes appends or replaces notes on a bead via bd update --notes.
+func UpdateNotes(beadsDir, beadID, notes string) error {
+	return UpdateNotesCtx(context.Background(), beadsDir, beadID, notes)
+}
+
+// UpdateNotesCtx is the context-aware version of UpdateNotes.
+func UpdateNotesCtx(ctx context.Context, beadsDir, beadID, notes string) error {
+	beadsDir = strings.TrimSpace(beadsDir)
+	beadID = strings.TrimSpace(beadID)
+	if beadsDir == "" {
+		return fmt.Errorf("project beads dir is required")
+	}
+	if beadID == "" {
+		return fmt.Errorf("bead id is required")
+	}
+	root := projectRoot(beadsDir)
+	_, err := runBD(ctx, root, "update", beadID, "--notes", notes)
+	if err != nil {
+		return fmt.Errorf("updating notes for %s: %w", beadID, err)
+	}
+	return nil
+}
+
+// UpdateDescription updates the description field of a bead.
+func UpdateDescription(beadsDir, beadID, description string) error {
+	return UpdateDescriptionCtx(context.Background(), beadsDir, beadID, description)
+}
+
+// UpdateDescriptionCtx is the context-aware version of UpdateDescription.
+func UpdateDescriptionCtx(ctx context.Context, beadsDir, beadID, description string) error {
+	beadsDir = strings.TrimSpace(beadsDir)
+	beadID = strings.TrimSpace(beadID)
+	if beadsDir == "" {
+		return fmt.Errorf("project beads dir is required")
+	}
+	if beadID == "" {
+		return fmt.Errorf("bead id is required")
+	}
+	root := projectRoot(beadsDir)
+	_, err := runBD(ctx, root, "update", beadID, "--description", description)
+	if err != nil {
+		return fmt.Errorf("updating description for %s: %w", beadID, err)
+	}
+	return nil
+}
+
+// AddDependency links a dependency: beadID depends on dependsOnID.
+func AddDependency(beadsDir, beadID, dependsOnID string) error {
+	return AddDependencyCtx(context.Background(), beadsDir, beadID, dependsOnID)
+}
+
+// AddDependencyCtx is the context-aware version of AddDependency.
+func AddDependencyCtx(ctx context.Context, beadsDir, beadID, dependsOnID string) error {
+	beadsDir = strings.TrimSpace(beadsDir)
+	beadID = strings.TrimSpace(beadID)
+	dependsOnID = strings.TrimSpace(dependsOnID)
+	if beadsDir == "" || beadID == "" || dependsOnID == "" {
+		return fmt.Errorf("beads dir, bead id, and depends-on id are all required")
+	}
+	root := projectRoot(beadsDir)
+	_, err := runBD(ctx, root, "dep", "add", beadID, dependsOnID)
+	if err != nil {
+		return fmt.Errorf("adding dependency %s -> %s: %w", beadID, dependsOnID, err)
+	}
+	return nil
+}
