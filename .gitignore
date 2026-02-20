@@ -1,23 +1,6 @@
-# bv (beads viewer) local config and caches
-.bv/
-
-# OpenClaw runtime state
-.openclaw/
-
-# IDE
-.claude/
-
 # Built binaries
 /cortex
 *.test
-
-# Tools binaries (build from source)
-/tools/db-backup
-/tools/db-restore
-
-# Lock files (anywhere)
-*.lock
-.beads/.bv.lock
 
 # Local config (do not commit)
 cortex.toml
@@ -32,12 +15,7 @@ cortex.runner.toml
 state/
 
 # Runtime data
-.cortex/*.log
-.cortex/*.tsv
-.cortex/*.jsonl
-.cortex/*.lock
-.cortex/*.out
-.cortex/*.latest
+.cortex/
 
 # Beads runtime data
 .beads/*.log
@@ -48,23 +26,32 @@ state/
 .beads/.local_version
 .beads/last-touched
 .beads/dolt-access.lock
+.beads/export-state/
 
-# Evidence raw data
-evidence/.raw/
+# OpenClaw / agent runtime
+.openclaw/
+.claude/
+.pi/
+
+# Beads viewer
+.bv/
+
+# Lock files
+*.lock
+!.beads/.gitignore
+
+# Operational artifacts (gitignored, not in repo)
+artifacts/
+evidence/
+rollback-config/
+rollback-configs/
+archive/
+_archived/
 
 # Generated release artifacts
 release/*.json
 release/*.jsonl
 release/*.log
-
-# Archive - historical data (large, move to external storage)
-archive/
-
-# Operational artifacts and evidence
-artifacts/
-evidence/
-rollback-config/
-rollback-configs/
 
 # Temporary files
 .tmp/

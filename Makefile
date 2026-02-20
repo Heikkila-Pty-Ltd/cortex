@@ -67,13 +67,8 @@ build: $(SRC_FILES) ## Build cortex binary
 
 build-all: ## Build all binaries (cortex + tools)
 	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BINARY_NAME) ./cmd/cortex/
-	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/burnin-collector ./cmd/burnin-collector/
-	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/burnin-evidence ./cmd/burnin-evidence/
 	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/db-backup ./cmd/db-backup/
 	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/db-restore ./cmd/db-restore/
-	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/monitor-analysis ./cmd/monitor-analysis/
-	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/rollout-completion ./cmd/rollout-completion/
-	$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/rollout-monitor ./cmd/rollout-monitor/
 
 install: build ## Build and install cortex to ~/.local/bin
 	mkdir -p ~/.local/bin
@@ -102,6 +97,9 @@ vet: ## Run go vet
 
 lint-beads: ## Validate open/in-progress beads have acceptance criteria + DoD gates
 	$(DEV_SCRIPTS)/lint-beads.sh
+
+lint-docs: ## Check markdown docs for broken internal references
+	@bash $(DEV_SCRIPTS)/docs-lint.sh
 
 ##@ Testing
 
