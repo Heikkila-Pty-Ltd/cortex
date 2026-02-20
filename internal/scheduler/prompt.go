@@ -10,6 +10,8 @@ import (
 )
 
 var filePathRe = regexp.MustCompile(`(?:^|\s)((?:src|internal|cmd|pkg|lib|app|public|templates|static|test|tests|scripts)/[\w./-]+|[\w-]+\.(?:go|ts|tsx|js|jsx|py|rs|rb|java|vue|svelte|css|scss|html|sql|yaml|yml|toml|json|md|sh))`)
+var explicitPRNumberRe = regexp.MustCompile(`(?i)\b(?:pr|pull request)\s*#?\s*(\d+)\b`)
+var hashNumberRe = regexp.MustCompile(`(?i)(?:^|\s|\(|\[)#(\d+)(?:\b|\)|\])`)
 
 // stageInstructions maps roles to stage-specific prompt instructions.
 var stageInstructions = map[string]func(bead beads.Bead, useBranches bool, prDiff string) string{
@@ -262,6 +264,18 @@ Use this exact structure in your final output:
 			diffSection = fmt.Sprintf("\n## Pull Request Diff\nReview the following code changes carefully:\n\n```diff\n%s\n```\n", prDiff)
 		}
 
+		prInstructions := ""
+		if prNumber := extractPRNumber(strings.Join([]string{b.Title, b.Description, b.Design}, "\n")); prNumber != "" {
+			prInstructions = fmt.Sprintf(`
+PR-specific review flow (detected from task context):
+- gh pr checkout %s
+- gh pr view %s --comments --review
+- gh pr review %s --approve   # or --request-changes -b "<feedback>"
+
+When reviewing, report findings with severity (high/medium/low), include exact files/lines, and state a final decision.
+`, prNumber, prNumber, prNumber)
+		}
+
 		return fmt.Sprintf(`## Instructions (Reviewer)
 1. Review the code changes against acceptance criteria
 2. Check for correctness, style, and test coverage%s
@@ -269,8 +283,10 @@ Use this exact structure in your final output:
 4. If changes needed: add review notes and transition back: bd update %s --set-labels stage:coding
 5. Unassign yourself: bd update %s --assignee=""
 
+%s
+
 Note: You can also use 'gh pr review --approve' or 'gh pr review --request-changes' if you have the PR number.
-`, diffSection, b.ID, b.ID, b.ID)
+`, diffSection, b.ID, b.ID, b.ID, prInstructions)
 	},
 	"ops": func(b beads.Bead, useBranches bool, prDiff string) string {
 		return fmt.Sprintf(`## Instructions (QA/Ops)
@@ -357,4 +373,18 @@ func extractFilePaths(text string) []string {
 		}
 	}
 	return paths
+}
+
+func extractPRNumber(text string) string {
+	matches := explicitPRNumberRe.FindStringSubmatch(text)
+	if len(matches) >= 2 {
+		return matches[1]
+	}
+
+	matches = hashNumberRe.FindStringSubmatch(text)
+	if len(matches) < 2 {
+		return ""
+	}
+
+	return matches[1]
 }
