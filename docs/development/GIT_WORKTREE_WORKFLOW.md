@@ -10,6 +10,12 @@ git pull --rebase
 git worktree add -b feature/your-feature ../cortex-feature-your-feature master
 ```
 
+Install branch-guard hook before opening the worktree:
+
+```bash
+./scripts/hooks/install.sh
+```
+
 ## 2) Open the worktree for the feature
 
 ```bash
@@ -44,8 +50,8 @@ Use one worktree per active feature to prevent context switching and reduce comm
 - Verify pre-commit hook is installed:
   - `./scripts/hooks/install.sh`
 - Attempt one commit without pushing:
-  - confirm the branch name passes checks.
-  - confirm commit to `master` is blocked.
+  - confirm branch name checks pass.
+  - confirm commit to `master` is blocked by pre-commit.
 - Open a draft PR and confirm CI shows the branch policy check.
 
 For onboarding and branch policy, also read:

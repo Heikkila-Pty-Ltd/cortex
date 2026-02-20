@@ -57,6 +57,7 @@ Before starting any code changes:
 # Ensure you are on up-to-date master
 git checkout master
 git pull --rebase
+./scripts/hooks/install.sh
 
 # Create a feature workflow branch
 git checkout -b feature/your-feature-name
@@ -70,7 +71,8 @@ Branch naming conventions:
 
 Hotfix exception:
 - `hotfix/<description>` is allowed only for approved production hotfixes.
-- Approved hotfixes should use a tracked signoff in the issue/PR before bypassing normal branch policy.
+- Open a short-lived `hotfix/*` branch and use the normal PR path (no direct master commits).
+- Include approver signoff in the linked issue/PR before merging.
 
 ### 3. Install local git hook (first-time / periodic)
 
@@ -129,6 +131,16 @@ Work each feature in its own worktree directory. Close worktrees when done:
 ```bash
 git worktree remove ../cortex-feature-x
 ```
+
+Team training checkpoint:
+
+Before starting parallel work, complete this quick check:
+- Confirm hook is installed and blocks master commits:
+  `./scripts/hooks/install.sh`
+- Confirm branch checks trigger before the first push:
+  `git checkout master` and verify a commit attempt is blocked.
+- Open one isolated worktree and verify branch name checks on first commit.
+- Open a draft PR and confirm the PR branch-policy check runs in CI.
 
 For the full walkthrough, see [Git worktree workflow](docs/development/GIT_WORKTREE_WORKFLOW.md).
 

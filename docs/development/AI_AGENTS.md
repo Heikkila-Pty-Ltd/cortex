@@ -12,8 +12,17 @@ Before coding in Cortex, enforce the branch workflow:
    - `feature/*`, `chore/*`, `fix/*`, `refactor/*`
 3. Optionally create a worktree when running multiple tasks:
    - `git worktree add -b feature/your-feature ../cortex-feature`
-4. Run the worktree training checklist in:
+4. Run the worktree training checkpoint in:
    - `docs/development/GIT_WORKTREE_WORKFLOW.md`
+
+Team training checkpoint:
+
+- Confirm hook installation:
+  - `./scripts/hooks/install.sh`
+- Confirm branch guard behavior:
+  - Create and switch to `feature/*`, `chore/*`, `fix/*`, or `refactor/*` before first commit.
+- Confirm PR review enforcement:
+  - Open a draft PR and verify workflow check runs in CI.
 
 For all code changes, keep PRs on branches only (never direct `master` commits), and include reviewable commits before finishing a bead.
 
