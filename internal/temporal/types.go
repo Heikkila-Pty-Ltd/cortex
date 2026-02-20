@@ -1,0 +1,352 @@
+package temporal
+
+// TaskRequest is submitted via the API to start a workflow.
+type TaskRequest struct {
+	BeadID    string   `json:"bead_id"`
+	Project   string   `json:"project"`
+	Prompt    string   `json:"prompt"`
+	Agent     string   `json:"agent"`     // primary coding agent (claude, codex)
+	Reviewer  string   `json:"reviewer"`  // review agent — auto-assigned if empty
+	WorkDir   string   `json:"work_dir"`
+	Provider  string   `json:"provider"`
+	DoDChecks []string `json:"dod_checks"` // e.g. ["go build ./cmd/cortex", "go test ./..."]
+}
+
+// DefaultReviewer returns the cross-model reviewer for a given primary agent.
+// V0: claude ↔ codex. If unknown, defaults to codex.
+func DefaultReviewer(agent string) string {
+	switch agent {
+	case "claude":
+		return "codex"
+	case "codex":
+		return "claude"
+	default:
+		return "codex"
+	}
+}
+
+// AgentForDoD returns a cheap/free agent for running DoD test commands.
+// Don't need a smart model to run tests and say if they passed.
+const DoDAgent = "codex" // codex-mini when available
+
+// StructuredPlan is the output of the planning activity.
+// Tasks are gated — if the plan doesn't have acceptance criteria,
+// it doesn't enter the coding engine.
+type StructuredPlan struct {
+	Summary            string     `json:"summary"`
+	Steps              []PlanStep `json:"steps"`
+	FilesToModify      []string   `json:"files_to_modify"`
+	AcceptanceCriteria []string   `json:"acceptance_criteria"`
+	EstimatedComplexity string   `json:"estimated_complexity"` // low, medium, high
+	RiskAssessment     string     `json:"risk_assessment"`
+	PreviousErrors     []string   `json:"previous_errors,omitempty"`
+	TokenUsage         TokenUsage `json:"token_usage,omitempty"`
+}
+
+// PlanStep is a single step in the structured plan.
+type PlanStep struct {
+	Description string `json:"description"`
+	File        string `json:"file"`
+	Rationale   string `json:"rationale"`
+}
+
+// Validate gates the plan — rejects it before entering the coding engine
+// if it doesn't meet minimum quality standards.
+func (p *StructuredPlan) Validate() []string {
+	var issues []string
+	if p.Summary == "" {
+		issues = append(issues, "plan has no summary")
+	}
+	if len(p.Steps) == 0 {
+		issues = append(issues, "plan has no steps")
+	}
+	if len(p.AcceptanceCriteria) == 0 {
+		issues = append(issues, "plan has no acceptance criteria — nothing enters the coding engine without DoD")
+	}
+	if len(p.FilesToModify) == 0 {
+		issues = append(issues, "plan doesn't specify which files will be modified")
+	}
+	return issues
+}
+
+// TokenUsage tracks LLM token consumption from a single CLI invocation.
+// Populated by parsing --output-format json from the claude CLI.
+type TokenUsage struct {
+	InputTokens         int     `json:"input_tokens"`
+	OutputTokens        int     `json:"output_tokens"`
+	CacheReadTokens     int     `json:"cache_read_tokens"`
+	CacheCreationTokens int     `json:"cache_creation_tokens"`
+	CostUSD             float64 `json:"cost_usd"`
+}
+
+// Add accumulates another TokenUsage into this one.
+func (t *TokenUsage) Add(other TokenUsage) {
+	t.InputTokens += other.InputTokens
+	t.OutputTokens += other.OutputTokens
+	t.CacheReadTokens += other.CacheReadTokens
+	t.CacheCreationTokens += other.CacheCreationTokens
+	t.CostUSD += other.CostUSD
+}
+
+// ActivityTokenUsage carries per-activity token usage through the workflow
+// so RecordOutcomeActivity can persist granular per-activity costs.
+type ActivityTokenUsage struct {
+	ActivityName string     `json:"activity_name"`
+	Agent        string     `json:"agent"`
+	Tokens       TokenUsage `json:"tokens"`
+}
+
+// ExecutionResult is returned by the execute activity.
+type ExecutionResult struct {
+	ExitCode int        `json:"exit_code"`
+	Output   string     `json:"output"`
+	Agent    string     `json:"agent"` // which agent executed
+	Tokens   TokenUsage `json:"tokens"`
+}
+
+// ReviewResult is returned by the cross-model code review activity.
+type ReviewResult struct {
+	Approved      bool       `json:"approved"`
+	Issues        []string   `json:"issues"`
+	Suggestions   []string   `json:"suggestions"`
+	ReviewerAgent string     `json:"reviewer_agent"`
+	ReviewOutput  string     `json:"review_output"`
+	Tokens        TokenUsage `json:"tokens"`
+}
+
+// DoDResult is returned by the DoD verification activity.
+type DoDResult struct {
+	Passed        bool     `json:"passed"`
+	Checks        []CheckResult `json:"checks"`
+	Failures      []string `json:"failures"`
+}
+
+// CheckResult is the result of a single DoD check command.
+type CheckResult struct {
+	Command  string  `json:"command"`
+	ExitCode int     `json:"exit_code"`
+	Output   string  `json:"output"`
+	Passed   bool    `json:"passed"`
+	DurationMs int64 `json:"duration_ms"`
+}
+
+// OutcomeRecord is passed to the store recording activity.
+type OutcomeRecord struct {
+	DispatchID     int64                 `json:"dispatch_id"`
+	BeadID         string                `json:"bead_id"`
+	Project        string                `json:"project"`
+	Agent          string                `json:"agent"`
+	Reviewer       string                `json:"reviewer"`
+	Provider       string                `json:"provider"`
+	Status         string                `json:"status"` // completed, failed, escalated
+	ExitCode       int                   `json:"exit_code"`
+	DurationS      float64               `json:"duration_s"`
+	DoDPassed      bool                  `json:"dod_passed"`
+	DoDFailures    string                `json:"dod_failures"`
+	Handoffs       int                   `json:"handoffs"` // how many cross-model review cycles
+	FilesChanged   int                   `json:"files_changed"`
+	TotalTokens    TokenUsage            `json:"total_tokens"`
+	ActivityTokens []ActivityTokenUsage   `json:"activity_tokens,omitempty"`
+}
+
+// EscalationRequest is sent to the chief when DoD fails after retries.
+type EscalationRequest struct {
+	BeadID       string   `json:"bead_id"`
+	Project      string   `json:"project"`
+	PlanSummary  string   `json:"plan_summary"`
+	Failures     []string `json:"failures"`
+	AttemptCount int      `json:"attempt_count"`
+	HandoffCount int      `json:"handoff_count"`
+}
+
+// --- Planning Ceremony Types ---
+// Planning happens BEFORE any code is written. Beads are written, arranged,
+// deps aligned, structure emerges. Nothing goes to the sharks until it's chum.
+
+// PlanningRequest starts a planning session.
+type PlanningRequest struct {
+	Project string `json:"project"`
+	Agent   string `json:"agent"`  // chief agent for execution (defaults to claude)
+	Tier    string `json:"tier"`   // LLM tier for planning activities: "fast" or "premium"
+	WorkDir string `json:"work_dir"`
+}
+
+// BacklogItem is a single work item the chief has identified.
+type BacklogItem struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Impact      string `json:"impact"`      // why this matters
+	Effort      string `json:"effort"`      // rough estimate
+	Recommended bool   `json:"recommended"` // chief's pick
+	Rationale   string `json:"rationale"`   // why recommended (or not)
+}
+
+// BacklogPresentation is the chief's groomed view of the backlog.
+type BacklogPresentation struct {
+	Items     []BacklogItem `json:"items"`
+	Rationale string        `json:"rationale"` // "here's what we think and why"
+}
+
+// PlanningQuestion is a single clarifying question, asked one at a time.
+// Each question depends on answers to previous questions.
+type PlanningQuestion struct {
+	Number         int      `json:"number"`          // 1-indexed
+	Total          int      `json:"total"`           // total questions
+	Question       string   `json:"question"`        // the question
+	Options        []string `json:"options"`         // A, B, C choices
+	Recommendation string   `json:"recommendation"`  // "We recommend A because..."
+	Context        string   `json:"context"`         // what previous answer influenced this
+}
+
+// PlanSummary is the final summary before greenlight.
+// What we're building, why, and how much effort.
+type PlanSummary struct {
+	What      string   `json:"what"`       // clear description of what we're building
+	Why       string   `json:"why"`        // business justification
+	Effort    string   `json:"effort"`     // time/complexity estimate
+	Risks     []string `json:"risks"`      // what could go wrong
+	DoDChecks []string `json:"dod_checks"` // how we'll verify success
+}
+
+// PlanningState tracks where we are in the planning ceremony.
+// Exposed via GET /planning/{id} so the human always knows the current state.
+type PlanningState struct {
+	SessionID       string               `json:"session_id"`
+	Phase           string               `json:"phase"` // backlog, selecting, questioning, summarizing, ready, executing
+	Backlog         *BacklogPresentation  `json:"backlog,omitempty"`
+	SelectedItem    *BacklogItem          `json:"selected_item,omitempty"`
+	CurrentQuestion *PlanningQuestion     `json:"current_question,omitempty"`
+	Answers         map[string]string     `json:"answers,omitempty"`         // question# → answer
+	Summary         *PlanSummary          `json:"summary,omitempty"`
+	TaskRequest     *TaskRequest          `json:"task_request,omitempty"`    // produced after greenlight
+}
+
+// --- CHUM (Continuous Hyper-Kanban Utility Module) Types ---
+// Event-driven learning + grooming triggered after every bead completion,
+// plus a daily strategic grooming cycle at 5 AM.
+
+// LearnerRequest is passed to ContinuousLearnerWorkflow after a bead completes.
+type LearnerRequest struct {
+	BeadID         string   `json:"bead_id"`
+	Project        string   `json:"project"`
+	WorkDir        string   `json:"work_dir"`
+	Agent          string   `json:"agent"`           // which agent completed the bead
+	DoDPassed      bool     `json:"dod_passed"`
+	DoDFailures    string   `json:"dod_failures"`
+	FilesChanged   []string `json:"files_changed,omitempty"`
+	DiffSummary    string   `json:"diff_summary,omitempty"`    // truncated unified diff
+	PreviousErrors []string `json:"previous_errors,omitempty"` // review rejections + DoD failures from the loop
+	Tier           string   `json:"tier"`                      // LLM tier: "fast" or "premium"
+}
+
+// Lesson is a single extracted lesson from a completed bead.
+type Lesson struct {
+	ID            int64    `json:"id,omitempty"`
+	BeadID        string   `json:"bead_id"`
+	Project       string   `json:"project"`
+	Category      string   `json:"category"`                    // pattern, antipattern, rule, insight
+	Summary       string   `json:"summary"`                     // one-line
+	Detail        string   `json:"detail"`                      // full explanation
+	FilePaths     []string `json:"file_paths"`                  // affected files
+	Labels        []string `json:"labels"`                      // searchable tags
+	SemgrepRuleID string   `json:"semgrep_rule_id,omitempty"`   // if a rule was generated
+	CreatedAt     string   `json:"created_at,omitempty"`
+}
+
+// SemgrepRule is the output of Semgrep rule generation by the learner.
+type SemgrepRule struct {
+	RuleID   string `json:"rule_id"`
+	FileName string `json:"file_name"` // e.g. "chum-nil-check-after-error.yaml"
+	Content  string `json:"content"`   // full YAML content
+	Category string `json:"category"`  // error-handling, security, performance, etc.
+}
+
+// SemgrepScanResult is the parsed output of a semgrep scan.
+type SemgrepScanResult struct {
+	Passed   bool     `json:"passed"`
+	Findings int      `json:"findings"`
+	Errors   []string `json:"errors,omitempty"`
+	Output   string   `json:"output"`
+}
+
+// TacticalGroomRequest is passed to TacticalGroomWorkflow after a bead completes.
+type TacticalGroomRequest struct {
+	BeadID   string `json:"bead_id"`
+	Project  string `json:"project"`
+	WorkDir  string `json:"work_dir"`
+	BeadsDir string `json:"beads_dir"`
+	Tier     string `json:"tier"` // "fast" for tactical
+}
+
+// BeadMutation is a single mutation the groombot wants to apply to the backlog.
+// The Action field determines which other fields are meaningful.
+type BeadMutation struct {
+	BeadID      string   `json:"bead_id"`
+	Action      string   `json:"action"`                  // update_priority, add_dependency, update_notes, create, close
+	Priority    *int     `json:"priority,omitempty"`
+	Notes       string   `json:"notes,omitempty"`
+	DependsOnID string   `json:"depends_on_id,omitempty"`
+	Title       string   `json:"title,omitempty"`         // for create
+	Description string   `json:"description,omitempty"`   // for create
+	Labels      []string `json:"labels,omitempty"`
+	Reason      string   `json:"reason,omitempty"`        // for close
+}
+
+// GroomResult is the output of a grooming activity.
+type GroomResult struct {
+	MutationsApplied int      `json:"mutations_applied"`
+	MutationsFailed  int      `json:"mutations_failed"`
+	Details          []string `json:"details"`
+}
+
+// StrategicGroomRequest is passed to the daily StrategicGroomWorkflow.
+type StrategicGroomRequest struct {
+	Project  string `json:"project"`
+	WorkDir  string `json:"work_dir"`
+	BeadsDir string `json:"beads_dir"`
+	Tier     string `json:"tier"` // "premium" for strategic
+}
+
+// RepoMap is a compressed representation of the codebase for LLM context.
+// Generated by go list/go doc — keeps the full codebase under ~3k tokens.
+type RepoMap struct {
+	Packages    []PackageInfo `json:"packages"`
+	TotalFiles  int           `json:"total_files"`
+	TotalLines  int           `json:"total_lines"`
+	GeneratedAt string        `json:"generated_at"`
+}
+
+// PackageInfo is a single Go package in the repo map.
+type PackageInfo struct {
+	ImportPath string   `json:"import_path"`
+	Name       string   `json:"name"`
+	GoFiles    []string `json:"go_files"`
+	DocSummary string   `json:"doc_summary"` // first line of package doc
+	Exports    []string `json:"exports"`     // exported function/type signatures
+}
+
+// StrategicAnalysis is the output of the premium LLM strategic analysis.
+type StrategicAnalysis struct {
+	Priorities   []StrategicItem `json:"priorities"`
+	Risks        []string        `json:"risks"`
+	Observations []string        `json:"observations"`
+	Mutations    []BeadMutation  `json:"mutations"` // suggested bead mutations
+}
+
+// StrategicItem is a single priority from strategic analysis.
+type StrategicItem struct {
+	BeadID    string `json:"bead_id,omitempty"` // empty for new suggestions
+	Title     string `json:"title"`
+	Rationale string `json:"rationale"`
+	Urgency   string `json:"urgency"` // critical, high, medium, low
+}
+
+// MorningBriefing is the daily briefing written to .beads/morning_briefing.md.
+type MorningBriefing struct {
+	Date          string          `json:"date"`
+	Project       string          `json:"project"`
+	TopPriorities []StrategicItem `json:"top_priorities"`
+	Risks         []string        `json:"risks"`
+	RecentLessons []Lesson        `json:"recent_lessons"`
+	Markdown      string          `json:"markdown"` // full rendered markdown
+}
