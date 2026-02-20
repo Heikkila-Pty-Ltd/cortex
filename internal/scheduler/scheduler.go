@@ -54,15 +54,6 @@ type Scheduler struct {
 	paused                  bool
 	systemPauseReason       string
 	systemPauseSince        time.Time
-	quarantine              map[string]time.Time
-	epicBreakup             map[string]time.Time
-	claimAnomaly            map[string]time.Time
-	dispatchBlockAnomaly    map[string]time.Time
-	mergeGateRateLimitUntil map[string]time.Time
-	lifecycleRateLimitUntil map[string]time.Time
-	lifecycleRateLimitLog   map[string]time.Time
-	gatewayCircuitUntil     time.Time
-	gatewayCircuitLogAt     time.Time
 	planGateLogAt           time.Time
 	workflowRegistry        *workflow.Registry
 	workflowMode            string
@@ -163,6 +154,7 @@ const (
 	mergeGateRateLimit    = 20 * time.Second
 	mergeGateMaxPerTick   = 1
 	mergeGateCooldownKey  = "merge-gate"
+	defaultLeaderLockTTL   = 30 * time.Second
 )
 
 var (
@@ -184,6 +176,10 @@ func New(cfg *config.Config, s *store.Store, rl *dispatch.RateLimiter, d dispatc
 // NewWithConfigManager creates a new Scheduler with a config manager for
 // snapshot-based runtime reconfiguration.
 func NewWithConfigManager(cfgManager config.ConfigManager, s *store.Store, rl *dispatch.RateLimiter, d dispatch.DispatcherInterface, logger *slog.Logger, dryRun bool) *Scheduler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	cfg := &config.Config{}
 	if cfgManager != nil {
 		if fromManager := cfgManager.Get(); fromManager != nil {
@@ -210,12 +206,6 @@ func NewWithConfigManager(cfgManager config.ConfigManager, s *store.Store, rl *d
 		},
 		logger:                    logger,
 		dryRun:                    dryRun,
-		epicBreakup:               make(map[string]time.Time),
-		claimAnomaly:              make(map[string]time.Time),
-		dispatchBlockAnomaly:      make(map[string]time.Time),
-		mergeGateRateLimitUntil:  make(map[string]time.Time),
-		lifecycleRateLimitUntil:   make(map[string]time.Time),
-		lifecycleRateLimitLog:     make(map[string]time.Time),
 		utilizationSampleInterval: 1 * time.Minute,
 		dodQueue:                  make(chan dodQueueItem, dodQueueCapacity),
 		dodQueued:                 make(map[string]struct{}),
@@ -244,6 +234,14 @@ func NewWithConfigManager(cfgManager config.ConfigManager, s *store.Store, rl *d
 	scheduler.getBacklogBeads = scheduler.store.GetBacklogBeadsCtx
 	scheduler.runSprintPlanning = scheduler.ceremonyScheduler.runMultiTeamPlanningCeremony
 
+	if s != nil {
+		instanceID := os.Getenv("CORTEX_SCHEDULER_INSTANCE_ID")
+		if instanceID == "" {
+			instanceID = defaultSchedulerInstanceID()
+		}
+		scheduler.leaderLock = NewLeaderLock(s, instanceID, defaultLeaderLockTTL, logger)
+	}
+
 	// Initialize completion verifier
 	scheduler.completionVerifier = NewCompletionVerifier(s, logger.With("component", "completion_verifier"))
 	scheduler.completionVerifier.SetProjects(cfg.Projects)
@@ -263,6 +261,14 @@ func NewWithConfigManager(cfgManager config.ConfigManager, s *store.Store, rl *d
 	}
 
 	return scheduler
+}
+
+func defaultSchedulerInstanceID() string {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		return fmt.Sprintf("cortex-scheduler-%d", os.Getpid())
+	}
+	return fmt.Sprintf("cortex-scheduler-%s-%d", hostname, os.Getpid())
 }
 
 func workflowExecutionMode() string {
@@ -401,22 +407,21 @@ func (s *Scheduler) latestCommitSHASafe(workspace string) (string, error) {
 }
 
 func (s *Scheduler) getMergeGateRateLimitUntil() (time.Time, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.mergeGateRateLimitUntil == nil {
+	if s.store == nil {
 		return time.Time{}, false
 	}
-	until, ok := s.mergeGateRateLimitUntil[mergeGateCooldownKey]
-	return until, ok
+	block, _ := s.store.GetBlock(mergeGateCooldownKey, "merge_gate_rate_limit")
+	if block != nil && time.Now().Before(block.BlockedUntil) {
+		return block.BlockedUntil, true
+	}
+	return time.Time{}, false
 }
 
 func (s *Scheduler) setMergeGateRateLimitUntil(now time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.mergeGateRateLimitUntil == nil {
-		s.mergeGateRateLimitUntil = make(map[string]time.Time)
+	if s.store == nil {
+		return
 	}
-	s.mergeGateRateLimitUntil[mergeGateCooldownKey] = now.Add(mergeGateRateLimit)
+	_ = s.store.SetBlock(mergeGateCooldownKey, "merge_gate_rate_limit", now.Add(mergeGateRateLimit), "merge gate cooldown")
 }
 
 func workflowStageForBead(bead beads.Bead) string {
@@ -552,10 +557,11 @@ func (s *Scheduler) reportDispatchBlockedByStructure(ctx context.Context, projec
 	stage := workflowStageForBead(bead)
 	key := "dispatch_structure_blocked:" + projectName + ":" + bead.ID
 	now := time.Now()
-	if last, ok := s.dispatchBlockAnomaly[key]; ok && now.Sub(last) < dispatchBlockLogWindow {
+	block, _ := s.store.GetBlock(key, "dispatch_block_log")
+	if block != nil && now.Sub(block.CreatedAt) < dispatchBlockLogWindow {
 		return
 	}
-	s.dispatchBlockAnomaly[key] = now
+	_ = s.store.SetBlock(key, "dispatch_block_log", now.Add(dispatchBlockLogWindow), "dispatch block log cooldown")
 
 	s.logger.Warn("dispatch blocked by bead structure requirements",
 		"project", projectName,
@@ -593,17 +599,21 @@ func (s *Scheduler) Start(ctx context.Context) {
 	s.logger.Info("starting scheduler")
 
 	// Acquire leadership blockingly before starting the main loop
-	// We use a graceful context so if the scheduler is stopping before acquiring, it cancels cleanly.
-	s.logger.Info("waiting to acquire leadership lock...")
-	if err := s.leaderLock.Acquire(ctx); err != nil {
-		if errors.Is(err, context.Canceled) {
-			s.logger.Info("scheduler stopped while waiting for leadership lock")
+	// If leader election cannot be configured, run without coordination.
+	if s.leaderLock != nil {
+		s.logger.Info("waiting to acquire leadership lock...")
+		if err := s.leaderLock.Acquire(ctx); err != nil {
+			if errors.Is(err, context.Canceled) {
+				s.logger.Info("scheduler stopped while waiting for leadership lock")
+				return
+			}
+			s.logger.Error("failed to acquire leadership, shutting down scheduler", "error", err)
 			return
 		}
-		s.logger.Error("failed to acquire leadership, shutting down scheduler", "error", err)
-		return
+		s.logger.Info("leadership acquired successfully, starting scheduler loops")
+	} else {
+		s.logger.Warn("running scheduler without leadership lock")
 	}
-	s.logger.Info("leadership acquired successfully, starting scheduler loops")
 
 	s.startDoDWorker(ctx)
 
@@ -1053,6 +1063,17 @@ func (s *Scheduler) RunTick(ctx context.Context) {
 		if already {
 			continue
 		}
+
+		validating, err := s.store.IsBeadValidating(item.bead.ID)
+		if err != nil {
+			s.logger.Error("failed to check bead validation lock", "bead", item.bead.ID, "error", err)
+			continue
+		}
+		if validating {
+			s.logger.Debug("bead is currently validating (DoD), skipping dispatch", "bead", item.bead.ID)
+			continue
+		}
+
 		if s.isChurnBlocked(ctx, item.bead, item.name, itemBeadsDir) {
 			continue
 		}
@@ -1974,6 +1995,17 @@ func (s *Scheduler) processDoDStage(ctx context.Context) {
 // processSingleDoDCheck runs DoD validation for a single bead
 func (s *Scheduler) processSingleDoDCheck(ctx context.Context, projectName string, project config.Project, bead beads.Bead) {
 	s.logger.Info("processing DoD check", "project", projectName, "bead", bead.ID)
+
+	if s.store != nil {
+		if err := s.store.SetBeadValidating(bead.ID, true); err != nil {
+			s.logger.Warn("failed to acquire validation lock", "bead", bead.ID, "error", err)
+		}
+		defer func() {
+			if err := s.store.SetBeadValidating(bead.ID, false); err != nil {
+				s.logger.Warn("failed to release validation lock", "bead", bead.ID, "error", err)
+			}
+		}()
+	}
 
 	// Create DoD checker from project config
 	dodChecker := NewDoDCheckerFromConfig(project.DoD)
@@ -3046,7 +3078,8 @@ func (s *Scheduler) ensureEpicBreakdowns(ctx context.Context, beadsDir string, b
 		}
 
 		key := projectName + ":" + b.ID
-		if last, ok := s.epicBreakup[key]; ok && now.Sub(last) < epicBreakdownInterval {
+		block, _ := s.store.GetBlock(key, "epic_breakup")
+		if block != nil && now.Sub(block.CreatedAt) < epicBreakdownInterval {
 			continue
 		}
 
@@ -3062,7 +3095,7 @@ func (s *Scheduler) ensureEpicBreakdowns(ctx context.Context, beadsDir string, b
 			continue
 		}
 
-		s.epicBreakup[key] = now
+		_ = s.store.SetBlock(key, "epic_breakup", now.Add(epicBreakdownInterval), "epic breakdown auto-task created")
 		s.logger.Warn("epic auto-breakdown task created", "project", projectName, "epic", b.ID, "created_issue", issueID)
 		_ = s.store.RecordHealthEventWithDispatch("epic_breakdown_requested",
 			fmt.Sprintf("project %s epic %s queued for breakdown via %s", projectName, b.ID, issueID),
@@ -3852,13 +3885,30 @@ func (s *Scheduler) runCompletionVerification(ctx context.Context) {
 
 func (s *Scheduler) evaluateGatewayCircuit(ctx context.Context) bool {
 	now := time.Now()
-	wasOpen := !s.gatewayCircuitUntil.IsZero() && now.Before(s.gatewayCircuitUntil)
+
+	block, err := s.store.GetBlock("system", "gateway_circuit")
+	if err != nil {
+		s.logger.Warn("failed to check database for gateway circuit block", "error", err)
+	}
+
+	wasOpen := block != nil && now.Before(block.BlockedUntil)
 
 	if wasOpen {
-		if s.gatewayCircuitLogAt.IsZero() || now.Sub(s.gatewayCircuitLogAt) >= time.Minute {
-			s.gatewayCircuitLogAt = now
+		var lastLog time.Time
+		if mdLog, ok := block.Metadata["last_logged_at"].(string); ok {
+			lastLog, _ = time.Parse(time.RFC3339, mdLog)
+		}
+
+		if lastLog.IsZero() || now.Sub(lastLog) >= time.Minute {
 			s.logger.Warn("gateway failure circuit open; suppressing new dispatches",
-				"until", s.gatewayCircuitUntil.Format(time.RFC3339))
+				"until", block.BlockedUntil.Format(time.RFC3339))
+
+			md := block.Metadata
+			if md == nil {
+				md = make(map[string]interface{})
+			}
+			md["last_logged_at"] = now.Format(time.RFC3339)
+			_ = s.store.SetBlockWithMetadata("system", "gateway_circuit", block.BlockedUntil, block.Reason, md)
 		}
 		return true
 	}
@@ -3872,16 +3922,20 @@ func (s *Scheduler) evaluateGatewayCircuit(ctx context.Context) bool {
 		return false
 	}
 
-	s.gatewayCircuitUntil = now.Add(gatewayCircuitDuration)
-	s.gatewayCircuitLogAt = now
+	until := now.Add(gatewayCircuitDuration)
 	s.logger.Error("gateway failure circuit opened",
 		"count", count,
 		"window", gatewayFailureWindow.String(),
-		"until", s.gatewayCircuitUntil.Format(time.RFC3339))
+		"until", until.Format(time.RFC3339))
 	_ = s.store.RecordHealthEvent("gateway_failure_circuit_open",
 		fmt.Sprintf("gateway circuit opened after %d gateway_closed failures in %s", count, gatewayFailureWindow))
 
 	s.createGatewayCircuitIssue(ctx, count)
+
+	md := map[string]interface{}{"last_logged_at": now.Format(time.RFC3339)}
+	if err := s.store.SetBlockWithMetadata("system", "gateway_circuit", until, "gateway failure threshold exceeded", md); err != nil {
+		s.logger.Warn("failed to record gateway circuit block in database", "error", err)
+	}
 	return true
 }
 
@@ -4155,10 +4209,14 @@ func (s *Scheduler) reconcileDispatchClaimOnTerminal(ctx context.Context, d stor
 
 func (s *Scheduler) logClaimAnomalyOnce(key, eventType, details string, dispatchID int64, beadID string) {
 	now := time.Now()
-	if last, ok := s.claimAnomaly[key]; ok && now.Sub(last) < claimAnomalyLogWindow {
+	if s.store == nil {
 		return
 	}
-	s.claimAnomaly[key] = now
+	block, _ := s.store.GetBlock(key, "claim_anomaly_log")
+	if block != nil && now.Sub(block.CreatedAt) < claimAnomalyLogWindow {
+		return
+	}
+	_ = s.store.SetBlock(key, "claim_anomaly_log", now.Add(claimAnomalyLogWindow), "claim anomaly log cooldown")
 	s.logger.Warn("claim invariant violation", "event_type", eventType, "bead", beadID, "details", details)
 	_ = s.store.RecordHealthEventWithDispatch(eventType, details, dispatchID, beadID)
 }
