@@ -72,21 +72,21 @@ func (ar *AllocationRecorder) RecordAllocationDecision(ctx context.Context, cere
 }
 
 // completeActiveAllocations marks existing active allocations as completed
-func (ar *AllocationRecorder) completeActiveAllocations(ctx context.Context) error {
+func (ar *AllocationRecorder) completeActiveAllocations(_ context.Context) error {
 	// This is a simple implementation - could be made more sophisticated
 	// to handle overlapping sprint periods differently
 	
 	activeAllocation, err := ar.store.GetActiveAllocation()
 	if err != nil {
 		// If no active allocation exists, that's fine
-		return nil
+		return nil //nolint:nilerr // missing active allocation is expected
 	}
 
 	return ar.store.UpdateAllocationStatus(activeAllocation.ID, "completed")
 }
 
 // applyBudgetUpdates applies rate limit budget changes recommended by Chief SM
-func (ar *AllocationRecorder) applyBudgetUpdates(ctx context.Context, updates []store.BudgetUpdate) error {
+func (ar *AllocationRecorder) applyBudgetUpdates(_ context.Context, updates []store.BudgetUpdate) error { //nolint:unparam // TODO: will return errors when budget persistence is implemented
 	ar.logger.Info("applying budget updates", "count", len(updates))
 
 	// In a real implementation, this would update the configuration
@@ -251,7 +251,7 @@ func (ar *AllocationRecorder) GetCurrentAllocation(ctx context.Context) (*store.
 
 // ParseAllocationFromOutput parses Chief SM allocation output into structured data
 // This would be called after the Chief SM LLM completes its reasoning
-func (ar *AllocationRecorder) ParseAllocationFromOutput(ctx context.Context, ceremonyID string, chiefOutput string) (*store.AllocationDecision, error) {
+func (ar *AllocationRecorder) ParseAllocationFromOutput(_ context.Context, ceremonyID, chiefOutput string) (*store.AllocationDecision, error) {
 	// This is a simplified parser - in production this would be more sophisticated
 	// and potentially use structured output from the LLM
 	
@@ -280,8 +280,8 @@ func (ar *AllocationRecorder) ParseAllocationFromOutput(ctx context.Context, cer
 		basePercent := 100.0 / float64(totalProjects)
 		capacity := int(float64(decision.TotalCapacity) * basePercent / 100.0)
 		
-		for projectName, project := range ar.cfg.Projects {
-			if project.Enabled {
+		for projectName := range ar.cfg.Projects {
+			if ar.cfg.Projects[projectName].Enabled {
 				decision.ProjectAllocations[projectName] = store.ProjectAllocation{
 					Project:           projectName,
 					AllocatedCapacity: capacity,

@@ -2,16 +2,19 @@ package matrix
 
 import (
 	"context"
+	"database/sql"
 	"errors"
-	"os"
-	"path/filepath"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/antigravity-dev/cortex/internal/config"
 	"github.com/antigravity-dev/cortex/internal/dispatch"
+	"github.com/antigravity-dev/cortex/internal/graph"
 	"github.com/antigravity-dev/cortex/internal/store"
+
+	_ "modernc.org/sqlite"
 )
 
 type fakePollResponse struct {
@@ -346,31 +349,40 @@ func TestPollOnceRoutesScrumStatusCommandToMatrixSender(t *testing.T) {
 	}
 }
 
-func TestPollOnceRoutesScrumPriorityCommandToMatrixSender(t *testing.T) {
-	projectDir := t.TempDir()
-	beadsDir := filepath.Join(projectDir, ".beads")
-	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
-		t.Fatalf("mkdir beads dir: %v", err)
+func newTestPollerDAG(t *testing.T) *graph.DAG {
+	t.Helper()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
 	}
+	t.Cleanup(func() { db.Close() })
+	dag := graph.NewDAG(db)
+	if err := dag.EnsureSchema(t.Context()); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+	return dag
+}
 
-	logPath := filepath.Join(projectDir, "args.log")
-	fakeBin := t.TempDir()
-	bdPath := filepath.Join(fakeBin, "bd")
-	script := "#!/bin/sh\n" +
-		"echo \"$@\" >> \"$BD_ARGS_LOG\"\n" +
-		"echo \"ok\"\n"
-	if err := os.WriteFile(bdPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake bd: %v", err)
+func TestPollOnceRoutesScrumPriorityCommandToMatrixSender(t *testing.T) {
+	dag := newTestPollerDAG(t)
+	ctx := t.Context()
+
+	// Pre-create a task in the DAG so priority update can find it.
+	taskID, err := dag.CreateTask(ctx, graph.Task{
+		Title:    "test task",
+		Project:  "project-a",
+		Priority: 0,
+	})
+	if err != nil {
+		t.Fatalf("CreateTask: %v", err)
 	}
-	t.Setenv("BD_ARGS_LOG", logPath)
-	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
 
 	sender := &fakeSender{}
 	client := &fakeClient{
 		responses: map[string]fakePollResponse{
 			"!room-a:matrix.org": {
 				messages: []InboundMessage{
-					{ID: "1", Room: "!room-a:matrix.org", Sender: "@alice:matrix.org", Body: "priority cortex-1 p2"},
+					{ID: "1", Room: "!room-a:matrix.org", Sender: "@alice:matrix.org", Body: fmt.Sprintf("priority %s p2", taskID)},
 				},
 			},
 		},
@@ -382,47 +394,34 @@ func TestPollOnceRoutesScrumPriorityCommandToMatrixSender(t *testing.T) {
 		RoomToProject: map[string]string{
 			"!room-a:matrix.org": "project-a",
 		},
-		Projects: map[string]config.Project{"project-a": {BeadsDir: beadsDir}},
+		Projects: map[string]config.Project{"project-a": {}},
 		Sender:   sender,
+		DAG:      dag,
 	}, client, &fakeDispatcher{}, nil)
 
 	if err := poller.PollOnce(context.Background()); err != nil {
 		t.Fatalf("PollOnce returned error: %v", err)
 	}
 
-	out, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("read args log: %v", err)
-	}
-	if !strings.Contains(string(out), "update cortex-1 --priority 2 --silent") {
-		t.Fatalf("bd update command missing expected args, got %q", string(out))
-	}
 	if len(sender.messages) != 1 {
 		t.Fatalf("expected 1 response, got %d", len(sender.messages))
 	}
-	if !strings.Contains(sender.messages[0], "Updated cortex-1 priority to p2") {
+	if !strings.Contains(sender.messages[0], fmt.Sprintf("Updated %s priority to p2", taskID)) {
 		t.Fatalf("unexpected response: %q", sender.messages[0])
+	}
+
+	// Verify priority was actually updated in the DAG.
+	task, err := dag.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("GetTask: %v", err)
+	}
+	if task.Priority != 2 {
+		t.Fatalf("expected priority 2, got %d", task.Priority)
 	}
 }
 
 func TestPollOnceRoutesScrumCreateCommandToMatrixSender(t *testing.T) {
-	projectDir := t.TempDir()
-	beadsDir := filepath.Join(projectDir, ".beads")
-	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
-		t.Fatalf("mkdir beads dir: %v", err)
-	}
-
-	logPath := filepath.Join(projectDir, "args.log")
-	fakeBin := t.TempDir()
-	bdPath := filepath.Join(fakeBin, "bd")
-	script := "#!/bin/sh\n" +
-		"echo \"$@\" >> \"$BD_ARGS_LOG\"\n" +
-		"echo cortex-created\n"
-	if err := os.WriteFile(bdPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake bd: %v", err)
-	}
-	t.Setenv("BD_ARGS_LOG", logPath)
-	t.Setenv("PATH", fakeBin+":"+os.Getenv("PATH"))
+	dag := newTestPollerDAG(t)
 
 	sender := &fakeSender{}
 	client := &fakeClient{
@@ -441,8 +440,9 @@ func TestPollOnceRoutesScrumCreateCommandToMatrixSender(t *testing.T) {
 		RoomToProject: map[string]string{
 			"!room-a:matrix.org": "project-a",
 		},
-		Projects: map[string]config.Project{"project-a": {BeadsDir: beadsDir}},
+		Projects: map[string]config.Project{"project-a": {}},
 		Sender:   sender,
+		DAG:      dag,
 	}, client, &fakeDispatcher{}, nil)
 
 	if err := poller.PollOnce(context.Background()); err != nil {
@@ -451,15 +451,23 @@ func TestPollOnceRoutesScrumCreateCommandToMatrixSender(t *testing.T) {
 	if len(sender.messages) != 1 {
 		t.Fatalf("expected 1 response, got %d", len(sender.messages))
 	}
-	if !strings.Contains(sender.messages[0], "Created new task cortex-created") {
+	if !strings.Contains(sender.messages[0], "Created new task") {
 		t.Fatalf("unexpected response: %q", sender.messages[0])
 	}
-	args, err := os.ReadFile(logPath)
+
+	// Verify the task was actually created in the DAG.
+	tasks, err := dag.ListTasks(t.Context(), "project-a")
 	if err != nil {
-		t.Fatalf("read args log: %v", err)
+		t.Fatalf("ListTasks: %v", err)
 	}
-	if !strings.Contains(string(args), "create --type task --priority 2 --title Create docs --description Add onboarding docs --silent") {
-		t.Fatalf("bd create command missing expected args, got %q", string(args))
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks))
+	}
+	if tasks[0].Title != "Create docs" {
+		t.Fatalf("expected title 'Create docs', got %q", tasks[0].Title)
+	}
+	if tasks[0].Description != "Add onboarding docs" {
+		t.Fatalf("expected description 'Add onboarding docs', got %q", tasks[0].Description)
 	}
 }
 

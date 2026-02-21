@@ -46,14 +46,17 @@ func ResolveTierAgent(tiers config.Tiers, tier string) string {
 }
 
 // cliCommand returns an exec.Cmd for a given agent in non-interactive coding mode.
-// V0: claude and codex only. Claude uses --output-format json for token tracking.
+// V1: claude, codex, and gemini — all with JSON output for token tracking.
 func cliCommand(agent, prompt, workDir string) *exec.Cmd {
 	var cmd *exec.Cmd
 	switch strings.ToLower(agent) {
 	case "codex":
-		// codex exec --full-auto for non-interactive coding
-		cmd = exec.Command("codex", "exec", "--full-auto", prompt)
-	default: // claude is the default — JSON output gives us token usage
+		// codex exec --full-auto --json for JSONL events with token usage
+		cmd = exec.Command("codex", "exec", "--full-auto", "--json", prompt)
+	case "gemini":
+		// gemini CLI: -p for non-interactive, --yolo auto-accept, -o json for stats
+		cmd = exec.Command("gemini", "-p", prompt, "--yolo", "-o", "json")
+	default: // claude — JSON output gives us token usage
 		cmd = exec.Command("claude", "--print", "--output-format", "json", "--dangerously-skip-permissions", prompt)
 	}
 	cmd.Dir = workDir
@@ -159,12 +162,97 @@ func runCLI(ctx context.Context, agent string, cmd *exec.Cmd) (CLIResult, error)
 }
 
 // parseAgentOutput routes output parsing based on agent type.
-// Claude output is JSON (--output-format json); others are plain text.
+// Claude: single JSON object with tokens. Codex: JSONL events. Gemini: JSON with stats.
 func parseAgentOutput(agent, raw string) CLIResult {
-	if strings.EqualFold(agent, "claude") {
+	switch strings.ToLower(agent) {
+	case "claude":
 		return parseJSONOutput(raw)
+	case "codex":
+		return parseCodexOutput(raw)
+	case "gemini":
+		return parseGeminiOutput(raw)
+	default:
+		return CLIResult{Output: raw}
 	}
-	return CLIResult{Output: raw}
+}
+
+// parseCodexOutput extracts token usage from codex JSONL output.
+// Codex --json emits JSONL events; the last turn.completed has usage data.
+func parseCodexOutput(raw string) CLIResult {
+	result := CLIResult{Output: raw}
+
+	// Extract text from agent_message items for readable output
+	var textParts []string
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var event struct {
+			Type string `json:"type"`
+			Item struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"item"`
+			Usage struct {
+				InputTokens       int64 `json:"input_tokens"`
+				CachedInputTokens int64 `json:"cached_input_tokens"`
+				OutputTokens      int64 `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+		if event.Item.Type == "agent_message" && event.Item.Text != "" {
+			textParts = append(textParts, event.Item.Text)
+		}
+		if event.Type == "turn.completed" {
+			result.Tokens.InputTokens = int(event.Usage.InputTokens)
+			result.Tokens.OutputTokens = int(event.Usage.OutputTokens)
+			result.Tokens.CacheReadTokens = int(event.Usage.CachedInputTokens)
+		}
+	}
+	if len(textParts) > 0 {
+		result.Output = strings.Join(textParts, "\n")
+	}
+	return result
+}
+
+// parseGeminiOutput extracts token usage from gemini JSON output.
+// Gemini -o json emits a single JSON object with stats.models.*.tokens.
+func parseGeminiOutput(raw string) CLIResult {
+	result := CLIResult{Output: raw}
+
+	var geminiOut struct {
+		Stats struct {
+			Models map[string]struct {
+				Tokens struct {
+					Input      int64 `json:"input"`
+					Candidates int64 `json:"candidates"`
+					Cached     int64 `json:"cached"`
+					Total      int64 `json:"total"`
+					Thoughts   int64 `json:"thoughts"`
+				} `json:"tokens"`
+			} `json:"models"`
+		} `json:"stats"`
+	}
+
+	if err := json.Unmarshal([]byte(raw), &geminiOut); err != nil {
+		return result
+	}
+
+	// Sum across all models (gemini may use multiple models per session)
+	var totalInput, totalOutput, totalCached int64
+	for _, model := range geminiOut.Stats.Models {
+		totalInput += model.Tokens.Input
+		totalOutput += model.Tokens.Candidates + model.Tokens.Thoughts
+		totalCached += model.Tokens.Cached
+	}
+
+	result.Tokens.InputTokens = int(totalInput)
+	result.Tokens.OutputTokens = int(totalOutput)
+	result.Tokens.CacheReadTokens = int(totalCached)
+	return result
 }
 
 // runAgent executes a CLI agent in coding mode and returns a CLIResult.
@@ -181,7 +269,7 @@ func runReviewAgent(ctx context.Context, agent, prompt, workDir string) (CLIResu
 // The plan is gated — it must pass Validate() to enter the coding engine.
 func (a *Activities) StructuredPlanActivity(ctx context.Context, req TaskRequest) (*StructuredPlan, error) {
 	logger := activity.GetLogger(ctx)
-	logger.Info(SharkPrefix+" Generating structured plan", "Agent", req.Agent, "BeadID", req.BeadID)
+	logger.Info(SharkPrefix+" Generating structured plan", "Agent", req.Agent, "TaskID", req.TaskID)
 
 	prompt := fmt.Sprintf(`You are a senior engineering planner. Analyze this task and produce a structured execution plan.
 
@@ -243,7 +331,7 @@ Be thorough. Planning space is cheap — implementation is expensive.`, req.Prom
 func (a *Activities) ExecuteActivity(ctx context.Context, plan StructuredPlan, req TaskRequest) (*ExecutionResult, error) {
 	logger := activity.GetLogger(ctx)
 	agent := req.Agent
-	logger.Info(SharkPrefix+" Executing plan", "Agent", agent, "BeadID", req.BeadID)
+	logger.Info(SharkPrefix+" Executing plan", "Agent", agent, "TaskID", req.TaskID)
 
 	// Build a detailed execution prompt from the structured plan
 	var sb strings.Builder
@@ -260,6 +348,51 @@ func (a *Activities) ExecuteActivity(ctx context.Context, plan StructuredPlan, r
 
 	if len(plan.PreviousErrors) > 0 {
 		sb.WriteString(fmt.Sprintf("\nPREVIOUS ERRORS TO FIX:\n%s\n", strings.Join(plan.PreviousErrors, "\n")))
+	}
+
+	// --- Learner feedback loop: inject recent lessons and DoD patterns ---
+	if a.Store != nil {
+		// Recent project-level lessons (rules, patterns, antipatterns)
+		lessons, err := a.Store.GetRecentLessons(req.Project, 5)
+		if err == nil && len(lessons) > 0 {
+			sb.WriteString("\nLESSONS FROM PAST FAILURES (apply these):\n")
+			for i := range lessons {
+				sb.WriteString(fmt.Sprintf("- [%s] %s\n", lessons[i].Category, lessons[i].Summary))
+			}
+		}
+
+		// File-specific lessons (if plan has target files)
+		if len(plan.FilesToModify) > 0 {
+			fileLessons, searchErr := a.Store.SearchLessonsByFilePath(plan.FilesToModify, 3)
+			if searchErr == nil && len(fileLessons) > 0 {
+				sb.WriteString("\nFILE-SPECIFIC LESSONS (for files you're modifying):\n")
+				for i := range fileLessons {
+					sb.WriteString(fmt.Sprintf("- %s: %s\n", strings.Join(fileLessons[i].FilePaths, ", "), fileLessons[i].Summary))
+				}
+			}
+		}
+
+		// Recent DoD failures for this project (so the agent knows what checks will run)
+		var recentFailures []string
+		rows, err := a.Store.DB().Query(`
+			SELECT DISTINCT failures FROM dod_results
+			WHERE project = ? AND passed = 0 AND failures != ''
+			ORDER BY checked_at DESC LIMIT 3`, req.Project)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var f string
+				if rows.Scan(&f) == nil && f != "" {
+					recentFailures = append(recentFailures, f)
+				}
+			}
+		}
+		if len(recentFailures) > 0 {
+			sb.WriteString("\nRECENT DOD FAILURES IN THIS PROJECT (avoid repeating):\n")
+			for _, f := range recentFailures {
+				sb.WriteString(fmt.Sprintf("- %s\n", f))
+			}
+		}
 	}
 
 	sb.WriteString("\nImplement this plan now. Make all necessary code changes.")
@@ -300,7 +433,7 @@ func (a *Activities) CodeReviewActivity(ctx context.Context, plan StructuredPlan
 		reviewer = DefaultReviewer(execResult.Agent)
 	}
 
-	logger.Info(SharkPrefix+" Code review", "Reviewer", reviewer, "Author", execResult.Agent, "BeadID", req.BeadID)
+	logger.Info(SharkPrefix+" Code review", "Reviewer", reviewer, "Author", execResult.Agent, "TaskID", req.TaskID)
 
 	prompt := fmt.Sprintf(`You are a senior code reviewer. Another AI agent (%s) implemented the following plan.
 Review their work against the acceptance criteria.
@@ -386,7 +519,7 @@ func parseReviewJSON(jsonStr, reviewer string, cliResult CLIResult) ReviewResult
 // Uses cheap agent resources — no smart model needed to run tests.
 func (a *Activities) DoDVerifyActivity(ctx context.Context, req TaskRequest) (*DoDResult, error) {
 	logger := activity.GetLogger(ctx)
-	logger.Info(BouncerPrefix+" Running DoD checks", "BeadID", req.BeadID, "Checks", len(req.DoDChecks))
+	logger.Info(BouncerPrefix+" Running DoD checks", "TaskID", req.TaskID, "Checks", len(req.DoDChecks))
 
 	checks := req.DoDChecks
 	if len(checks) == 0 {
@@ -422,7 +555,7 @@ func (a *Activities) DoDVerifyActivity(ctx context.Context, req TaskRequest) (*D
 // This feeds the learner loop — learner runs on top to surface problems and inefficiencies.
 func (a *Activities) RecordOutcomeActivity(ctx context.Context, outcome OutcomeRecord) error {
 	logger := activity.GetLogger(ctx)
-	logger.Info(BouncerPrefix+" Recording outcome", "BeadID", outcome.BeadID, "Status", outcome.Status)
+	logger.Info(BouncerPrefix+" Recording outcome", "TaskID", outcome.TaskID, "Status", outcome.Status)
 
 	if a.Store == nil {
 		logger.Warn(BouncerPrefix+" No store configured, skipping outcome recording")
@@ -431,7 +564,7 @@ func (a *Activities) RecordOutcomeActivity(ctx context.Context, outcome OutcomeR
 
 	// Record dispatch
 	dispatchID, err := a.Store.RecordDispatch(
-		outcome.BeadID,
+		outcome.TaskID,
 		outcome.Project,
 		outcome.Agent,
 		outcome.Provider,
@@ -454,7 +587,7 @@ func (a *Activities) RecordOutcomeActivity(ctx context.Context, outcome OutcomeR
 	}
 
 	// Record DoD result
-	if err := a.Store.RecordDoDResult(dispatchID, outcome.BeadID, outcome.Project, outcome.DoDPassed, outcome.DoDFailures, ""); err != nil {
+	if err := a.Store.RecordDoDResult(dispatchID, outcome.TaskID, outcome.Project, outcome.DoDPassed, outcome.DoDFailures, ""); err != nil {
 		logger.Error(BouncerPrefix+" Failed to record DoD result", "error", err)
 	}
 
@@ -469,7 +602,7 @@ func (a *Activities) RecordOutcomeActivity(ctx context.Context, outcome OutcomeR
 	for _, at := range outcome.ActivityTokens {
 		if err := a.Store.StoreTokenUsage(
 			dispatchID,
-			outcome.BeadID,
+			outcome.TaskID,
 			outcome.Project,
 			at.ActivityName,
 			at.Agent,
@@ -498,7 +631,7 @@ func (a *Activities) RecordOutcomeActivity(ctx context.Context, outcome OutcomeR
 	for _, sm := range outcome.StepMetrics {
 		if err := a.Store.StoreStepMetric(
 			dispatchID,
-			outcome.BeadID,
+			outcome.TaskID,
 			outcome.Project,
 			sm.Name,
 			sm.DurationS,
@@ -524,7 +657,7 @@ func (a *Activities) RecordOutcomeActivity(ctx context.Context, outcome OutcomeR
 func (a *Activities) EscalateActivity(ctx context.Context, escalation EscalationRequest) error {
 	logger := activity.GetLogger(ctx)
 	logger.Error(BouncerPrefix+" ESCALATION: Task failed after all retries",
-		"BeadID", escalation.BeadID,
+		"TaskID", escalation.TaskID,
 		"Project", escalation.Project,
 		"Attempts", escalation.AttemptCount,
 		"Handoffs", escalation.HandoffCount,
@@ -534,7 +667,7 @@ func (a *Activities) EscalateActivity(ctx context.Context, escalation Escalation
 	// Record health event for visibility
 	if a.Store != nil {
 		details := fmt.Sprintf("Task %s failed after %d attempts and %d handoffs. Failures: %s",
-			escalation.BeadID, escalation.AttemptCount, escalation.HandoffCount,
+			escalation.TaskID, escalation.AttemptCount, escalation.HandoffCount,
 			strings.Join(escalation.Failures, "; "))
 		if recErr := a.Store.RecordHealthEvent("escalation_required", details); recErr != nil {
 			logger.Warn(BouncerPrefix+" Failed to record health event", "error", recErr)

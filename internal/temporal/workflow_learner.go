@@ -15,7 +15,7 @@ import (
 // All steps are non-fatal. Learner failure never blocks the main execution loop.
 func ContinuousLearnerWorkflow(ctx workflow.Context, req LearnerRequest) error {
 	logger := workflow.GetLogger(ctx)
-	logger.Info(LearnerPrefix+" ContinuousLearner starting", "BeadID", req.BeadID)
+	logger.Info(LearnerPrefix+" ContinuousLearner starting", "TaskID", req.TaskID)
 
 	if req.Tier == "" {
 		req.Tier = "fast"
@@ -42,7 +42,7 @@ func ContinuousLearnerWorkflow(ctx workflow.Context, req LearnerRequest) error {
 	}
 
 	if len(lessons) == 0 {
-		logger.Info(LearnerPrefix+" No lessons extracted", "BeadID", req.BeadID)
+		logger.Info(LearnerPrefix+" No lessons extracted", "TaskID", req.TaskID)
 		return nil
 	}
 
@@ -68,8 +68,20 @@ func ContinuousLearnerWorkflow(ctx workflow.Context, req LearnerRequest) error {
 		logger.Warn(LearnerPrefix+" Semgrep rule generation failed (non-fatal)", "error", err)
 	}
 
+	// Step 4: Synthesize CLAUDE.md from accumulated lessons
+	// This is the long-term memory — not just what failed last time, but everything
+	// the project has learned. Both Claude CLI and Codex CLI auto-read CLAUDE.md.
+	synthesizeOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 2},
+	}
+	synthesizeCtx := workflow.WithActivityOptions(ctx, synthesizeOpts)
+	if err := workflow.ExecuteActivity(synthesizeCtx, a.SynthesizeCLAUDEmdActivity, req).Get(ctx, nil); err != nil {
+		logger.Warn(LearnerPrefix+" CLAUDE.md synthesis failed (non-fatal)", "error", err)
+	}
+
 	logger.Info(LearnerPrefix+" ContinuousLearner complete",
-		"BeadID", req.BeadID,
+		"TaskID", req.TaskID,
 		"Lessons", len(lessons),
 		"Rules", len(rules),
 	)

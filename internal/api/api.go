@@ -202,10 +202,12 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	running, _ := s.store.GetRunningDispatches()
 
 	var b strings.Builder
+	db := s.store.DB()
 
+	// --- Dispatch counters ---
 	var totalDispatches, totalFailed int
-	s.store.DB().QueryRow(`SELECT COUNT(*) FROM dispatches`).Scan(&totalDispatches)
-	s.store.DB().QueryRow(`SELECT COUNT(*) FROM dispatches WHERE status='failed'`).Scan(&totalFailed)
+	db.QueryRow(`SELECT COUNT(*) FROM dispatches`).Scan(&totalDispatches)
+	db.QueryRow(`SELECT COUNT(*) FROM dispatches WHERE status='failed'`).Scan(&totalFailed)
 
 	fmt.Fprintf(&b, "# HELP cortex_dispatches_total Total number of dispatches\n")
 	fmt.Fprintf(&b, "# TYPE cortex_dispatches_total counter\n")
@@ -237,7 +239,166 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Safety block metrics
+	// --- Token burn by project × agent × type ---
+	fmt.Fprintf(&b, "# HELP cortex_tokens_total Total tokens consumed by project, agent, and type\n")
+	fmt.Fprintf(&b, "# TYPE cortex_tokens_total counter\n")
+
+	tokenRows, err := db.Query(`
+		SELECT project, agent, 
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0),
+			COALESCE(SUM(cache_read_tokens), 0),
+			COALESCE(SUM(cache_creation_tokens), 0)
+		FROM token_usage GROUP BY project, agent`)
+	if err == nil {
+		defer tokenRows.Close()
+		for tokenRows.Next() {
+			var proj, agent string
+			var input, output, cacheRead, cacheCreate int64
+			if tokenRows.Scan(&proj, &agent, &input, &output, &cacheRead, &cacheCreate) == nil {
+				fmt.Fprintf(&b, "cortex_tokens_total{project=%q,agent=%q,type=\"input\"} %d\n", proj, agent, input)
+				fmt.Fprintf(&b, "cortex_tokens_total{project=%q,agent=%q,type=\"output\"} %d\n", proj, agent, output)
+				fmt.Fprintf(&b, "cortex_tokens_total{project=%q,agent=%q,type=\"cache_read\"} %d\n", proj, agent, cacheRead)
+				fmt.Fprintf(&b, "cortex_tokens_total{project=%q,agent=%q,type=\"cache_creation\"} %d\n", proj, agent, cacheCreate)
+			}
+		}
+	}
+
+	// --- Cost USD by project × agent ---
+	fmt.Fprintf(&b, "# HELP cortex_cost_usd_total Estimated USD cost by project and agent\n")
+	fmt.Fprintf(&b, "# TYPE cortex_cost_usd_total counter\n")
+
+	costRows, err := db.Query(`
+		SELECT project, agent, COALESCE(SUM(cost_usd), 0)
+		FROM token_usage GROUP BY project, agent`)
+	if err == nil {
+		defer costRows.Close()
+		for costRows.Next() {
+			var proj, agent string
+			var cost float64
+			if costRows.Scan(&proj, &agent, &cost) == nil {
+				fmt.Fprintf(&b, "cortex_cost_usd_total{project=%q,agent=%q} %.6f\n", proj, agent, cost)
+			}
+		}
+	}
+
+	// --- Token burn by activity (execute, review, plan) ---
+	fmt.Fprintf(&b, "# HELP cortex_activity_tokens_total Tokens consumed by activity type\n")
+	fmt.Fprintf(&b, "# TYPE cortex_activity_tokens_total counter\n")
+
+	actRows, err := db.Query(`
+		SELECT activity_name,
+			COALESCE(SUM(input_tokens), 0),
+			COALESCE(SUM(output_tokens), 0)
+		FROM token_usage GROUP BY activity_name`)
+	if err == nil {
+		defer actRows.Close()
+		for actRows.Next() {
+			var act string
+			var input, output int64
+			if actRows.Scan(&act, &input, &output) == nil {
+				fmt.Fprintf(&b, "cortex_activity_tokens_total{activity=%q,type=\"input\"} %d\n", act, input)
+				fmt.Fprintf(&b, "cortex_activity_tokens_total{activity=%q,type=\"output\"} %d\n", act, output)
+			}
+		}
+	}
+
+	// --- Per-bead cost (top 20 spenders) ---
+	fmt.Fprintf(&b, "# HELP cortex_bead_cost_usd Per-bead estimated USD cost (top spenders)\n")
+	fmt.Fprintf(&b, "# TYPE cortex_bead_cost_usd gauge\n")
+
+	beadCostRows, err := db.Query(`
+		SELECT bead_id, project, COALESCE(SUM(cost_usd), 0) as total_cost,
+			COALESCE(SUM(input_tokens + output_tokens), 0) as total_tokens
+		FROM token_usage GROUP BY bead_id ORDER BY total_cost DESC LIMIT 20`)
+	if err == nil {
+		defer beadCostRows.Close()
+		for beadCostRows.Next() {
+			var beadID, proj string
+			var cost float64
+			var tokens int64
+			if beadCostRows.Scan(&beadID, &proj, &cost, &tokens) == nil {
+				fmt.Fprintf(&b, "cortex_bead_cost_usd{bead_id=%q,project=%q} %.6f\n", beadID, proj, cost)
+				fmt.Fprintf(&b, "cortex_bead_tokens_total{bead_id=%q,project=%q} %d\n", beadID, proj, tokens)
+			}
+		}
+	}
+
+	// --- Workflow health: DoD pass/fail/escalate ---
+	fmt.Fprintf(&b, "# HELP cortex_dod_results_total DoD check results by outcome\n")
+	fmt.Fprintf(&b, "# TYPE cortex_dod_results_total counter\n")
+
+	var dodPassed, dodFailed, dodTotal int
+	db.QueryRow(`SELECT COUNT(*) FROM dod_results WHERE passed = 1`).Scan(&dodPassed)
+	db.QueryRow(`SELECT COUNT(*) FROM dod_results WHERE passed = 0`).Scan(&dodFailed)
+	db.QueryRow(`SELECT COUNT(*) FROM dod_results`).Scan(&dodTotal)
+
+	fmt.Fprintf(&b, "cortex_dod_results_total{result=\"passed\"} %d\n", dodPassed)
+	fmt.Fprintf(&b, "cortex_dod_results_total{result=\"failed\"} %d\n", dodFailed)
+
+	if dodTotal > 0 {
+		fmt.Fprintf(&b, "# HELP cortex_dod_pass_rate DoD pass rate (0-1)\n")
+		fmt.Fprintf(&b, "# TYPE cortex_dod_pass_rate gauge\n")
+		fmt.Fprintf(&b, "cortex_dod_pass_rate %.4f\n", float64(dodPassed)/float64(dodTotal))
+	}
+
+	// --- Dispatch outcomes by status ---
+	fmt.Fprintf(&b, "# HELP cortex_dispatch_outcomes_total Dispatch outcomes by status\n")
+	fmt.Fprintf(&b, "# TYPE cortex_dispatch_outcomes_total counter\n")
+
+	statusRows, err := db.Query(`
+		SELECT COALESCE(status, 'unknown'), COUNT(*) FROM dispatches GROUP BY status`)
+	if err == nil {
+		defer statusRows.Close()
+		for statusRows.Next() {
+			var status string
+			var count int
+			if statusRows.Scan(&status, &count) == nil {
+				fmt.Fprintf(&b, "cortex_dispatch_outcomes_total{status=%q} %d\n", status, count)
+			}
+		}
+	}
+
+	// --- Workflow duration (average by status) ---
+	fmt.Fprintf(&b, "# HELP cortex_dispatch_duration_seconds_avg Average dispatch duration by status\n")
+	fmt.Fprintf(&b, "# TYPE cortex_dispatch_duration_seconds_avg gauge\n")
+
+	durRows, err := db.Query(`
+		SELECT COALESCE(status, 'unknown'), AVG(duration_s), COUNT(*)
+		FROM dispatches WHERE duration_s > 0 GROUP BY status`)
+	if err == nil {
+		defer durRows.Close()
+		for durRows.Next() {
+			var status string
+			var avgDur float64
+			var count int
+			if durRows.Scan(&status, &avgDur, &count) == nil {
+				fmt.Fprintf(&b, "cortex_dispatch_duration_seconds_avg{status=%q} %.2f\n", status, avgDur)
+				fmt.Fprintf(&b, "cortex_dispatch_duration_seconds_count{status=%q} %d\n", status, count)
+			}
+		}
+	}
+
+	// --- Retry / handoff overhead (beads with multiple dispatches) ---
+	fmt.Fprintf(&b, "# HELP cortex_bead_retry_overhead Beads with highest dispatch attempts (inefficiency indicator)\n")
+	fmt.Fprintf(&b, "# TYPE cortex_bead_retry_overhead gauge\n")
+
+	retryRows, err := db.Query(`
+		SELECT bead_id, COUNT(*) as attempts FROM dispatches
+		GROUP BY bead_id HAVING attempts > 1
+		ORDER BY attempts DESC LIMIT 10`)
+	if err == nil {
+		defer retryRows.Close()
+		for retryRows.Next() {
+			var beadID string
+			var attempts int
+			if retryRows.Scan(&beadID, &attempts) == nil {
+				fmt.Fprintf(&b, "cortex_bead_retry_overhead{bead_id=%q} %d\n", beadID, attempts)
+			}
+		}
+	}
+
+	// --- Safety block metrics ---
 	blockCounts, err := s.store.GetBlockCountsByType()
 	if err != nil {
 		s.logger.Warn("failed to get safety block counts", "error", err)
@@ -263,6 +424,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(&b, "cortex_safety_blocks_total %d\n", total)
 	}
 
+	// --- Uptime ---
 	fmt.Fprintf(&b, "# HELP cortex_uptime_seconds Uptime in seconds\n")
 	fmt.Fprintf(&b, "# TYPE cortex_uptime_seconds gauge\n")
 	fmt.Fprintf(&b, "cortex_uptime_seconds %.0f\n", time.Since(s.startTime).Seconds())
@@ -424,8 +586,8 @@ func (s *Server) handleWorkflowStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.BeadID == "" || req.Prompt == "" {
-		writeError(w, http.StatusBadRequest, "bead_id and prompt are required")
+	if req.TaskID == "" || req.Prompt == "" {
+		writeError(w, http.StatusBadRequest, "task_id and prompt are required")
 		return
 	}
 	if req.Agent == "" {
@@ -433,6 +595,9 @@ func (s *Server) handleWorkflowStart(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.WorkDir == "" {
 		req.WorkDir = "/tmp/workspace"
+	}
+	if req.SlowStepThreshold == 0 {
+		req.SlowStepThreshold = s.cfg.General.SlowStepThreshold.Duration
 	}
 
 	c, err := client.Dial(client.Options{HostPort: "127.0.0.1:7233"})
@@ -444,7 +609,7 @@ func (s *Server) handleWorkflowStart(w http.ResponseWriter, r *http.Request) {
 	defer c.Close()
 
 	wo := client.StartWorkflowOptions{
-		ID:        req.BeadID,
+		ID:        req.TaskID,
 		TaskQueue: "cortex-task-queue",
 	}
 
@@ -603,6 +768,9 @@ func (s *Server) handlePlanningStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "work_dir is required")
 		return
 	}
+	if req.SlowStepThreshold == 0 {
+		req.SlowStepThreshold = s.cfg.General.SlowStepThreshold.Duration
+	}
 
 	c, err := client.Dial(client.Options{HostPort: "127.0.0.1:7233"})
 	if err != nil {
@@ -741,4 +909,3 @@ func (s *Server) handlePlanningStatus(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, resp)
 }
-

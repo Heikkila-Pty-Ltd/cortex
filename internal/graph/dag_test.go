@@ -1,7 +1,6 @@
 package graph
 
 import (
-	"context"
 	"database/sql"
 	"regexp"
 	"strings"
@@ -27,7 +26,7 @@ func newTestDAG(t *testing.T) *DAG {
 	}
 	t.Cleanup(func() { db.Close() })
 	dag := NewDAG(db)
-	if err := dag.EnsureSchema(context.Background()); err != nil {
+	if err := dag.EnsureSchema(t.Context()); err != nil {
 		t.Fatalf("ensure schema: %v", err)
 	}
 	return dag
@@ -41,7 +40,7 @@ func TestEnsureSchema_CreatesTablesAndWAL(t *testing.T) {
 	defer db.Close()
 
 	dag := NewDAG(db)
-	ctx := context.Background()
+	ctx := t.Context()
 	err = dag.EnsureSchema(ctx)
 	if err != nil {
 		t.Fatalf("EnsureSchema: %v", err)
@@ -97,14 +96,14 @@ func TestEnsureSchema_CreatesTablesAndWAL(t *testing.T) {
 
 func TestEnsureSchema_NilDAG(t *testing.T) {
 	var dag *DAG
-	if err := dag.EnsureSchema(context.Background()); err == nil {
+	if err := dag.EnsureSchema(t.Context()); err == nil {
 		t.Fatal("expected error for nil DAG")
 	}
 }
 
 func TestCreateTask_IDFormat(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id, err := dag.CreateTask(ctx, Task{
 		Title:   "test task",
@@ -123,7 +122,7 @@ func TestCreateTask_IDFormat(t *testing.T) {
 
 func TestCreateTask_Defaults(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id, err := dag.CreateTask(ctx, Task{
 		Title:   "defaults test",
@@ -154,7 +153,7 @@ func TestCreateTask_Defaults(t *testing.T) {
 
 func TestCreateTask_RequiresProject(t *testing.T) {
 	dag := newTestDAG(t)
-	_, err := dag.CreateTask(context.Background(), Task{Title: "no project"})
+	_, err := dag.CreateTask(t.Context(), Task{Title: "no project"})
 	if err == nil {
 		t.Fatal("expected error when project is empty")
 	}
@@ -162,7 +161,7 @@ func TestCreateTask_RequiresProject(t *testing.T) {
 
 func TestCreateTask_WithLabels(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id, err := dag.CreateTask(ctx, Task{
 		Title:   "labeled",
@@ -184,7 +183,7 @@ func TestCreateTask_WithLabels(t *testing.T) {
 
 func TestGetTask_NotFound(t *testing.T) {
 	dag := newTestDAG(t)
-	_, err := dag.GetTask(context.Background(), "nonexistent-abc123")
+	_, err := dag.GetTask(t.Context(), "nonexistent-abc123")
 	if err == nil {
 		t.Fatal("expected error for nonexistent task")
 	}
@@ -195,7 +194,7 @@ func TestGetTask_NotFound(t *testing.T) {
 
 func TestGetTask_EmptyID(t *testing.T) {
 	dag := newTestDAG(t)
-	_, err := dag.GetTask(context.Background(), "")
+	_, err := dag.GetTask(t.Context(), "")
 	if err == nil {
 		t.Fatal("expected error for empty ID")
 	}
@@ -203,7 +202,7 @@ func TestGetTask_EmptyID(t *testing.T) {
 
 func TestListTasks_ByProject(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	dag.CreateTask(ctx, Task{Title: "a1", Project: "alpha"})
 	dag.CreateTask(ctx, Task{Title: "a2", Project: "alpha"})
@@ -228,7 +227,7 @@ func TestListTasks_ByProject(t *testing.T) {
 
 func TestListTasks_FilterByStatuses(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id1, _ := dag.CreateTask(ctx, Task{Title: "open1", Project: "p"})
 	id2, _ := dag.CreateTask(ctx, Task{Title: "open2", Project: "p"})
@@ -264,7 +263,7 @@ func TestListTasks_FilterByStatuses(t *testing.T) {
 
 func TestListTasks_EmptyProject(t *testing.T) {
 	dag := newTestDAG(t)
-	_, err := dag.ListTasks(context.Background(), "")
+	_, err := dag.ListTasks(t.Context(), "")
 	if err == nil {
 		t.Fatal("expected error for empty project")
 	}
@@ -272,7 +271,7 @@ func TestListTasks_EmptyProject(t *testing.T) {
 
 func TestListTasks_EmptyResult(t *testing.T) {
 	dag := newTestDAG(t)
-	tasks, err := dag.ListTasks(context.Background(), "nonexistent")
+	tasks, err := dag.ListTasks(t.Context(), "nonexistent")
 	if err != nil {
 		t.Fatalf("ListTasks: %v", err)
 	}
@@ -283,7 +282,7 @@ func TestListTasks_EmptyResult(t *testing.T) {
 
 func TestUpdateTask_PartialFields(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id, _ := dag.CreateTask(ctx, Task{
 		Title:   "original",
@@ -313,7 +312,7 @@ func TestUpdateTask_PartialFields(t *testing.T) {
 
 func TestUpdateTask_Labels(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id, _ := dag.CreateTask(ctx, Task{
 		Title:   "label test",
@@ -336,7 +335,7 @@ func TestUpdateTask_Labels(t *testing.T) {
 
 func TestUpdateTask_LabelsAsJSON(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id, _ := dag.CreateTask(ctx, Task{Title: "json labels", Project: "p"})
 
@@ -355,7 +354,7 @@ func TestUpdateTask_LabelsAsJSON(t *testing.T) {
 
 func TestUpdateTask_TypeField(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id, _ := dag.CreateTask(ctx, Task{Title: "type test", Project: "p"})
 
@@ -375,7 +374,7 @@ func TestUpdateTask_TypeField(t *testing.T) {
 
 func TestUpdateTask_NotFound(t *testing.T) {
 	dag := newTestDAG(t)
-	err := dag.UpdateTask(context.Background(), "nonexistent-abc123", map[string]any{
+	err := dag.UpdateTask(t.Context(), "nonexistent-abc123", map[string]any{
 		"title": "x",
 	})
 	if err == nil {
@@ -388,7 +387,7 @@ func TestUpdateTask_NotFound(t *testing.T) {
 
 func TestUpdateTask_EmptyFields(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id, _ := dag.CreateTask(ctx, Task{Title: "empty fields", Project: "p"})
 
@@ -401,7 +400,7 @@ func TestUpdateTask_EmptyFields(t *testing.T) {
 
 func TestUpdateTask_UnknownFieldsError(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id, _ := dag.CreateTask(ctx, Task{Title: "unknown fields", Project: "p"})
 
@@ -421,7 +420,7 @@ func TestUpdateTask_UnknownFieldsNotFoundTask(t *testing.T) {
 	dag := newTestDAG(t)
 
 	// All-unknown fields on a nonexistent task should return "not found".
-	err := dag.UpdateTask(context.Background(), "nonexistent-abc123", map[string]any{
+	err := dag.UpdateTask(t.Context(), "nonexistent-abc123", map[string]any{
 		"nonexistent_field": "value",
 	})
 	if err == nil {
@@ -434,7 +433,7 @@ func TestUpdateTask_UnknownFieldsNotFoundTask(t *testing.T) {
 
 func TestUpdateTask_BumpsUpdatedAt(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id, _ := dag.CreateTask(ctx, Task{Title: "timestamp test", Project: "p"})
 	before, _ := dag.GetTask(ctx, id)
@@ -449,7 +448,7 @@ func TestUpdateTask_BumpsUpdatedAt(t *testing.T) {
 
 func TestCloseTask(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id, _ := dag.CreateTask(ctx, Task{Title: "closable", Project: "p"})
 	if err := dag.CloseTask(ctx, id); err != nil {
@@ -464,7 +463,7 @@ func TestCloseTask(t *testing.T) {
 
 func TestCloseTask_AlreadyClosedIdempotent(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id, _ := dag.CreateTask(ctx, Task{Title: "close twice", Project: "p"})
 
@@ -491,7 +490,7 @@ func TestCloseTask_AlreadyClosedIdempotent(t *testing.T) {
 
 func TestCloseTask_NotFound(t *testing.T) {
 	dag := newTestDAG(t)
-	err := dag.CloseTask(context.Background(), "nonexistent-abc123")
+	err := dag.CloseTask(t.Context(), "nonexistent-abc123")
 	if err == nil {
 		t.Fatal("expected error for nonexistent task")
 	}
@@ -499,7 +498,7 @@ func TestCloseTask_NotFound(t *testing.T) {
 
 func TestAddEdge_And_RemoveEdge(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id1, _ := dag.CreateTask(ctx, Task{Title: "task1", Project: "p"})
 	id2, _ := dag.CreateTask(ctx, Task{Title: "task2", Project: "p"})
@@ -528,7 +527,7 @@ func TestAddEdge_And_RemoveEdge(t *testing.T) {
 
 func TestAddEdge_DuplicateIdempotent(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id1, _ := dag.CreateTask(ctx, Task{Title: "t1", Project: "p"})
 	id2, _ := dag.CreateTask(ctx, Task{Title: "t2", Project: "p"})
@@ -550,7 +549,7 @@ func TestAddEdge_DuplicateIdempotent(t *testing.T) {
 
 func TestAddEdge_ForeignKeyEnforced(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id1, _ := dag.CreateTask(ctx, Task{Title: "real", Project: "p"})
 
@@ -569,7 +568,7 @@ func TestAddEdge_ForeignKeyEnforced(t *testing.T) {
 
 func TestRemoveEdge_NonexistentNoOp(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id1, _ := dag.CreateTask(ctx, Task{Title: "t1", Project: "p"})
 	id2, _ := dag.CreateTask(ctx, Task{Title: "t2", Project: "p"})
@@ -582,27 +581,27 @@ func TestRemoveEdge_NonexistentNoOp(t *testing.T) {
 
 func TestAddEdge_EmptyArgs(t *testing.T) {
 	dag := newTestDAG(t)
-	if err := dag.AddEdge(context.Background(), "", "x"); err == nil {
+	if err := dag.AddEdge(t.Context(), "", "x"); err == nil {
 		t.Fatal("expected error for empty from")
 	}
-	if err := dag.AddEdge(context.Background(), "x", ""); err == nil {
+	if err := dag.AddEdge(t.Context(), "x", ""); err == nil {
 		t.Fatal("expected error for empty to")
 	}
 }
 
 func TestRemoveEdge_EmptyArgs(t *testing.T) {
 	dag := newTestDAG(t)
-	if err := dag.RemoveEdge(context.Background(), "", "x"); err == nil {
+	if err := dag.RemoveEdge(t.Context(), "", "x"); err == nil {
 		t.Fatal("expected error for empty from")
 	}
-	if err := dag.RemoveEdge(context.Background(), "x", ""); err == nil {
+	if err := dag.RemoveEdge(t.Context(), "x", ""); err == nil {
 		t.Fatal("expected error for empty to")
 	}
 }
 
 func TestGetReadyNodes_BasicScenario(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Create tasks: A (open, no deps), B (open, depends on A), C (closed).
 	idA, _ := dag.CreateTask(ctx, Task{Title: "A", Project: "p", Priority: 1})
@@ -624,7 +623,7 @@ func TestGetReadyNodes_BasicScenario(t *testing.T) {
 
 func TestGetReadyNodes_AllDependenciesClosed(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	idDep, _ := dag.CreateTask(ctx, Task{Title: "dep", Project: "p"})
 	idTask, _ := dag.CreateTask(ctx, Task{Title: "task", Project: "p"})
@@ -651,7 +650,7 @@ func TestGetReadyNodes_AllDependenciesClosed(t *testing.T) {
 
 func TestGetReadyNodes_ExcludesEpics(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	dag.CreateTask(ctx, Task{Title: "epic", Project: "p", Type: "epic"})
 	idTask, _ := dag.CreateTask(ctx, Task{Title: "task", Project: "p", Type: "task"})
@@ -668,7 +667,7 @@ func TestGetReadyNodes_ExcludesEpics(t *testing.T) {
 
 func TestGetReadyNodes_ExcludesClosedTasks(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id, _ := dag.CreateTask(ctx, Task{Title: "will close", Project: "p"})
 	dag.CloseTask(ctx, id)
@@ -684,7 +683,7 @@ func TestGetReadyNodes_ExcludesClosedTasks(t *testing.T) {
 
 func TestGetReadyNodes_OrderByPriorityThenEstimate(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	idLow, _ := dag.CreateTask(ctx, Task{Title: "low-prio", Project: "p", Priority: 2, EstimateMinutes: 10})
 	idHigh, _ := dag.CreateTask(ctx, Task{Title: "high-prio", Project: "p", Priority: 0, EstimateMinutes: 60})
@@ -706,7 +705,7 @@ func TestGetReadyNodes_OrderByPriorityThenEstimate(t *testing.T) {
 
 func TestGetReadyNodes_ProjectIsolation(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	dag.CreateTask(ctx, Task{Title: "alpha task", Project: "alpha"})
 	dag.CreateTask(ctx, Task{Title: "beta task", Project: "beta"})
@@ -722,7 +721,7 @@ func TestGetReadyNodes_ProjectIsolation(t *testing.T) {
 
 func TestGetReadyNodes_EmptyProject(t *testing.T) {
 	dag := newTestDAG(t)
-	_, err := dag.GetReadyNodes(context.Background(), "")
+	_, err := dag.GetReadyNodes(t.Context(), "")
 	if err == nil {
 		t.Fatal("expected error for empty project")
 	}
@@ -730,7 +729,7 @@ func TestGetReadyNodes_EmptyProject(t *testing.T) {
 
 func TestGetReadyNodes_NoDependenciesAllReady(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	dag.CreateTask(ctx, Task{Title: "a", Project: "p"})
 	dag.CreateTask(ctx, Task{Title: "b", Project: "p"})
@@ -747,7 +746,7 @@ func TestGetReadyNodes_NoDependenciesAllReady(t *testing.T) {
 
 func TestListTasks_IncludesDependencies(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id1, _ := dag.CreateTask(ctx, Task{Title: "t1", Project: "p"})
 	id2, _ := dag.CreateTask(ctx, Task{Title: "t2", Project: "p"})
@@ -771,7 +770,7 @@ func TestListTasks_IncludesDependencies(t *testing.T) {
 
 func TestCreateTask_AllFields(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id, err := dag.CreateTask(ctx, Task{
 		Title:           "full task",
@@ -840,7 +839,7 @@ func TestCreateTask_AllFields(t *testing.T) {
 
 func TestAddEdge_SelfLoopRejected(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id, _ := dag.CreateTask(ctx, Task{Title: "self", Project: "p"})
 	err := dag.AddEdge(ctx, id, id)
@@ -854,7 +853,7 @@ func TestAddEdge_SelfLoopRejected(t *testing.T) {
 
 func TestAddEdge_CycleDetected(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	idA, _ := dag.CreateTask(ctx, Task{Title: "A", Project: "p"})
 	idB, _ := dag.CreateTask(ctx, Task{Title: "B", Project: "p"})
@@ -880,7 +879,7 @@ func TestAddEdge_CycleDetected(t *testing.T) {
 
 func TestAddEdge_NoCycleFalsePositive(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	idA, _ := dag.CreateTask(ctx, Task{Title: "A", Project: "p"})
 	idB, _ := dag.CreateTask(ctx, Task{Title: "B", Project: "p"})
@@ -902,7 +901,7 @@ func TestAddEdge_NoCycleFalsePositive(t *testing.T) {
 
 func TestAddEdge_CrossProjectRejected(t *testing.T) {
 	dag := newTestDAG(t)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	id1, _ := dag.CreateTask(ctx, Task{Title: "t1", Project: "alpha"})
 	id2, _ := dag.CreateTask(ctx, Task{Title: "t2", Project: "beta"})

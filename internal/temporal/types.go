@@ -4,7 +4,7 @@ import "time"
 
 // TaskRequest is submitted via the API to start a workflow.
 type TaskRequest struct {
-	BeadID            string        `json:"bead_id"`
+	TaskID            string        `json:"task_id"`
 	Project           string        `json:"project"`
 	Prompt            string        `json:"prompt"`
 	Agent             string        `json:"agent"`              // primary coding agent (claude, codex)
@@ -145,7 +145,7 @@ type StepMetric struct {
 // OutcomeRecord is passed to the store recording activity.
 type OutcomeRecord struct {
 	DispatchID     int64                 `json:"dispatch_id"`
-	BeadID         string                `json:"bead_id"`
+	TaskID         string                `json:"task_id"`
 	Project        string                `json:"project"`
 	Agent          string                `json:"agent"`
 	Reviewer       string                `json:"reviewer"`
@@ -164,7 +164,7 @@ type OutcomeRecord struct {
 
 // EscalationRequest is sent to the chief when DoD fails after retries.
 type EscalationRequest struct {
-	BeadID       string   `json:"bead_id"`
+	TaskID       string   `json:"task_id"`
 	Project      string   `json:"project"`
 	PlanSummary  string   `json:"plan_summary"`
 	Failures     []string `json:"failures"`
@@ -182,6 +182,7 @@ type PlanningRequest struct {
 	Agent   string `json:"agent"`  // chief agent for execution (defaults to claude)
 	Tier    string `json:"tier"`   // LLM tier for planning activities: "fast" or "premium"
 	WorkDir string `json:"work_dir"`
+	SlowStepThreshold time.Duration `json:"slow_step_threshold"` // steps exceeding this are flagged slow
 }
 
 // BacklogItem is a single work item the chief has identified.
@@ -240,7 +241,7 @@ type PlanningState struct {
 
 // LearnerRequest is passed to ContinuousLearnerWorkflow after a bead completes.
 type LearnerRequest struct {
-	BeadID         string   `json:"bead_id"`
+	TaskID         string   `json:"task_id"`
 	Project        string   `json:"project"`
 	WorkDir        string   `json:"work_dir"`
 	Agent          string   `json:"agent"`           // which agent completed the bead
@@ -255,7 +256,7 @@ type LearnerRequest struct {
 // Lesson is a single extracted lesson from a completed bead.
 type Lesson struct {
 	ID            int64    `json:"id,omitempty"`
-	BeadID        string   `json:"bead_id"`
+	TaskID        string   `json:"task_id"`
 	Project       string   `json:"project"`
 	Category      string   `json:"category"`                    // pattern, antipattern, rule, insight
 	Summary       string   `json:"summary"`                     // one-line
@@ -282,19 +283,18 @@ type SemgrepScanResult struct {
 	Output   string   `json:"output"`
 }
 
-// TacticalGroomRequest is passed to TacticalGroomWorkflow after a bead completes.
+// TacticalGroomRequest is passed to TacticalGroomWorkflow after a task completes.
 type TacticalGroomRequest struct {
-	BeadID   string `json:"bead_id"`
-	Project  string `json:"project"`
-	WorkDir  string `json:"work_dir"`
-	BeadsDir string `json:"beads_dir"`
-	Tier     string `json:"tier"` // "fast" for tactical
+	TaskID  string `json:"task_id"`
+	Project string `json:"project"`
+	WorkDir string `json:"work_dir"`
+	Tier    string `json:"tier"` // "fast" for tactical
 }
 
 // BeadMutation is a single mutation the groombot wants to apply to the backlog.
 // The Action field determines which other fields are meaningful.
 type BeadMutation struct {
-	BeadID      string   `json:"bead_id"`
+	TaskID      string   `json:"task_id"`
 	Action      string   `json:"action"`                  // update_priority, add_dependency, update_notes, create, close
 	Priority    *int     `json:"priority,omitempty"`
 	Notes       string   `json:"notes,omitempty"`
@@ -328,10 +328,9 @@ type GroomResult struct {
 
 // StrategicGroomRequest is passed to the daily StrategicGroomWorkflow.
 type StrategicGroomRequest struct {
-	Project  string `json:"project"`
-	WorkDir  string `json:"work_dir"`
-	BeadsDir string `json:"beads_dir"`
-	Tier     string `json:"tier"` // "premium" for strategic
+	Project string `json:"project"`
+	WorkDir string `json:"work_dir"`
+	Tier    string `json:"tier"` // "premium" for strategic
 }
 
 // RepoMap is a compressed representation of the codebase for LLM context.
@@ -362,7 +361,7 @@ type StrategicAnalysis struct {
 
 // StrategicItem is a single priority from strategic analysis.
 type StrategicItem struct {
-	BeadID    string `json:"bead_id,omitempty"` // empty for new suggestions
+	TaskID    string `json:"task_id,omitempty"` // empty for new suggestions
 	Title     string `json:"title"`
 	Rationale string `json:"rationale"`
 	Urgency   string `json:"urgency"` // critical, high, medium, low
@@ -385,7 +384,7 @@ type MorningBriefing struct {
 // DispatchCandidate is a ready bead with its project context, returned by
 // ScanCandidatesActivity and dispatched as a child workflow.
 type DispatchCandidate struct {
-	BeadID          string   `json:"bead_id"`
+	TaskID          string   `json:"task_id"`
 	Title           string   `json:"title"`
 	Project         string   `json:"project"`
 	WorkDir         string   `json:"work_dir"`
@@ -393,6 +392,7 @@ type DispatchCandidate struct {
 	Provider        string   `json:"provider"`
 	DoDChecks       []string `json:"dod_checks"`
 	AutoApprove     bool     `json:"auto_approve"`
+	SlowStepThreshold time.Duration `json:"slow_step_threshold"`
 	EstimateMinutes int      `json:"estimate_minutes"`
 }
 

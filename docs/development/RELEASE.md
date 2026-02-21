@@ -48,7 +48,7 @@ Validation commands:
 
 ```bash
 make build
-GOCACHE=/tmp/go-build go test ./internal/beads ./internal/scheduler ./internal/health ./internal/api
+GOCACHE=/tmp/go-build go test ./internal/graph ./internal/health ./internal/api
 ```
 
 ### 1.3 Security gate

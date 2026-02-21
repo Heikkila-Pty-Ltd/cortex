@@ -1,6 +1,7 @@
 package temporal
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -72,7 +73,7 @@ func TestCHUMChildWorkflowsSpawn(t *testing.T) {
 	}).Return(nil)
 
 	env.ExecuteWorkflow(CortexAgentWorkflow, TaskRequest{
-		BeadID:  "test-bead-chum",
+		TaskID:  "test-bead-chum",
 		Project: "test-project",
 		Prompt:  "add a widget endpoint",
 		Agent:   "claude",
@@ -151,7 +152,7 @@ func TestCHUMNotSpawnedOnFailure(t *testing.T) {
 	}, 0)
 
 	env.ExecuteWorkflow(CortexAgentWorkflow, TaskRequest{
-		BeadID:  "test-bead-fail",
+		TaskID:  "test-bead-fail",
 		Project: "test-project",
 		Prompt:  "break everything",
 		Agent:   "claude",
@@ -183,8 +184,8 @@ func TestContinuousLearnerWorkflowPipeline(t *testing.T) {
 	var a *Activities
 
 	lessons := []Lesson{
-		{BeadID: "bead-1", Category: "antipattern", Summary: "nil check after error"},
-		{BeadID: "bead-1", Category: "pattern", Summary: "table-driven tests"},
+		{TaskID: "bead-1", Category: "antipattern", Summary: "nil check after error"},
+		{TaskID: "bead-1", Category: "pattern", Summary: "table-driven tests"},
 	}
 
 	env.OnActivity(a.ExtractLessonsActivity, mock.Anything, mock.Anything).Return(lessons, nil)
@@ -194,7 +195,7 @@ func TestContinuousLearnerWorkflowPipeline(t *testing.T) {
 	}, nil)
 
 	env.ExecuteWorkflow(ContinuousLearnerWorkflow, LearnerRequest{
-		BeadID:  "bead-1",
+		TaskID:  "bead-1",
 		Project: "test-project",
 		Tier:    "fast",
 	})
@@ -211,18 +212,17 @@ func TestTacticalGroomWorkflow(t *testing.T) {
 
 	var a *Activities
 
-	env.OnActivity(a.MutateBeadsActivity, mock.Anything, mock.Anything).Return(&GroomResult{
+	env.OnActivity(a.MutateTasksActivity, mock.Anything, mock.Anything).Return(&GroomResult{
 		MutationsApplied: 3,
 		MutationsFailed:  0,
 		Details:          []string{"reprioritized bead-1", "closed stale bead-2", "added dep bead-3->bead-4"},
 	}, nil)
 
 	env.ExecuteWorkflow(TacticalGroomWorkflow, TacticalGroomRequest{
-		BeadID:   "bead-1",
-		Project:  "test-project",
-		WorkDir:  "/tmp/test",
-		BeadsDir: "/tmp/test/.beads",
-		Tier:     "fast",
+		TaskID:  "bead-1",
+		Project: "test-project",
+		WorkDir: "/tmp/test",
+		Tier:    "fast",
 	})
 
 	require.True(t, env.IsWorkflowCompleted())
@@ -254,7 +254,7 @@ func TestStrategicGroomWorkflowPipeline(t *testing.T) {
 			{Title: "Fix flaky tests", Urgency: "high"},
 		},
 		Risks:     []string{"test coverage declining"},
-		Mutations: []BeadMutation{{BeadID: "bead-5", Action: "update_priority", Priority: intPtr(1)}},
+		Mutations: []BeadMutation{{TaskID: "bead-5", Action: "update_priority", Priority: intPtr(1)}},
 	}, nil)
 
 	env.OnActivity(a.ApplyStrategicMutationsActivity, mock.Anything, mock.Anything, mock.Anything).Return(&GroomResult{
@@ -268,10 +268,9 @@ func TestStrategicGroomWorkflowPipeline(t *testing.T) {
 	}, nil)
 
 	env.ExecuteWorkflow(StrategicGroomWorkflow, StrategicGroomRequest{
-		Project:  "test-project",
-		WorkDir:  "/tmp/test",
-		BeadsDir: "/tmp/test/.beads",
-		Tier:     "premium",
+		Project: "test-project",
+		WorkDir: "/tmp/test",
+		Tier:    "premium",
 	})
 
 	require.True(t, env.IsWorkflowCompleted())
@@ -309,7 +308,7 @@ func TestNormalizeStrategicMutationsActionableDecompositionRemainsExecutable(t *
 		Description:     "Add one coded task for each phase of request validation rollout.",
 		Acceptance:      "All validation paths are implemented and covered by tests.",
 		Design:          "Implement helper modules and add targeted unit tests first.",
-		EstimateMinutes:  120,
+		EstimateMinutes: 120,
 		StrategicSource: StrategicMutationSource,
 	}}
 
@@ -342,7 +341,7 @@ func TestPlanRejected(t *testing.T) {
 	}, 0)
 
 	env.ExecuteWorkflow(CortexAgentWorkflow, TaskRequest{
-		BeadID:  "test-bead-reject",
+		TaskID:  "test-bead-reject",
 		Project: "test-project",
 		Prompt:  "risky refactor",
 		Agent:   "claude",
@@ -404,10 +403,9 @@ func TestStrategicGroomWorkflowActionableCreatePassesThroughToActivity(t *testin
 	}, nil)
 
 	env.ExecuteWorkflow(StrategicGroomWorkflow, StrategicGroomRequest{
-		Project:  "test-project",
-		WorkDir:  "/tmp/test",
-		BeadsDir: "/tmp/test/.beads",
-		Tier:     "premium",
+		Project: "test-project",
+		WorkDir: "/tmp/test",
+		Tier:    "premium",
 	})
 
 	require.True(t, env.IsWorkflowCompleted())
@@ -464,10 +462,9 @@ func TestStrategicGroomWorkflowVagueCreateIsDeferredNotP1(t *testing.T) {
 	}, nil)
 
 	env.ExecuteWorkflow(StrategicGroomWorkflow, StrategicGroomRequest{
-		Project:  "test-project",
-		WorkDir:  "/tmp/test",
-		BeadsDir: "/tmp/test/.beads",
-		Tier:     "premium",
+		Project: "test-project",
+		WorkDir: "/tmp/test",
+		Tier:    "premium",
 	})
 
 	require.True(t, env.IsWorkflowCompleted())
@@ -505,9 +502,9 @@ func TestNormalizeStrategicMutationsNonPrefixedVagueCreateIsDeferred(t *testing.
 // mutations (update_priority, close, etc.) pass through normalization unmodified.
 func TestNormalizeStrategicMutationsNonCreatePassesThrough(t *testing.T) {
 	mutations := []BeadMutation{
-		{BeadID: "bead-1", Action: "update_priority", Priority: intPtr(0)},
-		{BeadID: "bead-2", Action: "close", Reason: "stale"},
-		{BeadID: "bead-3", Action: "update_notes", Notes: "context from strategic review"},
+		{TaskID: "bead-1", Action: "update_priority", Priority: intPtr(0)},
+		{TaskID: "bead-2", Action: "close", Reason: "stale"},
+		{TaskID: "bead-3", Action: "update_notes", Notes: "context from strategic review"},
 	}
 
 	got := normalizeStrategicMutations(mutations)
@@ -543,7 +540,7 @@ func TestStepDurationLogging(t *testing.T) {
 	}).Return(nil)
 
 	env.ExecuteWorkflow(CortexAgentWorkflow, TaskRequest{
-		BeadID:  "test-bead-steps",
+		TaskID:  "test-bead-steps",
 		Project: "test-project",
 		Prompt:  "add step metrics",
 		Agent:   "claude",
@@ -575,6 +572,67 @@ func TestStepDurationLogging(t *testing.T) {
 		require.Contains(t, []string{"ok", "failed", "skipped"}, m.Status,
 			"step %q has invalid status %q", m.Name, m.Status)
 	}
+}
+
+// TestStepDurationLoggingWhenReviewActivityFails verifies that review metric
+// is still emitted as failed, even when review infrastructure is unavailable.
+func TestStepDurationLoggingWhenReviewActivityFails(t *testing.T) {
+	s := testsuite.WorkflowTestSuite{}
+	env := s.NewTestWorkflowEnvironment()
+
+	env.OnActivity((*Activities)(nil).StructuredPlanActivity, mock.Anything, mock.Anything).Return(&StructuredPlan{
+		Summary:            "add fallback path",
+		Steps:              []PlanStep{{Description: "Create fallback handler", File: "handler.go", Rationale: "resilience"}},
+		FilesToModify:      []string{"handler.go"},
+		AcceptanceCriteria: []string{"endpoint recovers"},
+	}, nil)
+	env.OnActivity((*Activities)(nil).ExecuteActivity, mock.Anything, mock.Anything, mock.Anything).Return(&ExecutionResult{
+		ExitCode: 0, Output: "done", Agent: "claude",
+	}, nil)
+	env.OnActivity((*Activities)(nil).CodeReviewActivity, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil, errors.New("review infra down"))
+	env.OnActivity((*Activities)(nil).RunSemgrepScanActivity, mock.Anything, mock.Anything).Return(&SemgrepScanResult{
+		Passed: true,
+	}, nil)
+	env.OnActivity((*Activities)(nil).DoDVerifyActivity, mock.Anything, mock.Anything).Return(&DoDResult{
+		Passed: true,
+	}, nil)
+
+	env.OnWorkflow(ContinuousLearnerWorkflow, mock.Anything, mock.Anything).Return(nil).Maybe()
+	env.OnWorkflow(TacticalGroomWorkflow, mock.Anything, mock.Anything).Return(nil).Maybe()
+
+	var outcome OutcomeRecord
+	env.OnActivity((*Activities)(nil).RecordOutcomeActivity, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		if o, ok := args.Get(1).(OutcomeRecord); ok {
+			outcome = o
+		}
+	}).Return(nil)
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow("human-approval", "APPROVED")
+	}, 0)
+
+	env.ExecuteWorkflow(CortexAgentWorkflow, TaskRequest{
+		TaskID:  "test-bead-review-fail",
+		Project: "test-project",
+		Prompt:  "review infra failure path",
+		Agent:   "claude",
+		WorkDir: "/tmp/test",
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+
+	foundReview := false
+	reviewSteps := 0
+	for _, m := range outcome.StepMetrics {
+		if m.Name == "review[1]" {
+			reviewSteps++
+			foundReview = true
+			require.Equal(t, "failed", m.Status)
+		}
+	}
+	require.True(t, foundReview, "review[1] should be recorded even when review activity fails")
+	require.Equal(t, 1, reviewSteps, "review[1] should be recorded exactly once when review infrastructure fails")
 }
 
 // TestStepDurationLoggingAutoApprove verifies step metrics for auto-approved beads
@@ -610,7 +668,7 @@ func TestStepDurationLoggingAutoApprove(t *testing.T) {
 	}).Return(nil)
 
 	env.ExecuteWorkflow(CortexAgentWorkflow, TaskRequest{
-		BeadID:      "test-bead-auto",
+		TaskID:      "test-bead-auto",
 		Project:     "test-project",
 		Prompt:      "auto-approved task",
 		Agent:       "claude",
@@ -681,7 +739,7 @@ func TestStepDurationLoggingEscalation(t *testing.T) {
 	}, 0)
 
 	env.ExecuteWorkflow(CortexAgentWorkflow, TaskRequest{
-		BeadID:  "test-bead-escalate",
+		TaskID:  "test-bead-escalate",
 		Project: "test-project",
 		Prompt:  "will fail dod",
 		Agent:   "claude",
@@ -717,6 +775,91 @@ func TestStepDurationLoggingEscalation(t *testing.T) {
 			require.Equal(t, "failed", m.Status, "dod step should be failed")
 		}
 	}
+}
+
+// TestPlanningWorkflowPassesSlowStepThresholdToExecutionTask verifies that the
+// planning ceremony forwards the workflow threshold into the execution request.
+func TestPlanningWorkflowPassesSlowStepThresholdToExecutionTask(t *testing.T) {
+	s := testsuite.WorkflowTestSuite{}
+	env := s.NewTestWorkflowEnvironment()
+
+	var a *Activities
+	var capturedReq TaskRequest
+	var captured bool
+
+	env.OnActivity(a.GroomBacklogActivity, mock.Anything, mock.Anything).Return(&BacklogPresentation{
+		Items: []BacklogItem{{ID: "bead-1", Title: "Plan this task"}},
+	}, nil)
+	env.OnActivity(a.GenerateQuestionsActivity, mock.Anything, mock.Anything, mock.Anything).Return([]PlanningQuestion{}, nil)
+	env.OnActivity(a.SummarizePlanActivity, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(&PlanSummary{
+		What:      "Plan this task",
+		DoDChecks: []string{"go test ./..."},
+	}, nil)
+
+	env.OnWorkflow(CortexAgentWorkflow, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		if req, ok := args.Get(1).(TaskRequest); ok {
+			capturedReq = req
+			captured = true
+		}
+	}).Return(nil)
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow("item-selected", "bead-1")
+		env.SignalWorkflow("greenlight", "GO")
+	}, 0)
+
+	env.ExecuteWorkflow(PlanningCeremonyWorkflow, PlanningRequest{
+		Project: "test-project",
+		Agent:   "claude",
+		WorkDir: "/tmp/test",
+	})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	require.True(t, captured, "planning workflow should dispatch CortexAgentWorkflow")
+	require.Equal(t, defaultSlowStepThreshold, capturedReq.SlowStepThreshold)
+}
+
+// TestDispatcherAppliesSlowStepThresholdFallback verifies that the dispatcher
+// never passes a zero slow-step threshold into child execution requests.
+func TestDispatcherAppliesSlowStepThresholdFallback(t *testing.T) {
+	s := testsuite.WorkflowTestSuite{}
+	env := s.NewTestWorkflowEnvironment()
+
+	var da *DispatchActivities
+	var capturedReq TaskRequest
+	var captured bool
+
+	env.OnActivity(da.ScanCandidatesActivity, mock.Anything).Return(&ScanCandidatesResult{
+		Candidates: []DispatchCandidate{{
+			TaskID:            "bead-1",
+			Title:             "Build dashboard",
+			Project:           "project-1",
+			WorkDir:           "/tmp/test",
+			Prompt:            "Build dashboard",
+			Provider:          "claude",
+			DoDChecks:         []string{"go test ./..."},
+			AutoApprove:       true,
+			SlowStepThreshold: 0,
+			EstimateMinutes:   60,
+		}},
+		Running:  0,
+		MaxTotal: 3,
+	}, nil)
+
+	env.OnWorkflow(CortexAgentWorkflow, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		if req, ok := args.Get(1).(TaskRequest); ok {
+			capturedReq = req
+			captured = true
+		}
+	}).Return(nil)
+
+	env.ExecuteWorkflow(DispatcherWorkflow, struct{}{})
+
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	require.True(t, captured, "dispatcher should dispatch CortexAgentWorkflow")
+	require.Equal(t, defaultSlowStepThreshold, capturedReq.SlowStepThreshold)
 }
 
 func intPtr(i int) *int { return &i }

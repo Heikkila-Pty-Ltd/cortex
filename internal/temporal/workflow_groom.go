@@ -14,7 +14,7 @@ import (
 // Uses fast/cheap LLM tier.
 func TacticalGroomWorkflow(ctx workflow.Context, req TacticalGroomRequest) error {
 	logger := workflow.GetLogger(ctx)
-	logger.Info(GroomPrefix+" TacticalGroom starting", "BeadID", req.BeadID, "Project", req.Project)
+	logger.Info(GroomPrefix+" TacticalGroom starting", "TaskID", req.TaskID, "Project", req.Project)
 
 	if req.Tier == "" {
 		req.Tier = "fast"
@@ -33,7 +33,7 @@ func TacticalGroomWorkflow(ctx workflow.Context, req TacticalGroomRequest) error
 
 	var a *Activities
 	var result GroomResult
-	if err := workflow.ExecuteActivity(ctx, a.MutateBeadsActivity, req).Get(ctx, &result); err != nil {
+	if err := workflow.ExecuteActivity(ctx, a.MutateTasksActivity, req).Get(ctx, &result); err != nil {
 		logger.Warn(GroomPrefix+" TacticalGroom failed (non-fatal)", "error", err)
 		return nil
 	}
@@ -97,7 +97,7 @@ func StrategicGroomWorkflow(ctx workflow.Context, req StrategicGroomRequest) err
 
 		mutateCtx := workflow.WithActivityOptions(ctx, shortAO)
 		var mutResult GroomResult
-		if err := workflow.ExecuteActivity(mutateCtx, a.ApplyStrategicMutationsActivity, req.BeadsDir, mutations).Get(ctx, &mutResult); err != nil {
+		if err := workflow.ExecuteActivity(mutateCtx, a.ApplyStrategicMutationsActivity, req.Project, mutations).Get(ctx, &mutResult); err != nil {
 			logger.Warn(GroomPrefix+" Strategic mutations failed (non-fatal)", "error", err)
 		} else {
 			logger.Info(GroomPrefix+" Strategic mutations applied", "Applied", mutResult.MutationsApplied, "Failed", mutResult.MutationsFailed)
@@ -125,7 +125,8 @@ func normalizeStrategicMutations(mutations []BeadMutation) []BeadMutation {
 	}
 
 	out := make([]BeadMutation, 0, len(mutations))
-	for _, m := range mutations {
+	for idx := range mutations {
+		m := mutations[idx]
 		if strings.TrimSpace(m.StrategicSource) == "" {
 			m.StrategicSource = StrategicMutationSource
 		}

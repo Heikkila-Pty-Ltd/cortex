@@ -18,7 +18,6 @@ LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main
 
 # Race test settings
 RACE_PACKAGES := \
-	./internal/scheduler/... \
 	./internal/store/... \
 	./internal/learner/... \
 	./internal/dispatch/... \
@@ -31,14 +30,6 @@ RACE_CI_LOCK_WAIT ?= 60
 RACE_CI_JSON_OUT := $(BUILD_DIR)/test-race.jsonl
 RACE_CI_LOG_OUT := $(BUILD_DIR)/test-race.log
 
-# BD lock cleanup settings
-BD_LOCK_CLEANUP_AGE_MINUTES ?= 5
-BD_LOCK_CLEANUP_FORCE ?= 0
-BD_LOCK_CLEANUP_REQUIRE_FORCE ?= 0
-BD_LOCK_CLEANUP_REPORT_TO_MATRIX ?= 0
-BD_LOCK_CLEANUP_MATRIX_ROOM ?=
-BD_LOCK_CLEANUP_MATRIX_ACCOUNT ?= duc
-
 # Scripts
 SCRIPT_DIR := scripts
 DEV_SCRIPTS := $(SCRIPT_DIR)/dev
@@ -46,10 +37,9 @@ RELEASE_SCRIPTS := $(SCRIPT_DIR)/release
 OPS_SCRIPTS := $(SCRIPT_DIR)/ops
 
 # Source files
-SRC_FILES := $(shell find . -type f -name '*.go' -not -path './vendor/*' -not -path './.beads/*')
+SRC_FILES := $(shell find . -type f -name '*.go' -not -path './vendor/*')
 
 .PHONY: all help build build-all install clean test test-race test-race-ci lint fmt vet
-.PHONY: lint-beads cleanup-bd-locks cleanup-bd-locks-escalation
 .PHONY: service-install service-start service-stop service-logs
 .PHONY: release snapshot docker
 
@@ -95,9 +85,6 @@ fmt: ## Format Go code
 vet: ## Run go vet
 	$(GO) vet ./...
 
-lint-beads: ## Validate open/in-progress beads have acceptance criteria + DoD gates
-	$(DEV_SCRIPTS)/lint-beads.sh
-
 lint-docs: ## Check markdown docs for broken internal references
 	@bash $(DEV_SCRIPTS)/docs-lint.sh
 
@@ -105,8 +92,6 @@ lint-docs: ## Check markdown docs for broken internal references
 
 test-race: ## Run race tests for concurrency-critical packages
 	TEST_SAFE_GO_TEST_TIMEOUT=$(RACE_TIMEOUT) \
-	TEST_SAFE_BD_LOCK_CLEANUP_MINUTES=$(BD_LOCK_CLEANUP_AGE_MINUTES) \
-	TEST_SAFE_BD_LOCK_CLEANUP_REQUIRE_FORCE=$(BD_LOCK_CLEANUP_REQUIRE_FORCE) \
 	TEST_SAFE_LOCK_WAIT_SEC=$(RACE_LOCK_WAIT) \
 	TEST_SAFE_JSON_OUT="$(RACE_JSON_OUT)" \
 	$(DEV_SCRIPTS)/test-safe.sh -race $(RACE_PACKAGES)
@@ -115,29 +100,9 @@ test-race-ci: ## CI race entrypoint with timeout/log output
 	@mkdir -p $(BUILD_DIR)
 	@set -o pipefail; \
 	TEST_SAFE_GO_TEST_TIMEOUT=$(RACE_CI_TIMEOUT) \
-	TEST_SAFE_BD_LOCK_CLEANUP_MINUTES=$(BD_LOCK_CLEANUP_AGE_MINUTES) \
-	TEST_SAFE_BD_LOCK_CLEANUP_REQUIRE_FORCE=$(BD_LOCK_CLEANUP_REQUIRE_FORCE) \
 	TEST_SAFE_LOCK_WAIT_SEC=$(RACE_CI_LOCK_WAIT) \
 	TEST_SAFE_JSON_OUT="$(RACE_CI_JSON_OUT)" \
 	$(DEV_SCRIPTS)/test-safe.sh -race $(RACE_PACKAGES) 2>&1 | tee "$(RACE_CI_LOG_OUT)"
-
-##@ Operations
-
-cleanup-bd-locks: ## Remove stale bd lock files under .beads
-	BD_LOCK_CLEANUP_FORCE="$(BD_LOCK_CLEANUP_FORCE)" \
-	BD_LOCK_CLEANUP_REQUIRE_FORCE="$(BD_LOCK_CLEANUP_REQUIRE_FORCE)" \
-	BD_LOCK_CLEANUP_REPORT_TO_MATRIX="$(BD_LOCK_CLEANUP_REPORT_TO_MATRIX)" \
-	BD_LOCK_CLEANUP_MATRIX_ROOM="$(BD_LOCK_CLEANUP_MATRIX_ROOM)" \
-	BD_LOCK_CLEANUP_MATRIX_ACCOUNT="$(BD_LOCK_CLEANUP_MATRIX_ACCOUNT)" \
-	$(DEV_SCRIPTS)/cleanup-bd-locks.sh "$(BD_LOCK_CLEANUP_AGE_MINUTES)"
-
-cleanup-bd-locks-escalation: ## Require explicit force before removing stale bd locks
-	BD_LOCK_CLEANUP_REQUIRE_FORCE=1 \
-	BD_LOCK_CLEANUP_FORCE="$(BD_LOCK_CLEANUP_FORCE)" \
-	BD_LOCK_CLEANUP_REPORT_TO_MATRIX="$(BD_LOCK_CLEANUP_REPORT_TO_MATRIX)" \
-	BD_LOCK_CLEANUP_MATRIX_ROOM="$(BD_LOCK_CLEANUP_MATRIX_ROOM)" \
-	BD_LOCK_CLEANUP_MATRIX_ACCOUNT="$(BD_LOCK_CLEANUP_MATRIX_ACCOUNT)" \
-	$(DEV_SCRIPTS)/cleanup-bd-locks.sh "$(BD_LOCK_CLEANUP_AGE_MINUTES)"
 
 ##@ Systemd Service
 

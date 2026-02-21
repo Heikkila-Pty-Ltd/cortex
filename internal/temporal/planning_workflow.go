@@ -27,6 +27,9 @@ func PlanningCeremonyWorkflow(ctx workflow.Context, req PlanningRequest) (*TaskR
 	if req.Tier == "" {
 		req.Tier = "fast"
 	}
+	if req.SlowStepThreshold <= 0 {
+		req.SlowStepThreshold = defaultSlowStepThreshold
+	}
 
 	ao := workflow.ActivityOptions{
 		StartToCloseTimeout: 5 * time.Minute,
@@ -118,17 +121,18 @@ func PlanningCeremonyWorkflow(ctx workflow.Context, req PlanningRequest) (*TaskR
 		if decision == "GO" {
 			// ===== PRODUCE TASK REQUEST =====
 			taskReq := &TaskRequest{
-				BeadID:    selectedItem.ID,
-				Project:   req.Project,
-				Prompt:    summary.What,
-				Agent:     req.Agent,
-				Reviewer:  DefaultReviewer(req.Agent),
-				WorkDir:   req.WorkDir,
-				DoDChecks: summary.DoDChecks,
+				TaskID:            selectedItem.ID,
+				Project:           req.Project,
+				Prompt:            summary.What,
+				Agent:             req.Agent,
+				Reviewer:          DefaultReviewer(req.Agent),
+				WorkDir:           req.WorkDir,
+				DoDChecks:         summary.DoDChecks,
+				SlowStepThreshold: req.SlowStepThreshold,
 			}
 
 			logger.Info("Planning: GREENLIT — throwing to the sharks",
-				"BeadID", taskReq.BeadID,
+				"TaskID", taskReq.TaskID,
 				"Cycle", cycle+1,
 				"What", summary.What,
 				"Effort", summary.Effort,
@@ -137,7 +141,7 @@ func PlanningCeremonyWorkflow(ctx workflow.Context, req PlanningRequest) (*TaskR
 			// Launch execution as a child workflow.
 			// "How do you build a coding elephant? One piece of chum at a time."
 			childOpts := workflow.ChildWorkflowOptions{
-				WorkflowID: fmt.Sprintf("exec-%s-%d", taskReq.BeadID, workflow.Now(ctx).Unix()),
+				WorkflowID: fmt.Sprintf("exec-%s-%d", taskReq.TaskID, workflow.Now(ctx).Unix()),
 				TaskQueue:  "cortex-task-queue",
 			}
 			childCtx := workflow.WithChildOptions(ctx, childOpts)
@@ -153,12 +157,12 @@ func PlanningCeremonyWorkflow(ctx workflow.Context, req PlanningRequest) (*TaskR
 			if err := future.Get(ctx, nil); err != nil {
 				execErr = err
 				logger.Warn("Planning: execution failed — sharks couldn't finish",
-					"BeadID", taskReq.BeadID,
+					"TaskID", taskReq.TaskID,
 					"Error", err,
 				)
 			} else {
 				logger.Info("Planning: execution COMPLETED",
-					"BeadID", taskReq.BeadID,
+					"TaskID", taskReq.TaskID,
 				)
 			}
 
@@ -175,4 +179,3 @@ func PlanningCeremonyWorkflow(ctx workflow.Context, req PlanningRequest) (*TaskR
 
 	return nil, fmt.Errorf("planning exhausted %d cycles without greenlight", maxPlanningCycles)
 }
-

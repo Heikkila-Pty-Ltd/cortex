@@ -104,7 +104,7 @@ if [[ "$skip_build" -ne 1 ]]; then
 fi
 
 if [[ "$skip_tests" -ne 1 ]]; then
-  run_gate "tests" env GOCACHE=/tmp/go-build go test ./internal/beads ./internal/scheduler ./internal/health ./internal/api
+  run_gate "tests" env GOCACHE=/tmp/go-build go test ./internal/graph ./internal/health ./internal/api
 fi
 
 run_gate "api_security_controls_present" check_api_security_gate

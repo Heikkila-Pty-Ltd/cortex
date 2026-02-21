@@ -2,7 +2,6 @@ package temporal
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -51,7 +50,7 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 		})
 		if slow {
 			logger.Warn(SharkPrefix+" SLOW STEP",
-				"Step", name, "DurationS", dur.Seconds(), "Threshold", slowThreshold.String())
+				"Step", name, "DurationS", dur.Seconds(), "Threshold", slowThreshold.String(), "Status", status)
 		} else {
 			logger.Info(SharkPrefix+" Step complete",
 				"Step", name, "DurationS", dur.Seconds(), "Status", status)
@@ -95,7 +94,7 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 	planStart := workflow.Now(ctx)
 	var plan StructuredPlan
 	if req.AutoApprove {
-		logger.Info(SharkPrefix+" Phase 1: Execution-ready bead — using bead as plan (skipping LLM)")
+		logger.Info(SharkPrefix + " Phase 1: Execution-ready bead — using bead as plan (skipping LLM)")
 		plan = StructuredPlan{
 			Summary:            req.Prompt,
 			AcceptanceCriteria: []string{"See bead acceptance criteria"},
@@ -131,7 +130,6 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 		"AutoApprove", req.AutoApprove,
 	)
 
-
 	// ===== PHASE 2: HUMAN GATE =====
 	// Pre-planned work (has acceptance criteria) skips the gate.
 	// "If CHUM is in the water, feed."
@@ -161,17 +159,17 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 
 	gateStart := workflow.Now(ctx)
 	if req.AutoApprove {
-		logger.Info(SharkPrefix+" Phase 2: Auto-approved (pre-planned work)")
+		logger.Info(SharkPrefix + " Phase 2: Auto-approved (pre-planned work)")
 		recordStep("gate", gateStart, "skipped")
 	} else {
-		logger.Info(SharkPrefix+" Phase 2: Waiting for human approval")
+		logger.Info(SharkPrefix + " Phase 2: Waiting for human approval")
 		signalChan := workflow.GetSignalChannel(ctx, "human-approval")
 		var signalVal string
 		signalChan.Receive(ctx, &signalVal)
 
 		if signalVal == "REJECTED" {
 			recordStep("gate", gateStart, "failed")
-			recordOutcome(ctx, recordOpts, a, req, "rejected", 0, 0, false, "Plan rejected by human", startTime, 0,
+			recordOutcome(ctx, recordOpts, a, req, "rejected", 0, 0, false, "Plan rejected by human", startTime,
 				totalTokens, activityTokens, stepMetrics)
 			return fmt.Errorf("plan rejected by human")
 		}
@@ -206,6 +204,7 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 		// --- CROSS-MODEL REVIEW LOOP ---
 		reviewStart := workflow.Now(ctx)
 		reviewPassed := false
+		reviewStatus := "failed"
 		for handoff := 0; handoff < maxHandoffs; handoff++ {
 			reviewCtx := workflow.WithActivityOptions(ctx, reviewOpts)
 			var review ReviewResult
@@ -217,6 +216,7 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 			if err := workflow.ExecuteActivity(reviewCtx, a.CodeReviewActivity, plan, execResult, reviewReq).Get(ctx, &review); err != nil {
 				logger.Warn(SharkPrefix+" Review activity failed", "error", err)
 				reviewPassed = true // don't block on review infrastructure failures
+				reviewStatus = "failed"
 				break
 			}
 
@@ -228,6 +228,7 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 			if review.Approved {
 				logger.Info(SharkPrefix+" Code review approved", "Reviewer", review.ReviewerAgent, "Handoff", handoff)
 				reviewPassed = true
+				reviewStatus = "ok"
 				break
 			}
 
@@ -248,8 +249,10 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 			req.Agent = currentAgent
 
 			// Re-execute with the swapped agent
+			handoffExecStart := workflow.Now(ctx)
 			var reExecResult ExecutionResult
 			if err := workflow.ExecuteActivity(execCtx, a.ExecuteActivity, plan, req).Get(ctx, &reExecResult); err != nil {
+				recordStep(fmt.Sprintf("handoff-execute[%d]", handoffCount), handoffExecStart, "failed")
 				allFailures = append(allFailures, fmt.Sprintf("Handoff %d execute error: %s", handoffCount, err.Error()))
 				break
 			}
@@ -257,6 +260,7 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 			activityTokens = append(activityTokens, ActivityTokenUsage{
 				ActivityName: "execute", Agent: reExecResult.Agent, Tokens: reExecResult.Tokens,
 			})
+			recordStep(fmt.Sprintf("handoff-execute[%d]", handoffCount), handoffExecStart, "ok")
 			execResult = reExecResult
 		}
 
@@ -265,7 +269,7 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 			allFailures = append(allFailures, fmt.Sprintf("Attempt %d: review not passed after %d handoffs", attempt+1, handoffCount))
 			continue
 		}
-		recordStep(fmt.Sprintf("review[%d]", attempt+1), reviewStart, "ok")
+		recordStep(fmt.Sprintf("review[%d]", attempt+1), reviewStart, reviewStatus)
 
 		// --- SEMGREP PRE-FILTER ---
 		// Run custom .semgrep/ rules first. Free and fast — catches known
@@ -294,7 +298,7 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 
 		// --- DOD VERIFICATION ---
 		dodStart := workflow.Now(ctx)
-		logger.Info(SharkPrefix+" Running DoD checks")
+		logger.Info(SharkPrefix + " Running DoD checks")
 		dodCtx := workflow.WithActivityOptions(ctx, dodOpts)
 		var dodResult DoDResult
 		if err := workflow.ExecuteActivity(dodCtx, a.DoDVerifyActivity, req).Get(ctx, &dodResult); err != nil {
@@ -315,7 +319,7 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 				"TotalCostUSD", totalTokens.CostUSD,
 			)
 			recordOutcome(ctx, recordOpts, a, req, "completed", 0,
-				handoffCount, true, "", startTime, attempt+1, totalTokens, activityTokens, stepMetrics)
+				handoffCount, true, "", startTime, totalTokens, activityTokens, stepMetrics)
 
 			// ===== CHUM LOOP — spawn async learner + groomer =====
 			spawnCHUMWorkflows(ctx, logger, req, plan)
@@ -334,37 +338,39 @@ func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 
 	// ===== ESCALATE — all retries exhausted =====
 	escalateStart := workflow.Now(ctx)
-	logger.Error(SharkPrefix+" All attempts exhausted, escalating to chief")
+	logger.Error(SharkPrefix + " All attempts exhausted, escalating to chief")
 
 	escalateCtx := workflow.WithActivityOptions(ctx, recordOpts)
-	_ = workflow.ExecuteActivity(escalateCtx, a.EscalateActivity, EscalationRequest{
-		BeadID:       req.BeadID,
+	if err := workflow.ExecuteActivity(escalateCtx, a.EscalateActivity, EscalationRequest{
+		TaskID:       req.TaskID,
 		Project:      req.Project,
 		PlanSummary:  plan.Summary,
 		Failures:     allFailures,
 		AttemptCount: maxDoDRetries,
 		HandoffCount: handoffCount,
-	}).Get(ctx, nil)
+	}).Get(ctx, nil); err != nil {
+		logger.Warn(SharkPrefix+" Escalation activity failed (best-effort)", "error", err)
+	}
 	recordStep("escalate", escalateStart, "ok")
 
 	recordOutcome(ctx, recordOpts, a, req, "escalated", 1,
-		handoffCount, false, strings.Join(allFailures, "\n"), startTime, maxDoDRetries, totalTokens, activityTokens, stepMetrics)
+		handoffCount, false, strings.Join(allFailures, "\n"), startTime, totalTokens, activityTokens, stepMetrics)
 
 	return fmt.Errorf("task escalated after %d attempts: %s", maxDoDRetries, strings.Join(allFailures, "; "))
 }
 
 // recordOutcome is a helper to persist the workflow outcome via RecordOutcomeActivity.
 func recordOutcome(ctx workflow.Context, opts workflow.ActivityOptions, a *Activities,
-	req TaskRequest, status string, exitCode int, handoffs int,
-	dodPassed bool, dodFailures string, startTime time.Time, attempts int,
+	req TaskRequest, status string, exitCode, handoffs int,
+	dodPassed bool, dodFailures string, startTime time.Time,
 	tokens TokenUsage, activityTokens []ActivityTokenUsage, steps []StepMetric) {
-	_ = attempts
 
+	logger := workflow.GetLogger(ctx)
 	recordCtx := workflow.WithActivityOptions(ctx, opts)
 	duration := workflow.Now(ctx).Sub(startTime).Seconds()
 
-	_ = workflow.ExecuteActivity(recordCtx, a.RecordOutcomeActivity, OutcomeRecord{
-		BeadID:         req.BeadID,
+	if err := workflow.ExecuteActivity(recordCtx, a.RecordOutcomeActivity, OutcomeRecord{
+		TaskID:         req.TaskID,
 		Project:        req.Project,
 		Agent:          req.Agent,
 		Reviewer:       req.Reviewer,
@@ -378,7 +384,9 @@ func recordOutcome(ctx workflow.Context, opts workflow.ActivityOptions, a *Activ
 		TotalTokens:    tokens,
 		ActivityTokens: activityTokens,
 		StepMetrics:    steps,
-	}).Get(ctx, nil)
+	}).Get(ctx, nil); err != nil {
+		logger.Warn(SharkPrefix+" RecordOutcome activity failed (best-effort)", "error", err)
+	}
 }
 
 // spawnCHUMWorkflows fires off the ContinuousLearner and TacticalGroom as
@@ -391,7 +399,7 @@ func spawnCHUMWorkflows(ctx workflow.Context, logger log.Logger, req TaskRequest
 
 	// --- Spawn ContinuousLearnerWorkflow ---
 	learnerReq := LearnerRequest{
-		BeadID:         req.BeadID,
+		TaskID:         req.TaskID,
 		Project:        req.Project,
 		WorkDir:        req.WorkDir,
 		Agent:          req.Agent,
@@ -401,20 +409,19 @@ func spawnCHUMWorkflows(ctx workflow.Context, logger log.Logger, req TaskRequest
 		Tier:           "fast",
 	}
 	learnerOpts := chumOpts
-	learnerOpts.WorkflowID = fmt.Sprintf("learner-%s-%d", req.BeadID, workflow.Now(ctx).Unix())
+	learnerOpts.WorkflowID = fmt.Sprintf("learner-%s-%d", req.TaskID, workflow.Now(ctx).Unix())
 	learnerCtx := workflow.WithChildOptions(ctx, learnerOpts)
 	learnerFut := workflow.ExecuteChildWorkflow(learnerCtx, ContinuousLearnerWorkflow, learnerReq)
 
 	// --- Spawn TacticalGroomWorkflow ---
 	groomReq := TacticalGroomRequest{
-		BeadID:   req.BeadID,
-		Project:  req.Project,
-		WorkDir:  req.WorkDir,
-		BeadsDir: resolveBeadsDir(req.WorkDir),
-		Tier:     "fast",
+		TaskID:  req.TaskID,
+		Project: req.Project,
+		WorkDir: req.WorkDir,
+		Tier:    "fast",
 	}
 	groomOpts := chumOpts
-	groomOpts.WorkflowID = fmt.Sprintf("groom-%s-%d", req.BeadID, workflow.Now(ctx).Unix())
+	groomOpts.WorkflowID = fmt.Sprintf("groom-%s-%d", req.TaskID, workflow.Now(ctx).Unix())
 	groomCtx := workflow.WithChildOptions(ctx, groomOpts)
 	groomFut := workflow.ExecuteChildWorkflow(groomCtx, TacticalGroomWorkflow, groomReq)
 
@@ -432,10 +439,4 @@ func spawnCHUMWorkflows(ctx workflow.Context, logger log.Logger, req TaskRequest
 	} else {
 		logger.Info(SharkPrefix+" CHUM: TacticalGroom started", "WorkflowID", groomExec.ID, "RunID", groomExec.RunID)
 	}
-}
-
-// resolveBeadsDir derives the beads directory from workDir.
-// Convention: <workDir>/.beads
-func resolveBeadsDir(workDir string) string {
-	return filepath.Join(workDir, ".beads")
 }

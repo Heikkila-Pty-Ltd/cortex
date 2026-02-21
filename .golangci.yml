@@ -17,14 +17,14 @@ linters:
     - prealloc
     - nolintlint
     - bodyclose
-    - exportloopref
+    - copyloopvar
     - durationcheck
     - errorlint
     - forbidigo
     - makezero
     - nilerr
     - predeclared
-    - tenv
+    - usetesting
     - unconvert
     - unparam
     - wastedassign

@@ -16,7 +16,7 @@ var (
 	quotedStringRe      = regexp.MustCompile(`"([^"]+)"`)
 )
 
-func disableAnthropicInConfigFile(path string, fallbackModel string) (bool, error) {
+func disableAnthropicInConfigFile(path, fallbackModel string) (bool, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return false, fmt.Errorf("read config %s: %w", path, err)
@@ -33,7 +33,7 @@ func disableAnthropicInConfigFile(path string, fallbackModel string) (bool, erro
 	return true, nil
 }
 
-func setTickIntervalInConfigFile(path string, tickInterval string) (bool, error) {
+func setTickIntervalInConfigFile(path, tickInterval string) (bool, error) {
 	interval := strings.TrimSpace(tickInterval)
 	if interval == "" {
 		return false, fmt.Errorf("tick interval is required")
@@ -61,13 +61,13 @@ func setTickIntervalInConfigFile(path string, tickInterval string) (bool, error)
 	return true, nil
 }
 
-func setTickIntervalInConfigContent(input string, tickInterval string) (string, bool, error) {
+func setTickIntervalInConfigContent(input, tickInterval string) (output string, changed bool, err error) {
 	interval := strings.TrimSpace(tickInterval)
 	if interval == "" {
 		return input, false, fmt.Errorf("tick interval is required")
 	}
-	if _, err := time.ParseDuration(interval); err != nil {
-		return input, false, fmt.Errorf("invalid tick interval %q: %w", interval, err)
+	if _, parseErr := time.ParseDuration(interval); parseErr != nil {
+		return input, false, fmt.Errorf("invalid tick interval %q: %w", interval, parseErr)
 	}
 	if strings.TrimSpace(input) == "" {
 		return input, false, fmt.Errorf("config content is empty")
@@ -75,7 +75,7 @@ func setTickIntervalInConfigContent(input string, tickInterval string) (string, 
 
 	lines := strings.Split(input, "\n")
 	currentTable := ""
-	changed := false
+	changed = false
 	found := false
 
 	for i, line := range lines {
@@ -101,7 +101,7 @@ func setTickIntervalInConfigContent(input string, tickInterval string) (string, 
 		return input, false, fmt.Errorf("[general] tick_interval not found")
 	}
 
-	output := strings.Join(lines, "\n")
+	output = strings.Join(lines, "\n")
 	if strings.HasSuffix(input, "\n") && !strings.HasSuffix(output, "\n") {
 		output += "\n"
 	}
@@ -109,7 +109,7 @@ func setTickIntervalInConfigContent(input string, tickInterval string) (string, 
 	return output, changed, nil
 }
 
-func disableAnthropicInConfigContent(input string, fallbackModel string) (string, bool) {
+func disableAnthropicInConfigContent(input, fallbackModel string) (string, bool) {
 	if strings.TrimSpace(input) == "" {
 		return input, false
 	}
@@ -254,7 +254,7 @@ func trimAnthropicTierValues(line string) string {
 	return m[1] + m[2] + m[3] + "[" + strings.Join(filtered, ", ") + "]" + m[5]
 }
 
-func replaceAnthropicChiefModel(line string, fallbackModel string) string {
+func replaceAnthropicChiefModel(line, fallbackModel string) string {
 	if strings.TrimSpace(fallbackModel) == "" {
 		fallbackModel = "gpt-5.3-codex"
 	}

@@ -38,7 +38,7 @@ premium  = ["claude"]
 |-------|------|---------|-------------|
 | `tick_interval` | Duration | `60s` | Scheduler loop frequency |
 | `max_per_tick` | int | `3` | Maximum dispatches per scheduler tick |
-| `stuck_timeout` | Duration | `30m` | Mark dispatch stuck if no completion after this |
+| `stuck_timeout` | Duration | `30m` | Terminate running workflows older than this; set `0s` to disable |
 | `max_retries` | int | `3` | Global retry limit for failed dispatches |
 | `retry_backoff_base` | Duration | `5m` | Base delay for exponential backoff |
 | `retry_max_delay` | Duration | `30m` | Maximum backoff delay cap |
@@ -58,11 +58,18 @@ Cleanup rules:
 
 - `bead_closed` — terminate when bead status is `closed`.
 - `bead_deferred` — terminate when bead status is `deferred`.
-- `stuck_timeout` — terminate when execution `start_time` is older than `stuck_timeout`. Applies to both known-open beads and unknown beads (when all projects listed successfully). Set `stuck_timeout = "0s"` to disable timeout-based termination entirely.
+- `stuck_timeout` — terminate when execution `start_time` is older than `stuck_timeout`. Applies to both known-open and unknown workflows when all project inventory succeeded. Set `stuck_timeout = "0s"` to disable timeout-based termination entirely.
 
 Partial failure handling:
 
-When some projects fail to list beads, the janitor operates in partial-data mode. Unknown beads (not found in any successful project listing) are conservatively retained — neither status-based nor timeout-based termination applies. If **all** projects fail to list, the janitor aborts entirely and returns the full running set unchanged.
+When some enabled projects fail to list beads, the janitor operates in partial-data mode. Unknown workflows (not found in any successful project listing) are conservatively retained:
+
+- no status-based cleanup (`bead_closed`/`bead_deferred`) is applied;
+- no timeout cleanup is applied.
+
+If **all** projects fail to list beads, the janitor aborts and returns all running workflows unchanged. This prevents unsafe termination when bead inventory is incomplete.
+
+Project lookup is performed deterministically (sorted enabled projects), and bead statuses are normalized (`open`, `closed`, `deferred`) before classification.
 
 Per-termination log fields:
 

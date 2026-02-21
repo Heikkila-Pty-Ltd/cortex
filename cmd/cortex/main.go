@@ -7,19 +7,19 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
 	"errors"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	tclient "go.temporal.io/sdk/client"
 
 	"github.com/antigravity-dev/cortex/internal/api"
 	"github.com/antigravity-dev/cortex/internal/config"
-	"github.com/antigravity-dev/cortex/internal/scheduler"
+	"github.com/antigravity-dev/cortex/internal/graph"
 	"github.com/antigravity-dev/cortex/internal/store"
 	"github.com/antigravity-dev/cortex/internal/temporal"
 )
@@ -67,9 +67,6 @@ func main() {
 	disableAnthropic := flag.Bool("disable-anthropic", false, "remove Anthropic/Claude providers from config and exit")
 	setTickInterval := flag.String("set-tick-interval", "", "set [general].tick_interval in config (e.g. 2m) and exit")
 	fallbackModel := flag.String("fallback-model", "gpt-5.3-codex", "fallback chief model used with -disable-anthropic")
-	normalizeBeadsProject := flag.String("normalize-beads-project", "", "normalize oversized .beads/issues.jsonl rows for the given project and exit")
-	normalizeBeadsMaxBytes := flag.Int("normalize-beads-max-bytes", 60000, "maximum bytes allowed per issues.jsonl row in -normalize-beads-project mode")
-	normalizeBeadsDryRun := flag.Bool("normalize-beads-dry-run", false, "preview normalize-beads changes without writing files")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -107,36 +104,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	if projectName := strings.TrimSpace(*normalizeBeadsProject); projectName != "" {
-		projectCfg, ok := cfg.Projects[projectName]
-		if !ok {
-			logger.Error("normalize-beads failed: project not found", "project", projectName)
-			os.Exit(1)
-		}
-		beadsDir := config.ExpandHome(strings.TrimSpace(projectCfg.BeadsDir))
-		if beadsDir == "" {
-			logger.Error("normalize-beads failed: project beads_dir is empty", "project", projectName)
-			os.Exit(1)
-		}
-		issuesPath := filepath.Clean(issuesJSONLPath(beadsDir))
-		result, normalizeErr := normalizeOversizedBeadsJSONL(issuesPath, *normalizeBeadsMaxBytes, *normalizeBeadsDryRun)
-		if normalizeErr != nil {
-			logger.Error("normalize-beads failed", "project", projectName, "path", issuesPath, "error", normalizeErr)
-			os.Exit(1)
-		}
-		logger.Info("normalize-beads complete",
-			"project", projectName,
-			"path", result.Path,
-			"dry_run", *normalizeBeadsDryRun,
-			"total_rows", result.TotalLines,
-			"oversized_rows", result.OversizedRows,
-			"changed_rows", result.ChangedRows,
-			"bytes_before", result.BytesBefore,
-			"bytes_after", result.BytesAfter,
-		)
-		return
-	}
-
 	logger = configureLogger(cfg.General.LogLevel, *dev)
 	slog.SetDefault(logger)
 
@@ -149,17 +116,23 @@ func main() {
 	}
 	defer st.Close()
 
+	dag := graph.NewDAG(st.DB())
+	if schemaErr := dag.EnsureSchema(context.Background()); schemaErr != nil {
+		logger.Error("failed to ensure graph schema", "error", schemaErr)
+		os.Exit(1) //nolint:gocritic // exitAfterDefer: acceptable in main() startup
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// SIGHUP config reload
 	applyReload := func() error {
-		updatedCfg, err := config.Reload(*configPath)
-		if err != nil {
-			return err
+		updatedCfg, reloadErr := config.Reload(*configPath)
+		if reloadErr != nil {
+			return reloadErr
 		}
-		if err := validateRuntimeConfigReload(cfg, updatedCfg); err != nil {
-			return err
+		if validateErr := validateRuntimeConfigReload(cfg, updatedCfg); validateErr != nil {
+			return validateErr
 		}
 		cfgManager.Set(updatedCfg)
 		cfg = updatedCfg
@@ -168,76 +141,98 @@ func main() {
 		return nil
 	}
 
-	// Start Temporal worker
+	// Start Temporal worker — now includes DispatcherWorkflow + ScanCandidatesActivity
 	go func() {
 		logger.Info("starting temporal worker")
-		if err := temporal.StartWorker(st, cfg.Tiers); err != nil {
-			logger.Error("temporal worker error", "error", err)
+		if workerErr := temporal.StartWorker(st, cfg.Tiers, dag, cfgManager); workerErr != nil {
+			logger.Error("temporal worker error", "error", workerErr)
 		}
 	}()
 
-	// Start strategic groom cron schedules for each enabled project
+	// Start Temporal Schedules for dispatcher and strategic groom
 	go func() {
-		// Let the worker register workflows before we start cron executions
+		// Let the worker register workflows before we start schedules
 		time.Sleep(5 * time.Second)
 
-		c, err := tclient.Dial(tclient.Options{
+		tc, dialErr := tclient.Dial(tclient.Options{
 			HostPort: "127.0.0.1:7233",
 		})
-		if err != nil {
-			logger.Error("failed to create temporal client for strategic cron", "error", err)
+		if dialErr != nil {
+			logger.Error("failed to create temporal client for schedules", "error", dialErr)
 			return
 		}
-		defer c.Close()
+		defer tc.Close()
 
-		for name, project := range cfg.Projects {
+		// --- Dispatcher Schedule (replaces old scheduler.Run goroutine) ---
+		tickInterval := cfg.General.TickInterval.Duration
+		if tickInterval <= 0 {
+			tickInterval = 60 * time.Second
+		}
+
+		schedClient := tc.ScheduleClient()
+		_, schedErr := schedClient.Create(ctx, tclient.ScheduleOptions{
+			ID: "cortex-dispatcher",
+			Spec: tclient.ScheduleSpec{
+				Intervals: []tclient.ScheduleIntervalSpec{
+					{Every: tickInterval},
+				},
+			},
+			Action: &tclient.ScheduleWorkflowAction{
+				Workflow:  temporal.DispatcherWorkflow,
+				Args:      []interface{}{struct{}{}},
+				TaskQueue: "cortex-task-queue",
+				ID:        "dispatcher",
+			},
+			Overlap: enumspb.SCHEDULE_OVERLAP_POLICY_SKIP,
+		})
+		if schedErr != nil {
+			// Schedule may already exist from a previous run — that's fine.
+			var alreadyExists *serviceerror.WorkflowExecutionAlreadyStarted
+			switch {
+			case errors.As(schedErr, &alreadyExists):
+				logger.Info("dispatcher schedule already exists", "interval", tickInterval)
+			case strings.Contains(schedErr.Error(), "already exists") ||
+				strings.Contains(schedErr.Error(), "AlreadyExists") ||
+				strings.Contains(schedErr.Error(), "already registered"):
+				logger.Info("dispatcher schedule already exists", "interval", tickInterval)
+			default:
+				logger.Error("failed to create dispatcher schedule", "error", schedErr)
+			}
+		} else {
+			logger.Info("dispatcher schedule registered", "interval", tickInterval)
+		}
+
+		// --- Strategic Groom Cron (per-project, daily at 5 AM) ---
+		for name, project := range cfg.Projects { //nolint:gocritic // rangeValCopy: config.Project is a small value type used briefly
 			if !project.Enabled {
 				continue
 			}
 
 			workflowID := fmt.Sprintf("strategic-groom-%s", name)
 			req := temporal.StrategicGroomRequest{
-				Project:  name,
-				WorkDir:  config.ExpandHome(project.Workspace),
-				BeadsDir: config.ExpandHome(project.BeadsDir),
-				Tier:     "premium",
+				Project: name,
+				WorkDir: config.ExpandHome(project.Workspace),
+				Tier:    "premium",
 			}
 
-			_, err := c.ExecuteWorkflow(ctx, tclient.StartWorkflowOptions{
+			_, groomErr := tc.ExecuteWorkflow(ctx, tclient.StartWorkflowOptions{
 				ID:           workflowID,
 				TaskQueue:    "cortex-task-queue",
 				CronSchedule: "0 5 * * *",
 			}, temporal.StrategicGroomWorkflow, req)
-			if err != nil {
+			if groomErr != nil {
 				var alreadyStarted *serviceerror.WorkflowExecutionAlreadyStarted
-				if errors.As(err, &alreadyStarted) {
+				if errors.As(groomErr, &alreadyStarted) {
 					logger.Info("strategic cron already running", "project", name, "workflow_id", workflowID)
 					continue
 				}
-				logger.Error("failed to start strategic cron", "project", name, "error", err)
+				logger.Error("failed to start strategic cron", "project", name, "error", groomErr)
 				continue
 			}
 			logger.Info("strategic cron registered", "project", name, "workflow_id", workflowID, "schedule", "0 5 * * *")
 		}
 	}()
 
-	// Start scheduler tick loop
-	go func() {
-		// Let the worker register workflows before the scheduler tries to dispatch.
-		time.Sleep(5 * time.Second)
-
-		schedClient, err := tclient.Dial(tclient.Options{
-			HostPort: "127.0.0.1:7233",
-		})
-		if err != nil {
-			logger.Error("failed to create temporal client for scheduler", "error", err)
-			return
-		}
-		defer schedClient.Close()
-
-		sched := scheduler.New(cfgManager, schedClient, logger.With("component", "scheduler"))
-		sched.Run(ctx)
-	}()
 
 	// Start API server
 	apiSrv, err := api.NewServer(cfg, st, logger.With("component", "api"))

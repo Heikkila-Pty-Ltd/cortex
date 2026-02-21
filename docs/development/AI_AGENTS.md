@@ -181,7 +181,7 @@ bd update <id> --parent <parent-id>
 
 # 4) Verify bead shape before leaving it open
 bd show <id>
-make lint-beads
+bd show <id>  # verify task shape
 ```
 
 Sizing guidance (minutes):

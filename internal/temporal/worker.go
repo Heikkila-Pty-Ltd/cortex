@@ -7,12 +7,14 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	"github.com/antigravity-dev/cortex/internal/config"
+	"github.com/antigravity-dev/cortex/internal/graph"
 	"github.com/antigravity-dev/cortex/internal/store"
 )
 
 // StartWorker connects to Temporal and starts the cortex task queue worker.
-// The store and tiers are injected so activities can record outcomes and resolve agents.
-func StartWorker(st *store.Store, tiers config.Tiers) error {
+// The store, tiers, dag, and cfgMgr are injected so activities can record
+// outcomes, resolve agents, and scan for ready tasks.
+func StartWorker(st *store.Store, tiers config.Tiers, dag *graph.DAG, cfgMgr config.ConfigManager) error {
 	c, err := client.Dial(client.Options{
 		HostPort: "127.0.0.1:7233",
 	})
@@ -23,11 +25,19 @@ func StartWorker(st *store.Store, tiers config.Tiers) error {
 
 	w := worker.New(c, "cortex-task-queue", worker.Options{})
 
-	acts := &Activities{Store: st, Tiers: tiers}
+	acts := &Activities{Store: st, Tiers: tiers, DAG: dag}
+	dispatchActs := &DispatchActivities{
+		CfgMgr: cfgMgr,
+		TC:     c,
+		DAG:    dag,
+	}
 
 	// --- Core Workflows ---
 	w.RegisterWorkflow(CortexAgentWorkflow)
 	w.RegisterWorkflow(PlanningCeremonyWorkflow)
+
+	// --- Dispatcher Workflow ---
+	w.RegisterWorkflow(DispatcherWorkflow)
 
 	// --- CHUM Workflows ---
 	w.RegisterWorkflow(ContinuousLearnerWorkflow)
@@ -45,6 +55,9 @@ func StartWorker(st *store.Store, tiers config.Tiers) error {
 	w.RegisterActivity(acts.GenerateQuestionsActivity)
 	w.RegisterActivity(acts.SummarizePlanActivity)
 
+	// --- Dispatcher Activities ---
+	w.RegisterActivity(dispatchActs.ScanCandidatesActivity)
+
 	// --- CHUM Learner Activities ---
 	w.RegisterActivity(acts.ExtractLessonsActivity)
 	w.RegisterActivity(acts.StoreLessonActivity)
@@ -52,7 +65,7 @@ func StartWorker(st *store.Store, tiers config.Tiers) error {
 	w.RegisterActivity(acts.RunSemgrepScanActivity)
 
 	// --- CHUM Groom Activities ---
-	w.RegisterActivity(acts.MutateBeadsActivity)
+	w.RegisterActivity(acts.MutateTasksActivity)
 	w.RegisterActivity(acts.GenerateRepoMapActivity)
 	w.RegisterActivity(acts.GetBeadStateSummaryActivity)
 	w.RegisterActivity(acts.StrategicAnalysisActivity)

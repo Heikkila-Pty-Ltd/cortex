@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/antigravity-dev/cortex/internal/beads"
 	"github.com/antigravity-dev/cortex/internal/config"
 	"github.com/antigravity-dev/cortex/internal/dispatch"
+	"github.com/antigravity-dev/cortex/internal/graph"
 	"github.com/antigravity-dev/cortex/internal/store"
 )
 
@@ -81,6 +81,7 @@ type PollerConfig struct {
 	Store          commandStore
 	Canceler       commandCanceler
 	CommandSenders []string
+	DAG            *graph.DAG
 }
 
 // Poller polls Matrix rooms and routes inbound messages to project scrum agents.
@@ -88,6 +89,7 @@ type Poller struct {
 	cfg        PollerConfig
 	client     Client
 	dispatcher dispatch.DispatcherInterface
+	dag        *graph.DAG
 	logger     *slog.Logger
 
 	projects       map[string]config.Project
@@ -118,6 +120,7 @@ func NewPoller(cfg PollerConfig, client Client, dispatcher dispatch.DispatcherIn
 		cfg:            cfg,
 		client:         client,
 		dispatcher:     dispatcher,
+		dag:            cfg.DAG,
 		logger:         logger,
 		projects:       cloneProjects(cfg.Projects),
 		sender:         cfg.Sender,
@@ -463,15 +466,14 @@ func (p *Poller) handlePriorityCommand(ctx context.Context, project, beadID stri
 	if strings.TrimSpace(project) == "" {
 		return "", fmt.Errorf("missing project")
 	}
-	cfg, ok := p.projectConfig(project)
-	if !ok {
+	if _, ok := p.projectConfig(project); !ok {
 		return "", fmt.Errorf("unknown project %q", project)
 	}
-	if strings.TrimSpace(cfg.BeadsDir) == "" {
-		return "", fmt.Errorf("project %q is missing beads_dir", project)
+	if p.dag == nil {
+		return "", fmt.Errorf("DAG not configured")
 	}
 
-	if err := beads.UpdatePriorityCtx(ctx, config.ExpandHome(cfg.BeadsDir), beadID, priority); err != nil {
+	if err := p.dag.UpdateTask(ctx, beadID, map[string]any{"priority": priority}); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("Updated %s priority to p%d", beadID, priority), nil
@@ -488,16 +490,22 @@ func (p *Poller) handleCancelCommand(_ context.Context, dispatchID int64) (strin
 }
 
 func (p *Poller) handleCreateCommand(project, title, description string) (string, error) {
-	cfg, ok := p.projectConfig(project)
-	if !ok {
+	if _, ok := p.projectConfig(project); !ok {
 		return "", fmt.Errorf("unknown project %q", project)
 	}
-	beadsDir := strings.TrimSpace(cfg.BeadsDir)
-	if beadsDir == "" {
-		return "", fmt.Errorf("project %q is missing beads_dir", project)
+	if p.dag == nil {
+		return "", fmt.Errorf("DAG not configured")
 	}
 
-	id, err := beads.CreateIssueCtx(context.Background(), config.ExpandHome(beadsDir), title, "task", 2, description, "", "", 0, nil, nil)
+	task := graph.Task{
+		Title:       title,
+		Type:        "task",
+		Priority:    2,
+		Description: description,
+		Project:     project,
+		Status:      "open",
+	}
+	id, err := p.dag.CreateTask(context.Background(), task)
 	if err != nil {
 		return "", err
 	}

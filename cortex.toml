@@ -3,9 +3,9 @@
 [general]
 tick_interval = "2m"
 max_per_tick = 3
-max_concurrent_coders = 3
+max_concurrent_coders = 4
 max_concurrent_reviewers = 1
-max_concurrent_total = 3
+max_concurrent_total = 5
 stuck_timeout = "30m"
 max_retries = 6
 log_level = "info"

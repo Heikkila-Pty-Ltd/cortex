@@ -2,16 +2,17 @@ package graph
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
-	"crypto/rand"
+	"errors"
 	"fmt"
 	"math/big"
 	"sort"
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // register sqlite3 driver
 )
 
 const (
@@ -267,7 +268,7 @@ func (d *DAG) GetTask(ctx context.Context, id string) (Task, error) {
 	row := queryRowContext(ctx, d.db, getTaskSQL, id)
 	task, err := scanTask(row)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return Task{}, fmt.Errorf("task %q: not found", id)
 		}
 		return Task{}, err
@@ -310,15 +311,15 @@ func (d *DAG) ListTasks(ctx context.Context, project string, statuses ...string)
 	var tasks []Task
 	var ids []string
 	for rows.Next() {
-		task, err := scanTask(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan task: %w", err)
+		task, scanErr := scanTask(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan task: %w", scanErr)
 		}
 		ids = append(ids, task.ID)
 		tasks = append(tasks, task)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list tasks: %w", err)
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, fmt.Errorf("list tasks: %w", rowsErr)
 	}
 
 	dependencies, err := d.taskDependencies(ctx, ids)
@@ -470,8 +471,8 @@ func (d *DAG) AddEdge(ctx context.Context, from, to string) error {
 	if fromProject != toProject {
 		return fmt.Errorf("graph: cross-project dependencies are not allowed")
 	}
-	if err := d.ensureNoCycle(ctx, from, to); err != nil {
-		return err
+	if cycleErr := d.ensureNoCycle(ctx, from, to); cycleErr != nil {
+		return cycleErr
 	}
 
 	_, err = execContext(ctx, d.db, insertEdgeSQL, from, to)
@@ -513,15 +514,15 @@ func (d *DAG) GetReadyNodes(ctx context.Context, project string) ([]Task, error)
 	var tasks []Task
 	var ids []string
 	for rows.Next() {
-		task, err := scanTask(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan task: %w", err)
+		task, scanErr := scanTask(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan task: %w", scanErr)
 		}
 		ids = append(ids, task.ID)
 		tasks = append(tasks, task)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("get ready nodes: %w", err)
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, fmt.Errorf("get ready nodes: %w", rowsErr)
 	}
 
 	dependencies, err := d.taskDependencies(ctx, ids)
@@ -539,7 +540,7 @@ func (d *DAG) taskProject(ctx context.Context, id string) (string, error) {
 	row := queryRowContext(ctx, d.db, selectTaskProjectSQL, id)
 	var project string
 	if err := row.Scan(&project); err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return "", fmt.Errorf("graph: task %q: not found", id)
 		}
 		return "", fmt.Errorf("lookup task %q project: %w", id, err)
@@ -553,7 +554,7 @@ func (d *DAG) ensureNoCycle(ctx context.Context, from, to string) error {
 	if err == nil {
 		return fmt.Errorf("graph: adding this edge would create a cycle")
 	}
-	if err != sql.ErrNoRows {
+	if !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("cycle check: %w", err)
 	}
 	return nil

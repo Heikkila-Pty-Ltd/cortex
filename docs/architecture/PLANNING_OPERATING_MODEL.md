@@ -31,8 +31,8 @@ Keep implementation costs low by moving decision-making into plan-space:
 
 The `stage:ready` gate is a hard preflight with two enforcement points:
 
-- `lint-beads` must pass with all `stage:ready` requirements (acceptance + test + DoD + design notes + estimate)
-- scheduler preflight auto-reverts any invalid `stage:ready` bead back to `stage:planning`
+- DAG readiness checks enforce all `stage:ready` requirements (acceptance + test + DoD + design notes + estimate)
+- dispatcher preflight auto-reverts any invalid `stage:ready` task back to `stage:planning`
 
 A bead is executable only when all are true:
 

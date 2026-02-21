@@ -35,7 +35,7 @@ func sanitizeForFilename(s string) string {
 // DoD results, and review feedback to extract reusable lessons.
 func (a *Activities) ExtractLessonsActivity(ctx context.Context, req LearnerRequest) ([]Lesson, error) {
 	logger := activity.GetLogger(ctx)
-	logger.Info(LearnerPrefix+" Extracting lessons", "BeadID", req.BeadID, "Tier", req.Tier)
+	logger.Info(LearnerPrefix+" Extracting lessons", "TaskID", req.TaskID, "Tier", req.Tier)
 
 	// Build context from the bead's journey
 	var contextParts []string
@@ -55,11 +55,13 @@ func (a *Activities) ExtractLessonsActivity(ctx context.Context, req LearnerRequ
 	// Query existing lessons to avoid duplication
 	var existingContext string
 	if a.Store != nil && len(req.FilesChanged) > 0 {
-		existing, _ := a.Store.SearchLessonsByFilePath(req.FilesChanged, 5)
-		if len(existing) > 0 {
+		existing, existingErr := a.Store.SearchLessonsByFilePath(req.FilesChanged, 5)
+		if existingErr != nil {
+			logger.Warn(LearnerPrefix+" Failed to search existing lessons", "error", existingErr)
+		} else if len(existing) > 0 {
 			var summaries []string
-			for _, l := range existing {
-				summaries = append(summaries, fmt.Sprintf("- [%s] %s", l.Category, l.Summary))
+			for i := range existing {
+				summaries = append(summaries, fmt.Sprintf("- [%s] %s", existing[i].Category, existing[i].Summary))
 			}
 			existingContext = "EXISTING LESSONS (do NOT duplicate):\n" + strings.Join(summaries, "\n")
 		}
@@ -89,7 +91,7 @@ Respond with ONLY a JSON array:
 }]
 
 If there are no meaningful lessons, return an empty array [].`,
-		req.BeadID, req.Project, req.Agent, req.DoDPassed,
+		req.TaskID, req.Project, req.Agent, req.DoDPassed,
 		strings.Join(contextParts, "\n\n"),
 		existingContext,
 	)
@@ -114,7 +116,7 @@ If there are no meaningful lessons, return an empty array [].`,
 
 	// Stamp bead/project on each lesson
 	for i := range lessons {
-		lessons[i].BeadID = req.BeadID
+		lessons[i].TaskID = req.TaskID
 		lessons[i].Project = req.Project
 	}
 
@@ -123,7 +125,7 @@ If there are no meaningful lessons, return an empty array [].`,
 }
 
 // StoreLessonActivity persists lessons to SQLite FTS5.
-// Idempotent: checks for duplicate bead_id + summary before inserting.
+// Idempotent: checks for duplicate task_id + summary before inserting.
 func (a *Activities) StoreLessonActivity(ctx context.Context, lessons []Lesson) error {
 	logger := activity.GetLogger(ctx)
 	if a.Store == nil {
@@ -132,12 +134,16 @@ func (a *Activities) StoreLessonActivity(ctx context.Context, lessons []Lesson) 
 	}
 
 	stored := 0
-	for _, lesson := range lessons {
+	for i := range lessons {
+		lesson := &lessons[i]
 		// Idempotency: check if this exact lesson already exists
-		existing, _ := a.Store.GetLessonsByBead(lesson.BeadID)
+		existing, existingErr := a.Store.GetLessonsByBead(lesson.TaskID)
+		if existingErr != nil {
+			logger.Warn(LearnerPrefix+" Failed to check existing lessons", "bead", lesson.TaskID, "error", existingErr)
+		}
 		isDuplicate := false
-		for _, e := range existing {
-			if e.Summary == lesson.Summary {
+		for j := range existing {
+			if existing[j].Summary == lesson.Summary {
 				isDuplicate = true
 				break
 			}
@@ -147,7 +153,7 @@ func (a *Activities) StoreLessonActivity(ctx context.Context, lessons []Lesson) 
 		}
 
 		_, err := a.Store.StoreLesson(
-			lesson.BeadID, lesson.Project, lesson.Category,
+			lesson.TaskID, lesson.Project, lesson.Category,
 			lesson.Summary, lesson.Detail,
 			lesson.FilePaths, lesson.Labels,
 			lesson.SemgrepRuleID,
@@ -171,17 +177,18 @@ func (a *Activities) GenerateSemgrepRuleActivity(ctx context.Context, req Learne
 
 	// Filter to enforceable lessons
 	var enforceable []Lesson
-	for _, l := range lessons {
-		if l.Category == "rule" || l.Category == "antipattern" {
-			enforceable = append(enforceable, l)
+	for i := range lessons {
+		if lessons[i].Category == "rule" || lessons[i].Category == "antipattern" {
+			enforceable = append(enforceable, lessons[i])
 		}
 	}
 	if len(enforceable) == 0 {
 		return nil, nil
 	}
 
-	var rules []SemgrepRule
-	for _, lesson := range enforceable {
+	rules := make([]SemgrepRule, 0, len(enforceable))
+	for i := range enforceable {
+		lesson := &enforceable[i]
 		prompt := fmt.Sprintf(`You are a Semgrep rule author. Generate a Semgrep rule for this code pattern:
 
 LESSON: %s
@@ -233,10 +240,13 @@ rules:
 
 		// Write to .semgrep/ directory
 		semgrepDir := filepath.Join(req.WorkDir, ".semgrep")
-		os.MkdirAll(semgrepDir, 0755)
+		if mkdirErr := os.MkdirAll(semgrepDir, 0o755); mkdirErr != nil {
+			logger.Error(LearnerPrefix+" Failed to create semgrep dir", "path", semgrepDir, "error", mkdirErr)
+			continue
+		}
 		rulePath := filepath.Join(semgrepDir, fileName)
 
-		if err := os.WriteFile(rulePath, []byte(output), 0644); err != nil {
+		if err := os.WriteFile(rulePath, []byte(output), 0o644); err != nil {
 			logger.Error(LearnerPrefix+" Failed to write semgrep rule", "path", rulePath, "error", err)
 			continue
 		}
@@ -260,17 +270,17 @@ func (a *Activities) RunSemgrepScanActivity(ctx context.Context, workDir string)
 	logger := activity.GetLogger(ctx)
 
 	// Check if semgrep is installed
-	if _, err := exec.LookPath("semgrep"); err != nil {
+	if _, lookErr := exec.LookPath("semgrep"); lookErr != nil {
 		logger.Info(LearnerPrefix+" Semgrep not installed, skipping pre-filter")
-		return &SemgrepScanResult{Passed: true}, nil
+		return &SemgrepScanResult{Passed: true}, nil //nolint:nilerr // graceful degradation when semgrep not installed
 	}
 
 	// Check if .semgrep/ directory exists and has rules
 	semgrepDir := filepath.Join(workDir, ".semgrep")
-	entries, err := os.ReadDir(semgrepDir)
-	if err != nil || len(entries) == 0 {
+	entries, readDirErr := os.ReadDir(semgrepDir)
+	if readDirErr != nil || len(entries) == 0 {
 		logger.Info(LearnerPrefix+" No custom semgrep rules found, skipping")
-		return &SemgrepScanResult{Passed: true}, nil
+		return &SemgrepScanResult{Passed: true}, nil //nolint:nilerr // graceful degradation when no rules exist
 	}
 
 	cmd := exec.CommandContext(ctx, "semgrep", "scan",
@@ -312,3 +322,155 @@ func (a *Activities) RunSemgrepScanActivity(ctx context.Context, workDir string)
 		Output:   truncate(outStr, 2000),
 	}, nil
 }
+
+// SynthesizeCLAUDEmdActivity reads ALL accumulated lessons from the knowledge base,
+// deduplicates and groups by category, and writes a CLAUDE.md file to the project root.
+// Both Claude CLI and Codex CLI auto-read CLAUDE.md, closing the long-term memory loop.
+//
+// This is the "institutional memory" — not just what failed last time, but what the
+// project has learned over hundreds of dispatches.
+func (a *Activities) SynthesizeCLAUDEmdActivity(ctx context.Context, req LearnerRequest) error {
+	logger := activity.GetLogger(ctx)
+
+	if a.Store == nil {
+		logger.Warn(LearnerPrefix + " No store configured, skipping CLAUDE.md synthesis")
+		return nil
+	}
+
+	// Read ALL lessons for this project (not just recent)
+	allLessons, err := a.Store.GetRecentLessons(req.Project, 100)
+	if err != nil {
+		logger.Warn(LearnerPrefix+" Failed to read lessons for CLAUDE.md", "error", err)
+		return nil // non-fatal
+	}
+	if len(allLessons) == 0 {
+		logger.Info(LearnerPrefix + " No lessons to synthesize, skipping CLAUDE.md")
+		return nil
+	}
+
+	// --- Deduplicate and count frequency ---
+	type lessonKey struct {
+		Category string
+		Summary  string
+	}
+	type weightedLesson struct {
+		Category string
+		Summary  string
+		Detail   string
+		Count    int
+	}
+
+	freq := make(map[lessonKey]*weightedLesson)
+	for i := range allLessons {
+		key := lessonKey{allLessons[i].Category, allLessons[i].Summary}
+		if wl, ok := freq[key]; ok {
+			wl.Count++
+		} else {
+			freq[key] = &weightedLesson{
+				Category: allLessons[i].Category,
+				Summary:  allLessons[i].Summary,
+				Detail:   allLessons[i].Detail,
+				Count:    1,
+			}
+		}
+	}
+
+	// Sort by frequency (most common first)
+	sorted := make([]*weightedLesson, 0, len(freq))
+	for _, wl := range freq {
+		sorted = append(sorted, wl)
+	}
+	for i := 0; i < len(sorted); i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			if sorted[j].Count > sorted[i].Count {
+				sorted[i], sorted[j] = sorted[j], sorted[i]
+			}
+		}
+	}
+
+	// --- Read recent DoD failure patterns ---
+	var dodPatterns []string
+	rows, err := a.Store.DB().Query(`
+		SELECT failures, COUNT(*) as cnt FROM dod_results
+		WHERE project = ? AND passed = 0 AND failures != ''
+		GROUP BY failures ORDER BY cnt DESC LIMIT 5`, req.Project)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var f string
+			var cnt int
+			if rows.Scan(&f, &cnt) == nil {
+				dodPatterns = append(dodPatterns, fmt.Sprintf("%s (×%d)", f, cnt))
+			}
+		}
+	}
+
+	// --- Build CLAUDE.md ---
+	var md strings.Builder
+	md.WriteString("# Project Rules — Auto-generated by Cortex Learner\n\n")
+	md.WriteString("> This file is continuously updated after each task completion.\n")
+	md.WriteString("> It captures accumulated project wisdom from automated code generation and review.\n")
+	md.WriteString(fmt.Sprintf("> **%d lessons** from **%d observations** across this project.\n\n", len(sorted), len(allLessons)))
+
+	// Group by category with priority ordering
+	categoryOrder := []string{"rule", "antipattern", "pattern", "insight"}
+	categoryHeaders := map[string]string{
+		"rule":        "## Rules (Enforced)\n\nThese MUST be followed. Violations will cause DoD failure.\n\n",
+		"antipattern": "## Anti-patterns (Avoid)\n\nThese patterns have caused failures before.\n\n",
+		"pattern":     "## Good Patterns (Follow)\n\nThese approaches have been verified to work.\n\n",
+		"insight":     "## Insights\n\nObservations from project history.\n\n",
+	}
+
+	for _, cat := range categoryOrder {
+		var catLessons []*weightedLesson
+		for _, wl := range sorted {
+			if wl.Category == cat {
+				catLessons = append(catLessons, wl)
+			}
+		}
+		if len(catLessons) == 0 {
+			continue
+		}
+
+		md.WriteString(categoryHeaders[cat])
+		for _, wl := range catLessons {
+			if wl.Count > 1 {
+				md.WriteString(fmt.Sprintf("- **%s** (seen %d×)\n", wl.Summary, wl.Count))
+			} else {
+				md.WriteString(fmt.Sprintf("- %s\n", wl.Summary))
+			}
+		}
+		md.WriteString("\n")
+	}
+
+	// DoD patterns section
+	if len(dodPatterns) > 0 {
+		md.WriteString("## Common DoD Failures\n\n")
+		md.WriteString("These checks frequently fail. Address them proactively:\n\n")
+		for _, p := range dodPatterns {
+			md.WriteString(fmt.Sprintf("- %s\n", p))
+		}
+		md.WriteString("\n")
+	}
+
+	// DoD command reminder
+	md.WriteString("## Definition of Done\n\n")
+	md.WriteString("Every change must pass: `go build ./... && go vet ./... && golangci-lint run --timeout=5m`\n\n")
+	md.WriteString("Run these locally before considering the task complete.\n")
+
+	// Write to project root
+	claudePath := filepath.Join(req.WorkDir, "CLAUDE.md")
+	if err := os.WriteFile(claudePath, []byte(md.String()), 0o644); err != nil {
+		logger.Error(LearnerPrefix+" Failed to write CLAUDE.md", "path", claudePath, "error", err)
+		return nil // non-fatal
+	}
+
+	logger.Info(LearnerPrefix+" CLAUDE.md synthesized",
+		"Path", claudePath,
+		"Lessons", len(sorted),
+		"Observations", len(allLessons),
+		"DoDPatterns", len(dodPatterns),
+	)
+	return nil
+}
+
