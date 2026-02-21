@@ -10,7 +10,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 )
 
-// stubActivities mocks all activities used by CortexAgentWorkflow for a clean
+// stubActivities mocks all activities used by ChumAgentWorkflow for a clean
 // success path: plan → approve → execute → review(approved) → semgrep(pass) → dod(pass) → record.
 func stubActivities(env *testsuite.TestWorkflowEnvironment) {
 	var a *Activities
@@ -42,7 +42,7 @@ func stubActivities(env *testsuite.TestWorkflowEnvironment) {
 	}, nil)
 }
 
-// TestCHUMChildWorkflowsSpawn verifies that CortexAgentWorkflow spawns
+// TestCHUMChildWorkflowsSpawn verifies that ChumAgentWorkflow spawns
 // ContinuousLearnerWorkflow and TacticalGroomWorkflow as abandoned children
 // after a successful DoD pass. This was broken before the GetChildWorkflowExecution
 // fix — children were killed before they started.
@@ -72,7 +72,7 @@ func TestCHUMChildWorkflowsSpawn(t *testing.T) {
 		}
 	}).Return(nil)
 
-	env.ExecuteWorkflow(CortexAgentWorkflow, TaskRequest{
+	env.ExecuteWorkflow(ChumAgentWorkflow, TaskRequest{
 		TaskID:  "test-bead-chum",
 		Project: "test-project",
 		Prompt:  "add a widget endpoint",
@@ -151,7 +151,7 @@ func TestCHUMNotSpawnedOnFailure(t *testing.T) {
 		env.SignalWorkflow("human-approval", "APPROVED")
 	}, 0)
 
-	env.ExecuteWorkflow(CortexAgentWorkflow, TaskRequest{
+	env.ExecuteWorkflow(ChumAgentWorkflow, TaskRequest{
 		TaskID:  "test-bead-fail",
 		Project: "test-project",
 		Prompt:  "break everything",
@@ -340,7 +340,7 @@ func TestPlanRejected(t *testing.T) {
 		env.SignalWorkflow("human-approval", "REJECTED")
 	}, 0)
 
-	env.ExecuteWorkflow(CortexAgentWorkflow, TaskRequest{
+	env.ExecuteWorkflow(ChumAgentWorkflow, TaskRequest{
 		TaskID:  "test-bead-reject",
 		Project: "test-project",
 		Prompt:  "risky refactor",
@@ -539,7 +539,7 @@ func TestStepDurationLogging(t *testing.T) {
 		}
 	}).Return(nil)
 
-	env.ExecuteWorkflow(CortexAgentWorkflow, TaskRequest{
+	env.ExecuteWorkflow(ChumAgentWorkflow, TaskRequest{
 		TaskID:  "test-bead-steps",
 		Project: "test-project",
 		Prompt:  "add step metrics",
@@ -611,7 +611,7 @@ func TestStepDurationLoggingWhenReviewActivityFails(t *testing.T) {
 		env.SignalWorkflow("human-approval", "APPROVED")
 	}, 0)
 
-	env.ExecuteWorkflow(CortexAgentWorkflow, TaskRequest{
+	env.ExecuteWorkflow(ChumAgentWorkflow, TaskRequest{
 		TaskID:  "test-bead-review-fail",
 		Project: "test-project",
 		Prompt:  "review infra failure path",
@@ -667,7 +667,7 @@ func TestStepDurationLoggingAutoApprove(t *testing.T) {
 		}
 	}).Return(nil)
 
-	env.ExecuteWorkflow(CortexAgentWorkflow, TaskRequest{
+	env.ExecuteWorkflow(ChumAgentWorkflow, TaskRequest{
 		TaskID:      "test-bead-auto",
 		Project:     "test-project",
 		Prompt:      "auto-approved task",
@@ -738,7 +738,7 @@ func TestStepDurationLoggingEscalation(t *testing.T) {
 		env.SignalWorkflow("human-approval", "APPROVED")
 	}, 0)
 
-	env.ExecuteWorkflow(CortexAgentWorkflow, TaskRequest{
+	env.ExecuteWorkflow(ChumAgentWorkflow, TaskRequest{
 		TaskID:  "test-bead-escalate",
 		Project: "test-project",
 		Prompt:  "will fail dod",
@@ -796,7 +796,7 @@ func TestPlanningWorkflowPassesSlowStepThresholdToExecutionTask(t *testing.T) {
 		DoDChecks: []string{"go test ./..."},
 	}, nil)
 
-	env.OnWorkflow(CortexAgentWorkflow, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+	env.OnWorkflow(ChumAgentWorkflow, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
 		if req, ok := args.Get(1).(TaskRequest); ok {
 			capturedReq = req
 			captured = true
@@ -816,7 +816,7 @@ func TestPlanningWorkflowPassesSlowStepThresholdToExecutionTask(t *testing.T) {
 
 	require.True(t, env.IsWorkflowCompleted())
 	require.NoError(t, env.GetWorkflowError())
-	require.True(t, captured, "planning workflow should dispatch CortexAgentWorkflow")
+	require.True(t, captured, "planning workflow should dispatch ChumAgentWorkflow")
 	require.Equal(t, defaultSlowStepThreshold, capturedReq.SlowStepThreshold)
 }
 
@@ -847,7 +847,7 @@ func TestDispatcherAppliesSlowStepThresholdFallback(t *testing.T) {
 		MaxTotal: 3,
 	}, nil)
 
-	env.OnWorkflow(CortexAgentWorkflow, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+	env.OnWorkflow(ChumAgentWorkflow, mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
 		if req, ok := args.Get(1).(TaskRequest); ok {
 			capturedReq = req
 			captured = true
@@ -858,7 +858,7 @@ func TestDispatcherAppliesSlowStepThresholdFallback(t *testing.T) {
 
 	require.True(t, env.IsWorkflowCompleted())
 	require.NoError(t, env.GetWorkflowError())
-	require.True(t, captured, "dispatcher should dispatch CortexAgentWorkflow")
+	require.True(t, captured, "dispatcher should dispatch ChumAgentWorkflow")
 	require.Equal(t, defaultSlowStepThreshold, capturedReq.SlowStepThreshold)
 }
 

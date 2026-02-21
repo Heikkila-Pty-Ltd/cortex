@@ -22,7 +22,7 @@ var maxCLIArgSize = discoverMaxCLIArgSize()
 //
 // NOTE: This is a legacy openclaw execution path and intentionally retains
 // shell execution to preserve existing compatibility behavior.
-// Cortex hardening in cortex-46d.7.3 explicitly targets CLI headless/tmux
+// CHUM hardening in chum-46d.7.3 explicitly targets CLI headless/tmux
 // command construction, not this legacy openclaw PID/legacy path.
 func openclawShellScript() string {
 	return openclawShellScriptWithPromptInlineLimit(maxCLIArgSize)
@@ -167,18 +167,18 @@ func writeToTempFile(content string, prefix string) (string, error) {
 // via temporary files to avoid shell parsing issues
 func openclawCommandArgs(msgPath, agent, thinking, provider string) ([]string, []string, error) {
 	// Create temp files for each parameter to avoid shell escaping issues
-	agentPath, err := writeToTempFile(agent, "cortex-agent-*.txt")
+	agentPath, err := writeToTempFile(agent, "chum-agent-*.txt")
 	if err != nil {
 		return nil, nil, fmt.Errorf("create agent temp file: %w", err)
 	}
 
-	thinkingPath, err := writeToTempFile(thinking, "cortex-thinking-*.txt")
+	thinkingPath, err := writeToTempFile(thinking, "chum-thinking-*.txt")
 	if err != nil {
 		os.Remove(agentPath)
 		return nil, nil, fmt.Errorf("create thinking temp file: %w", err)
 	}
 
-	providerPath, err := writeToTempFile(provider, "cortex-provider-*.txt")
+	providerPath, err := writeToTempFile(provider, "chum-provider-*.txt")
 	if err != nil {
 		os.Remove(agentPath)
 		os.Remove(thinkingPath)
@@ -265,13 +265,13 @@ func (d *Dispatcher) Dispatch(ctx context.Context, agent string, prompt string, 
 	thinking := normalizeThinkingLevel(thinkingLevel)
 
 	// Write prompt to temp file to avoid shell escaping issues.
-	promptPath, err := writeToTempFile(prompt, "cortex-prompt-*.txt")
+	promptPath, err := writeToTempFile(prompt, "chum-prompt-*.txt")
 	if err != nil {
 		return 0, fmt.Errorf("dispatch: create temp prompt file: %w", err)
 	}
 
 	// Create output capture file
-	outputFile, err := os.CreateTemp("", "cortex-output-*.log")
+	outputFile, err := os.CreateTemp("", "chum-output-*.log")
 	if err != nil {
 		os.Remove(promptPath)
 		return 0, fmt.Errorf("dispatch: create output file: %w", err)
@@ -290,7 +290,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, agent string, prompt string, 
 
 	// Legacy compatibility boundary: openclaw execution intentionally remains
 	// a shell-based helper path in this ticket.
-	// Use context.Background() so the child process survives if cortex
+	// Use context.Background() so the child process survives if chum
 	// exits in --once mode (the parent context gets cancelled on exit).
 	cmd := exec.Command("sh", args...)
 	cmd.Dir = workDir

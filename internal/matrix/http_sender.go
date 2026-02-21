@@ -51,7 +51,7 @@ func (s *HTTPSender) SendMessage(ctx context.Context, roomID, message string) er
 		return err
 	}
 
-	txnID := fmt.Sprintf("cortex-%d", time.Now().UTC().UnixNano())
+	txnID := fmt.Sprintf("chum-%d", time.Now().UTC().UnixNano())
 	endpoint := fmt.Sprintf("%s/_matrix/client/v3/rooms/%s/send/m.room.message/%s",
 		creds.homeserver,
 		neturl.PathEscape(roomID),

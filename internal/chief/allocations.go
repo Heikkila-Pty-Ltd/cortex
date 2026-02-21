@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/antigravity-dev/cortex/internal/config"
-	"github.com/antigravity-dev/cortex/internal/dispatch"
-	"github.com/antigravity-dev/cortex/internal/store"
+	"github.com/antigravity-dev/chum/internal/config"
+	"github.com/antigravity-dev/chum/internal/dispatch"
+	"github.com/antigravity-dev/chum/internal/store"
 )
 
 // AllocationRecorder handles recording and reporting of Chief SM allocation decisions
@@ -125,7 +125,7 @@ func (ar *AllocationRecorder) sendUnifiedSprintPlan(ctx context.Context, decisio
 	// Send via agent dispatch to Matrix room
 	agentID := ar.cfg.Chief.AgentID
 	if agentID == "" {
-		agentID = "cortex-coordinator"
+		agentID = "chum-coordinator"
 	}
 
 	// Create a dispatch to send the message

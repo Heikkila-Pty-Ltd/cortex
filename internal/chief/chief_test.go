@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/antigravity-dev/cortex/internal/config"
+	"github.com/antigravity-dev/chum/internal/config"
 )
 
 func TestShouldRunCeremony(t *testing.T) {
@@ -296,7 +296,7 @@ func TestParseRetrospectiveActionItems(t *testing.T) {
 - shared wins
 
 ## Action Items
-- [P1] Reduce retry churn on failing provider | project:cortex | owner:ops | why:high retry waste
+- [P1] Reduce retry churn on failing provider | project:chum | owner:ops | why:high retry waste
 - [P3] Clarify cross-team handoff checklist | project = api | owner = scrum | reason = ownership gaps
 `
 	items := parseRetrospectiveActionItems(output)

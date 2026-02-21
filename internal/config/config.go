@@ -228,7 +228,7 @@ type DispatchTimeouts struct {
 }
 
 type DispatchGit struct {
-	BranchPrefix            string `toml:"branch_prefix"`              // default "cortex/"
+	BranchPrefix            string `toml:"branch_prefix"`              // default "chum/"
 	BranchCleanupDays       int    `toml:"branch_cleanup_days"`        // default 7
 	MergeStrategy           string `toml:"merge_strategy"`             // "merge", "squash", "rebase"
 	MaxConcurrentPerProject int    `toml:"max_concurrent_per_project"` // default 3
@@ -236,7 +236,7 @@ type DispatchGit struct {
 
 type DispatchTmux struct {
 	HistoryLimit  int    `toml:"history_limit"`  // default 50000
-	SessionPrefix string `toml:"session_prefix"` // default "cortex-"
+	SessionPrefix string `toml:"session_prefix"` // default "chum-"
 }
 
 // DispatchCostControl defines configurable dispatch policies to reduce expensive usage/churn.
@@ -267,7 +267,7 @@ type Chief struct {
 	Enabled             bool   `toml:"enabled"`               // Enable Chief Scrum Master
 	MatrixRoom          string `toml:"matrix_room"`           // Matrix room for coordination
 	Model               string `toml:"model"`                 // Model to use (defaults to premium)
-	AgentID             string `toml:"agent_id"`              // Agent identifier (defaults to "cortex-chief-scrum")
+	AgentID             string `toml:"agent_id"`              // Agent identifier (defaults to "chum-chief")
 	RequireApprovedPlan bool   `toml:"require_approved_plan"` // Block implementation dispatch without active approved plan
 }
 
@@ -536,7 +536,7 @@ func applyDefaults(cfg *Config, md toml.MetaData) {
 
 	// Dispatch Git
 	if cfg.Dispatch.Git.BranchPrefix == "" {
-		cfg.Dispatch.Git.BranchPrefix = "cortex/"
+		cfg.Dispatch.Git.BranchPrefix = "chum/"
 	}
 	if cfg.Dispatch.Git.BranchCleanupDays == 0 {
 		cfg.Dispatch.Git.BranchCleanupDays = 7
@@ -553,7 +553,7 @@ func applyDefaults(cfg *Config, md toml.MetaData) {
 		cfg.Dispatch.Tmux.HistoryLimit = 50000
 	}
 	if cfg.Dispatch.Tmux.SessionPrefix == "" {
-		cfg.Dispatch.Tmux.SessionPrefix = "cortex-"
+		cfg.Dispatch.Tmux.SessionPrefix = "chum-"
 	}
 
 	// Dispatch cost-control defaults
@@ -662,7 +662,7 @@ func applyDefaults(cfg *Config, md toml.MetaData) {
 		cfg.Chief.Model = "claude-opus-4-6" // Default to premium tier
 	}
 	if cfg.Chief.AgentID == "" {
-		cfg.Chief.AgentID = "cortex-chief-scrum"
+		cfg.Chief.AgentID = "chum-chief"
 	}
 }
 

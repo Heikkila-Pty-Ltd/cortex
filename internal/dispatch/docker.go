@@ -42,11 +42,11 @@ func (d *DockerDispatcher) Dispatch(ctx context.Context, agent string, prompt st
 	d.mu.Lock()
 	handle := d.nextHandle
 	d.nextHandle++
-	sessionName := fmt.Sprintf("cortex-agent-%d-%d", handle, time.Now().UnixNano())
+	sessionName := fmt.Sprintf("chum-agent-%d-%d", handle, time.Now().UnixNano())
 	d.sessions[handle] = sessionName
 	d.mu.Unlock()
 
-	hostCtxDir := filepath.Join(os.TempDir(), fmt.Sprintf("cortex-ctx-%s", sessionName))
+	hostCtxDir := filepath.Join(os.TempDir(), fmt.Sprintf("chum-ctx-%s", sessionName))
 	if err := os.MkdirAll(hostCtxDir, 0755); err != nil {
 		return 0, fmt.Errorf("failed to create context dir: %w", err)
 	}
@@ -58,13 +58,13 @@ func (d *DockerDispatcher) Dispatch(ctx context.Context, agent string, prompt st
 	os.WriteFile(filepath.Join(hostCtxDir, "script.sh"), []byte(openclawShellScript()), 0755)
 
 	containerConfig := &container.Config{
-		Image: "cortex-agent:latest",
+		Image: "chum-agent:latest",
 		Cmd: []string{
-			"sh", "/cortex-ctx/script.sh",
-			"/cortex-ctx/prompt.txt",
-			"/cortex-ctx/agent.txt",
-			"/cortex-ctx/thinking.txt",
-			"/cortex-ctx/provider.txt",
+			"sh", "/chum-ctx/script.sh",
+			"/chum-ctx/prompt.txt",
+			"/chum-ctx/agent.txt",
+			"/chum-ctx/thinking.txt",
+			"/chum-ctx/provider.txt",
 		},
 		Tty:        false,
 		WorkingDir: "/workspace",
@@ -80,7 +80,7 @@ func (d *DockerDispatcher) Dispatch(ctx context.Context, agent string, prompt st
 	workDirPath, _ := filepath.Abs(workDir)
 	if err := os.MkdirAll(workDirPath, 0755); err != nil {
 		// Fall back to a per-session temp workspace if the requested path is not writable
-		workDirPath = filepath.Join(os.TempDir(), fmt.Sprintf("cortex-workspace-%s", sessionName))
+		workDirPath = filepath.Join(os.TempDir(), fmt.Sprintf("chum-workspace-%s", sessionName))
 		if err2 := os.MkdirAll(workDirPath, 0755); err2 != nil {
 			return 0, fmt.Errorf("failed to create workdir (original: %s, fallback: %w)", workDir, err2)
 		}
@@ -88,7 +88,7 @@ func (d *DockerDispatcher) Dispatch(ctx context.Context, agent string, prompt st
 
 	hostConfig := &container.HostConfig{
 		Mounts: []mount.Mount{
-			{Type: mount.TypeBind, Source: ctxPath, Target: "/cortex-ctx", ReadOnly: true},
+			{Type: mount.TypeBind, Source: ctxPath, Target: "/chum-ctx", ReadOnly: true},
 			{Type: mount.TypeBind, Source: workDirPath, Target: "/workspace"},
 			{Type: mount.TypeBind, Source: filepath.Join(os.Getenv("HOME"), ".openclaw"), Target: "/root/.openclaw"},
 		},
@@ -140,7 +140,7 @@ func (d *DockerDispatcher) Kill(handle int) error {
 	delete(d.metadata, sessionName)
 	d.mu.Unlock()
 
-	os.RemoveAll(filepath.Join(os.TempDir(), fmt.Sprintf("cortex-ctx-%s", sessionName)))
+	os.RemoveAll(filepath.Join(os.TempDir(), fmt.Sprintf("chum-ctx-%s", sessionName)))
 	return nil
 }
 
@@ -198,15 +198,15 @@ func CleanDeadSessions() int {
 	containers, _ := cli.ContainerList(ctx, container.ListOptions{All: true})
 	killed := 0
 	for _, c := range containers {
-		isCortex := false
+		isChum := false
 		for _, name := range c.Names {
-			if strings.HasPrefix(name, "/cortex-agent-") { isCortex = true; break }
+			if strings.HasPrefix(name, "/chum-agent-") { isChum = true; break }
 		}
-		if isCortex && c.State != "running" {
+		if isChum && c.State != "running" {
 			cli.ContainerRemove(ctx, c.ID, container.RemoveOptions{Force: true, RemoveVolumes: true})
 			killed++
 			for _, name := range c.Names {
-				if strings.HasPrefix(name, "/") { os.RemoveAll(filepath.Join(os.TempDir(), fmt.Sprintf("cortex-ctx-%s", name[1:]))) }
+				if strings.HasPrefix(name, "/") { os.RemoveAll(filepath.Join(os.TempDir(), fmt.Sprintf("chum-ctx-%s", name[1:]))) }
 			}
 		}
 	}

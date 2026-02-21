@@ -35,7 +35,7 @@ func sanitizeForFilename(s string) string {
 // DoD results, and review feedback to extract reusable lessons.
 func (a *Activities) ExtractLessonsActivity(ctx context.Context, req LearnerRequest) ([]Lesson, error) {
 	logger := activity.GetLogger(ctx)
-	logger.Info(LearnerPrefix+" Extracting lessons", "TaskID", req.TaskID, "Tier", req.Tier)
+	logger.Info(OctopusPrefix+" Extracting lessons", "TaskID", req.TaskID, "Tier", req.Tier)
 
 	// Build context from the bead's journey
 	var contextParts []string
@@ -57,7 +57,7 @@ func (a *Activities) ExtractLessonsActivity(ctx context.Context, req LearnerRequ
 	if a.Store != nil && len(req.FilesChanged) > 0 {
 		existing, existingErr := a.Store.SearchLessonsByFilePath(req.FilesChanged, 5)
 		if existingErr != nil {
-			logger.Warn(LearnerPrefix+" Failed to search existing lessons", "error", existingErr)
+			logger.Warn(OctopusPrefix+" Failed to search existing lessons", "error", existingErr)
 		} else if len(existing) > 0 {
 			var summaries []string
 			for i := range existing {
@@ -99,7 +99,7 @@ If there are no meaningful lessons, return an empty array [].`,
 	agent := ResolveTierAgent(a.Tiers, req.Tier)
 	cliResult, err := runAgent(ctx, agent, prompt, req.WorkDir)
 	if err != nil {
-		logger.Warn(LearnerPrefix+" Lesson extraction LLM failed", "error", err)
+		logger.Warn(OctopusPrefix+" Lesson extraction LLM failed", "error", err)
 		return nil, nil // non-fatal
 	}
 
@@ -110,7 +110,7 @@ If there are no meaningful lessons, return an empty array [].`,
 
 	var lessons []Lesson
 	if err := json.Unmarshal([]byte(jsonStr), &lessons); err != nil {
-		logger.Warn(LearnerPrefix+" Failed to parse lessons JSON", "error", err)
+		logger.Warn(OctopusPrefix+" Failed to parse lessons JSON", "error", err)
 		return nil, nil
 	}
 
@@ -120,7 +120,7 @@ If there are no meaningful lessons, return an empty array [].`,
 		lessons[i].Project = req.Project
 	}
 
-	logger.Info(LearnerPrefix+" Lessons extracted", "Count", len(lessons))
+	logger.Info(OctopusPrefix+" Lessons extracted", "Count", len(lessons))
 	return lessons, nil
 }
 
@@ -129,7 +129,7 @@ If there are no meaningful lessons, return an empty array [].`,
 func (a *Activities) StoreLessonActivity(ctx context.Context, lessons []Lesson) error {
 	logger := activity.GetLogger(ctx)
 	if a.Store == nil {
-		logger.Warn(LearnerPrefix+" No store configured, skipping lesson storage")
+		logger.Warn(OctopusPrefix+" No store configured, skipping lesson storage")
 		return nil
 	}
 
@@ -139,7 +139,7 @@ func (a *Activities) StoreLessonActivity(ctx context.Context, lessons []Lesson) 
 		// Idempotency: check if this exact lesson already exists
 		existing, existingErr := a.Store.GetLessonsByBead(lesson.TaskID)
 		if existingErr != nil {
-			logger.Warn(LearnerPrefix+" Failed to check existing lessons", "bead", lesson.TaskID, "error", existingErr)
+			logger.Warn(OctopusPrefix+" Failed to check existing lessons", "bead", lesson.TaskID, "error", existingErr)
 		}
 		isDuplicate := false
 		for j := range existing {
@@ -159,13 +159,13 @@ func (a *Activities) StoreLessonActivity(ctx context.Context, lessons []Lesson) 
 			lesson.SemgrepRuleID,
 		)
 		if err != nil {
-			logger.Error(LearnerPrefix+" Failed to store lesson", "error", err)
+			logger.Error(OctopusPrefix+" Failed to store lesson", "error", err)
 			continue // best-effort
 		}
 		stored++
 	}
 
-	logger.Info(LearnerPrefix+" Lessons stored", "Stored", stored, "Total", len(lessons))
+	logger.Info(OctopusPrefix+" Lessons stored", "Stored", stored, "Total", len(lessons))
 	return nil
 }
 
@@ -217,13 +217,13 @@ rules:
 
 		cliResult, err := runAgent(ctx, ResolveTierAgent(a.Tiers, req.Tier), prompt, req.WorkDir)
 		if err != nil {
-			logger.Warn(LearnerPrefix+" Semgrep rule generation failed", "lesson", lesson.Summary, "error", err)
+			logger.Warn(OctopusPrefix+" Semgrep rule generation failed", "lesson", lesson.Summary, "error", err)
 			continue
 		}
 
 		output := strings.TrimSpace(cliResult.Output)
 		if !strings.Contains(output, "rules:") {
-			logger.Warn(LearnerPrefix+" Generated output doesn't look like Semgrep YAML", "lesson", lesson.Summary)
+			logger.Warn(OctopusPrefix+" Generated output doesn't look like Semgrep YAML", "lesson", lesson.Summary)
 			continue
 		}
 
@@ -241,13 +241,13 @@ rules:
 		// Write to .semgrep/ directory
 		semgrepDir := filepath.Join(req.WorkDir, ".semgrep")
 		if mkdirErr := os.MkdirAll(semgrepDir, 0o755); mkdirErr != nil {
-			logger.Error(LearnerPrefix+" Failed to create semgrep dir", "path", semgrepDir, "error", mkdirErr)
+			logger.Error(OctopusPrefix+" Failed to create semgrep dir", "path", semgrepDir, "error", mkdirErr)
 			continue
 		}
 		rulePath := filepath.Join(semgrepDir, fileName)
 
 		if err := os.WriteFile(rulePath, []byte(output), 0o644); err != nil {
-			logger.Error(LearnerPrefix+" Failed to write semgrep rule", "path", rulePath, "error", err)
+			logger.Error(OctopusPrefix+" Failed to write semgrep rule", "path", rulePath, "error", err)
 			continue
 		}
 
@@ -258,7 +258,7 @@ rules:
 			Category: lesson.Category,
 		})
 
-		logger.Info(LearnerPrefix+" Semgrep rule generated", "RuleID", ruleID, "Path", rulePath)
+		logger.Info(OctopusPrefix+" Semgrep rule generated", "RuleID", ruleID, "Path", rulePath)
 	}
 
 	return rules, nil
@@ -271,7 +271,7 @@ func (a *Activities) RunSemgrepScanActivity(ctx context.Context, workDir string)
 
 	// Check if semgrep is installed
 	if _, lookErr := exec.LookPath("semgrep"); lookErr != nil {
-		logger.Info(LearnerPrefix+" Semgrep not installed, skipping pre-filter")
+		logger.Info(OctopusPrefix+" Semgrep not installed, skipping pre-filter")
 		return &SemgrepScanResult{Passed: true}, nil //nolint:nilerr // graceful degradation when semgrep not installed
 	}
 
@@ -279,7 +279,7 @@ func (a *Activities) RunSemgrepScanActivity(ctx context.Context, workDir string)
 	semgrepDir := filepath.Join(workDir, ".semgrep")
 	entries, readDirErr := os.ReadDir(semgrepDir)
 	if readDirErr != nil || len(entries) == 0 {
-		logger.Info(LearnerPrefix+" No custom semgrep rules found, skipping")
+		logger.Info(OctopusPrefix+" No custom semgrep rules found, skipping")
 		return &SemgrepScanResult{Passed: true}, nil //nolint:nilerr // graceful degradation when no rules exist
 	}
 
@@ -314,7 +314,7 @@ func (a *Activities) RunSemgrepScanActivity(ctx context.Context, workDir string)
 		}
 	}
 
-	logger.Warn(LearnerPrefix+" Semgrep found issues", "Findings", findings)
+	logger.Warn(OctopusPrefix+" Semgrep found issues", "Findings", findings)
 	return &SemgrepScanResult{
 		Passed:   false,
 		Findings: findings,
@@ -333,18 +333,18 @@ func (a *Activities) SynthesizeCLAUDEmdActivity(ctx context.Context, req Learner
 	logger := activity.GetLogger(ctx)
 
 	if a.Store == nil {
-		logger.Warn(LearnerPrefix + " No store configured, skipping CLAUDE.md synthesis")
+		logger.Warn(OctopusPrefix + " No store configured, skipping CLAUDE.md synthesis")
 		return nil
 	}
 
 	// Read ALL lessons for this project (not just recent)
 	allLessons, err := a.Store.GetRecentLessons(req.Project, 100)
 	if err != nil {
-		logger.Warn(LearnerPrefix+" Failed to read lessons for CLAUDE.md", "error", err)
+		logger.Warn(OctopusPrefix+" Failed to read lessons for CLAUDE.md", "error", err)
 		return nil // non-fatal
 	}
 	if len(allLessons) == 0 {
-		logger.Info(LearnerPrefix + " No lessons to synthesize, skipping CLAUDE.md")
+		logger.Info(OctopusPrefix + " No lessons to synthesize, skipping CLAUDE.md")
 		return nil
 	}
 
@@ -461,11 +461,11 @@ func (a *Activities) SynthesizeCLAUDEmdActivity(ctx context.Context, req Learner
 	// Write to project root
 	claudePath := filepath.Join(req.WorkDir, "CLAUDE.md")
 	if err := os.WriteFile(claudePath, []byte(md.String()), 0o644); err != nil {
-		logger.Error(LearnerPrefix+" Failed to write CLAUDE.md", "path", claudePath, "error", err)
+		logger.Error(OctopusPrefix+" Failed to write CLAUDE.md", "path", claudePath, "error", err)
 		return nil // non-fatal
 	}
 
-	logger.Info(LearnerPrefix+" CLAUDE.md synthesized",
+	logger.Info(OctopusPrefix+" CLAUDE.md synthesized",
 		"Path", claudePath,
 		"Lessons", len(sorted),
 		"Observations", len(allLessons),

@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"sort"
 
-	"github.com/antigravity-dev/cortex/internal/config"
-	"github.com/antigravity-dev/cortex/internal/graph"
+	"github.com/antigravity-dev/chum/internal/config"
+	"github.com/antigravity-dev/chum/internal/graph"
 )
 
 // ProjectBacklog represents the backlog for a single project

@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/antigravity-dev/cortex/internal/graph"
+	"github.com/antigravity-dev/chum/internal/graph"
 )
 
 // BacklogBead represents a task in the backlog with metadata for sprint planning.

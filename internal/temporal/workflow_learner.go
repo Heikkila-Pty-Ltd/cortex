@@ -15,7 +15,7 @@ import (
 // All steps are non-fatal. Learner failure never blocks the main execution loop.
 func ContinuousLearnerWorkflow(ctx workflow.Context, req LearnerRequest) error {
 	logger := workflow.GetLogger(ctx)
-	logger.Info(LearnerPrefix+" ContinuousLearner starting", "TaskID", req.TaskID)
+	logger.Info(OctopusPrefix+" ContinuousLearner starting", "TaskID", req.TaskID)
 
 	if req.Tier == "" {
 		req.Tier = "fast"
@@ -37,12 +37,12 @@ func ContinuousLearnerWorkflow(ctx workflow.Context, req LearnerRequest) error {
 
 	var lessons []Lesson
 	if err := workflow.ExecuteActivity(extractCtx, a.ExtractLessonsActivity, req).Get(ctx, &lessons); err != nil {
-		logger.Warn(LearnerPrefix+" Lesson extraction failed (non-fatal)", "error", err)
+		logger.Warn(OctopusPrefix+" Lesson extraction failed (non-fatal)", "error", err)
 		return nil
 	}
 
 	if len(lessons) == 0 {
-		logger.Info(LearnerPrefix+" No lessons extracted", "TaskID", req.TaskID)
+		logger.Info(OctopusPrefix+" No lessons extracted", "TaskID", req.TaskID)
 		return nil
 	}
 
@@ -53,7 +53,7 @@ func ContinuousLearnerWorkflow(ctx workflow.Context, req LearnerRequest) error {
 	}
 	storeCtx := workflow.WithActivityOptions(ctx, storeOpts)
 	if err := workflow.ExecuteActivity(storeCtx, a.StoreLessonActivity, lessons).Get(ctx, nil); err != nil {
-		logger.Warn(LearnerPrefix+" Lesson storage failed (non-fatal)", "error", err)
+		logger.Warn(OctopusPrefix+" Lesson storage failed (non-fatal)", "error", err)
 		// Continue to rule generation even if storage fails
 	}
 
@@ -65,7 +65,7 @@ func ContinuousLearnerWorkflow(ctx workflow.Context, req LearnerRequest) error {
 	ruleCtx := workflow.WithActivityOptions(ctx, ruleOpts)
 	var rules []SemgrepRule
 	if err := workflow.ExecuteActivity(ruleCtx, a.GenerateSemgrepRuleActivity, req, lessons).Get(ctx, &rules); err != nil {
-		logger.Warn(LearnerPrefix+" Semgrep rule generation failed (non-fatal)", "error", err)
+		logger.Warn(OctopusPrefix+" Semgrep rule generation failed (non-fatal)", "error", err)
 	}
 
 	// Step 4: Synthesize CLAUDE.md from accumulated lessons
@@ -77,10 +77,10 @@ func ContinuousLearnerWorkflow(ctx workflow.Context, req LearnerRequest) error {
 	}
 	synthesizeCtx := workflow.WithActivityOptions(ctx, synthesizeOpts)
 	if err := workflow.ExecuteActivity(synthesizeCtx, a.SynthesizeCLAUDEmdActivity, req).Get(ctx, nil); err != nil {
-		logger.Warn(LearnerPrefix+" CLAUDE.md synthesis failed (non-fatal)", "error", err)
+		logger.Warn(OctopusPrefix+" CLAUDE.md synthesis failed (non-fatal)", "error", err)
 	}
 
-	logger.Info(LearnerPrefix+" ContinuousLearner complete",
+	logger.Info(OctopusPrefix+" ContinuousLearner complete",
 		"TaskID", req.TaskID,
 		"Lessons", len(lessons),
 		"Rules", len(rules),

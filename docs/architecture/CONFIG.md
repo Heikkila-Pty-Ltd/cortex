@@ -1,6 +1,6 @@
 # Configuration Reference
 
-> Complete reference for `cortex.toml`. Every field maps to a Go struct in `internal/config/config.go`.
+> Complete reference for `chum.toml`. Every field maps to a Go struct in `internal/config/config.go`.
 
 ---
 

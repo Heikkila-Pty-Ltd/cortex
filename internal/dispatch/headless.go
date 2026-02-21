@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/antigravity-dev/cortex/internal/config"
+	"github.com/antigravity-dev/chum/internal/config"
 )
 
 type headlessProcess struct {
@@ -264,7 +264,7 @@ func (b *HeadlessBackend) resolveLogPath(opts DispatchOpts) (string, error) {
 
 	base := b.logDir
 	if strings.TrimSpace(base) == "" {
-		tmp, err := os.CreateTemp("", "cortex-dispatch-*.log")
+		tmp, err := os.CreateTemp("", "chum-dispatch-*.log")
 		if err != nil {
 			return "", fmt.Errorf("headless backend: create temp log file: %w", err)
 		}
@@ -294,7 +294,7 @@ func buildHeadlessArgs(cliCfg config.CLIConfig, opts DispatchOpts) ([]string, st
 	case "stdin":
 	case "arg":
 	case "file":
-		f, err := os.CreateTemp("", "cortex-prompt-*.txt")
+		f, err := os.CreateTemp("", "chum-prompt-*.txt")
 		if err != nil {
 			return nil, "", fmt.Errorf("headless backend: create prompt file: %w", err)
 		}

@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/antigravity-dev/cortex/internal/config"
-	"github.com/antigravity-dev/cortex/internal/dispatch"
-	"github.com/antigravity-dev/cortex/internal/graph"
+	"github.com/antigravity-dev/chum/internal/config"
+	"github.com/antigravity-dev/chum/internal/dispatch"
+	"github.com/antigravity-dev/chum/internal/graph"
 
 	_ "modernc.org/sqlite"
 )
@@ -82,8 +82,8 @@ func TestRecordRetrospectiveResultsReturnsAggregatedErrors(t *testing.T) {
 
 	output := `
 ## Action Items
-- [P1] Fix incident response playbook | project:cortex | owner:ops | why:gaps
-- [P2] Improve dependency SLAs | project:cortex | owner:chief | why:blocking
+- [P1] Fix incident response playbook | project:chum | owner:ops | why:gaps
+- [P2] Improve dependency SLAs | project:chum | owner:chief | why:blocking
 `
 
 	err := rr.RecordRetrospectiveResults(t.Context(), "ceremony-overall-1", output)
@@ -136,7 +136,7 @@ func TestRecordRetrospectiveResultsDispatchesAndCreatesActionItems(t *testing.T)
 
 	output := `
 ## Action Items
-- [P0] Stabilize matrix bridge retries | project:cortex | owner:ops | why:delivery failures
+- [P0] Stabilize matrix bridge retries | project:chum | owner:ops | why:delivery failures
 `
 
 	if err := rr.RecordRetrospectiveResults(t.Context(), "ceremony-overall-2", output); err != nil {

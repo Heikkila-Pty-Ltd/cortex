@@ -142,11 +142,11 @@ func PlanningCeremonyWorkflow(ctx workflow.Context, req PlanningRequest) (*TaskR
 			// "How do you build a coding elephant? One piece of chum at a time."
 			childOpts := workflow.ChildWorkflowOptions{
 				WorkflowID: fmt.Sprintf("exec-%s-%d", taskReq.TaskID, workflow.Now(ctx).Unix()),
-				TaskQueue:  "cortex-task-queue",
+				TaskQueue:  "chum-task-queue",
 			}
 			childCtx := workflow.WithChildOptions(ctx, childOpts)
 
-			future := workflow.ExecuteChildWorkflow(childCtx, CortexAgentWorkflow, *taskReq)
+			future := workflow.ExecuteChildWorkflow(childCtx, ChumAgentWorkflow, *taskReq)
 
 			logger.Info("Planning: execution workflow launched",
 				"ExecutionWorkflowID", childOpts.WorkflowID,

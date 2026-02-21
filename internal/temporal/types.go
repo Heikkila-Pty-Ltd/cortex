@@ -11,7 +11,7 @@ type TaskRequest struct {
 	Reviewer          string        `json:"reviewer"`           // review agent — auto-assigned if empty
 	WorkDir           string        `json:"work_dir"`
 	Provider          string        `json:"provider"`
-	DoDChecks         []string      `json:"dod_checks"`         // e.g. ["go build ./cmd/cortex", "go test ./..."]
+	DoDChecks         []string      `json:"dod_checks"`         // e.g. ["go build ./cmd/chum", "go test ./..."]
 	AutoApprove       bool          `json:"auto_approve"`       // skip human gate for pre-planned work
 	SlowStepThreshold time.Duration `json:"slow_step_threshold"` // steps exceeding this are flagged slow
 }
@@ -378,7 +378,7 @@ type MorningBriefing struct {
 }
 
 // --- Dispatcher Types ---
-// DispatcherWorkflow scans for ready beads and starts CortexAgentWorkflow
+// DispatcherWorkflow scans for ready beads and starts ChumAgentWorkflow
 // children. Runs on a Temporal Schedule every tick_interval.
 
 // DispatchCandidate is a ready bead with its project context, returned by

@@ -45,7 +45,7 @@ cortex/
 │   ├── cortex.runner.toml        #   Production runner config template
 │   ├── cortex-interactive.toml   #   Interactive development config
 │   ├── cortex-learner-example.toml # Learner-focused config example
-│   ├── trial-cortex.toml         #   Trial/testing config
+│   ├── trial-chum.toml         #   Trial/testing config
 │   └── slo-thresholds.json       #   Service Level Objective definitions
 │
 ├── deploy/                       # Deployment
@@ -71,7 +71,7 @@ cortex/
 ├── Makefile                      # Build automation
 ├── Dockerfile.agent              # Agent container image
 ├── go.mod / go.sum               # Go module dependencies
-├── cortex.toml                   # Local config (gitignored)
+├── chum.toml                   # Local config (gitignored)
 ├── VERSION                       # Current release version
 ├── AGENTS.md                     # AI agent instructions
 ├── CONTRIBUTING.md               # Contribution guidelines

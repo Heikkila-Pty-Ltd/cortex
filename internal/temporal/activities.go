@@ -12,10 +12,10 @@ import (
 
 	"go.temporal.io/sdk/activity"
 
-	"github.com/antigravity-dev/cortex/internal/config"
-	"github.com/antigravity-dev/cortex/internal/git"
-	"github.com/antigravity-dev/cortex/internal/graph"
-	"github.com/antigravity-dev/cortex/internal/store"
+	"github.com/antigravity-dev/chum/internal/config"
+	"github.com/antigravity-dev/chum/internal/git"
+	"github.com/antigravity-dev/chum/internal/graph"
+	"github.com/antigravity-dev/chum/internal/store"
 )
 
 // Activities holds dependencies for Temporal activity methods.
@@ -519,7 +519,7 @@ func parseReviewJSON(jsonStr, reviewer string, cliResult CLIResult) ReviewResult
 // Uses cheap agent resources — no smart model needed to run tests.
 func (a *Activities) DoDVerifyActivity(ctx context.Context, req TaskRequest) (*DoDResult, error) {
 	logger := activity.GetLogger(ctx)
-	logger.Info(BouncerPrefix+" Running DoD checks", "TaskID", req.TaskID, "Checks", len(req.DoDChecks))
+	logger.Info(OrcaPrefix+" Running DoD checks", "TaskID", req.TaskID, "Checks", len(req.DoDChecks))
 
 	checks := req.DoDChecks
 	if len(checks) == 0 {
@@ -547,7 +547,7 @@ func (a *Activities) DoDVerifyActivity(ctx context.Context, req TaskRequest) (*D
 		})
 	}
 
-	logger.Info(BouncerPrefix+" DoD result", "Passed", result.Passed, "Checks", len(result.Checks), "Failures", len(result.Failures))
+	logger.Info(OrcaPrefix+" DoD result", "Passed", result.Passed, "Checks", len(result.Checks), "Failures", len(result.Failures))
 	return result, nil
 }
 
@@ -555,10 +555,10 @@ func (a *Activities) DoDVerifyActivity(ctx context.Context, req TaskRequest) (*D
 // This feeds the learner loop — learner runs on top to surface problems and inefficiencies.
 func (a *Activities) RecordOutcomeActivity(ctx context.Context, outcome OutcomeRecord) error {
 	logger := activity.GetLogger(ctx)
-	logger.Info(BouncerPrefix+" Recording outcome", "TaskID", outcome.TaskID, "Status", outcome.Status)
+	logger.Info(OrcaPrefix+" Recording outcome", "TaskID", outcome.TaskID, "Status", outcome.Status)
 
 	if a.Store == nil {
-		logger.Warn(BouncerPrefix+" No store configured, skipping outcome recording")
+		logger.Warn(OrcaPrefix+" No store configured, skipping outcome recording")
 		return nil
 	}
 
@@ -577,25 +577,25 @@ func (a *Activities) RecordOutcomeActivity(ctx context.Context, outcome OutcomeR
 		"temporal", // backend
 	)
 	if err != nil {
-		logger.Error(BouncerPrefix+" Failed to record dispatch", "error", err)
+		logger.Error(OrcaPrefix+" Failed to record dispatch", "error", err)
 		return err
 	}
 
 	// Update status
 	if err := a.Store.UpdateDispatchStatus(dispatchID, outcome.Status, outcome.ExitCode, outcome.DurationS); err != nil {
-		logger.Error(BouncerPrefix+" Failed to update dispatch status", "error", err)
+		logger.Error(OrcaPrefix+" Failed to update dispatch status", "error", err)
 	}
 
 	// Record DoD result
 	if err := a.Store.RecordDoDResult(dispatchID, outcome.TaskID, outcome.Project, outcome.DoDPassed, outcome.DoDFailures, ""); err != nil {
-		logger.Error(BouncerPrefix+" Failed to record DoD result", "error", err)
+		logger.Error(OrcaPrefix+" Failed to record DoD result", "error", err)
 	}
 
 	// Record aggregate token cost on the dispatch
 	totalInput := outcome.TotalTokens.InputTokens
 	totalOutput := outcome.TotalTokens.OutputTokens
 	if err := a.Store.RecordDispatchCost(dispatchID, totalInput, totalOutput, outcome.TotalTokens.CostUSD); err != nil {
-		logger.Error(BouncerPrefix+" Failed to record dispatch cost", "error", err)
+		logger.Error(OrcaPrefix+" Failed to record dispatch cost", "error", err)
 	}
 
 	// Record per-activity token breakdown for learner optimization.
@@ -614,9 +614,9 @@ func (a *Activities) RecordOutcomeActivity(ctx context.Context, outcome OutcomeR
 				CostUSD:             at.Tokens.CostUSD,
 			},
 		); err != nil {
-			logger.Error(BouncerPrefix+" Failed to store per-activity token usage", "error", err)
+			logger.Error(OrcaPrefix+" Failed to store per-activity token usage", "error", err)
 		} else {
-			logger.Info(BouncerPrefix+" Activity token usage",
+			logger.Info(OrcaPrefix+" Activity token usage",
 				"Activity", at.ActivityName,
 				"Agent", at.Agent,
 				"InputTokens", at.Tokens.InputTokens,
@@ -638,11 +638,11 @@ func (a *Activities) RecordOutcomeActivity(ctx context.Context, outcome OutcomeR
 			sm.Status,
 			sm.Slow,
 		); err != nil {
-			logger.Error(BouncerPrefix+" Failed to store step metric", "error", err, "Step", sm.Name)
+			logger.Error(OrcaPrefix+" Failed to store step metric", "error", err, "Step", sm.Name)
 		}
 	}
 
-	logger.Info(BouncerPrefix+" Outcome recorded", "DispatchID", dispatchID,
+	logger.Info(OrcaPrefix+" Outcome recorded", "DispatchID", dispatchID,
 		"InputTokens", totalInput,
 		"OutputTokens", totalOutput,
 		"CacheReadTokens", outcome.TotalTokens.CacheReadTokens,
@@ -656,7 +656,7 @@ func (a *Activities) RecordOutcomeActivity(ctx context.Context, outcome OutcomeR
 // This is called when DoD fails after all retries — the task needs human intervention.
 func (a *Activities) EscalateActivity(ctx context.Context, escalation EscalationRequest) error {
 	logger := activity.GetLogger(ctx)
-	logger.Error(BouncerPrefix+" ESCALATION: Task failed after all retries",
+	logger.Error(OrcaPrefix+" ESCALATION: Task failed after all retries",
 		"TaskID", escalation.TaskID,
 		"Project", escalation.Project,
 		"Attempts", escalation.AttemptCount,
@@ -670,7 +670,7 @@ func (a *Activities) EscalateActivity(ctx context.Context, escalation Escalation
 			escalation.TaskID, escalation.AttemptCount, escalation.HandoffCount,
 			strings.Join(escalation.Failures, "; "))
 		if recErr := a.Store.RecordHealthEvent("escalation_required", details); recErr != nil {
-			logger.Warn(BouncerPrefix+" Failed to record health event", "error", recErr)
+			logger.Warn(OrcaPrefix+" Failed to record health event", "error", recErr)
 		}
 	}
 

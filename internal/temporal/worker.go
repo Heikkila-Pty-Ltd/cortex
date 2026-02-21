@@ -6,12 +6,12 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 
-	"github.com/antigravity-dev/cortex/internal/config"
-	"github.com/antigravity-dev/cortex/internal/graph"
-	"github.com/antigravity-dev/cortex/internal/store"
+	"github.com/antigravity-dev/chum/internal/config"
+	"github.com/antigravity-dev/chum/internal/graph"
+	"github.com/antigravity-dev/chum/internal/store"
 )
 
-// StartWorker connects to Temporal and starts the cortex task queue worker.
+// StartWorker connects to Temporal and starts the chum task queue worker.
 // The store, tiers, dag, and cfgMgr are injected so activities can record
 // outcomes, resolve agents, and scan for ready tasks.
 func StartWorker(st *store.Store, tiers config.Tiers, dag *graph.DAG, cfgMgr config.ConfigManager) error {
@@ -23,7 +23,7 @@ func StartWorker(st *store.Store, tiers config.Tiers, dag *graph.DAG, cfgMgr con
 	}
 	defer c.Close()
 
-	w := worker.New(c, "cortex-task-queue", worker.Options{})
+	w := worker.New(c, "chum-task-queue", worker.Options{})
 
 	acts := &Activities{Store: st, Tiers: tiers, DAG: dag}
 	dispatchActs := &DispatchActivities{
@@ -33,7 +33,7 @@ func StartWorker(st *store.Store, tiers config.Tiers, dag *graph.DAG, cfgMgr con
 	}
 
 	// --- Core Workflows ---
-	w.RegisterWorkflow(CortexAgentWorkflow)
+	w.RegisterWorkflow(ChumAgentWorkflow)
 	w.RegisterWorkflow(PlanningCeremonyWorkflow)
 
 	// --- Dispatcher Workflow ---
@@ -71,6 +71,6 @@ func StartWorker(st *store.Store, tiers config.Tiers, dag *graph.DAG, cfgMgr con
 	w.RegisterActivity(acts.StrategicAnalysisActivity)
 	w.RegisterActivity(acts.GenerateMorningBriefingActivity)
 
-	log.Println("Temporal Worker started on cortex-task-queue...")
+	log.Println("Temporal Worker started on chum-task-queue...")
 	return w.Run(worker.InterruptCh())
 }

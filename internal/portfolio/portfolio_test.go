@@ -3,7 +3,7 @@ package portfolio
 import (
 	"testing"
 
-	"github.com/antigravity-dev/cortex/internal/graph"
+	"github.com/antigravity-dev/chum/internal/graph"
 )
 
 func TestPortfolioBacklogStructure(t *testing.T) {

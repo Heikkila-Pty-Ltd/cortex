@@ -1,4 +1,4 @@
-module github.com/antigravity-dev/cortex
+module github.com/antigravity-dev/chum
 
 go 1.24.4
 

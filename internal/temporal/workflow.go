@@ -19,7 +19,7 @@ const (
 	defaultSlowStepThreshold = 2 * time.Minute
 )
 
-// CortexAgentWorkflow implements the LeSS/SCRUM loop:
+// ChumAgentWorkflow implements the LeSS/SCRUM loop:
 //
 //  1. PLAN        — StructuredPlanActivity generates a structured plan with acceptance criteria
 //  2. GATE        — Human approval signal (nothing enters the coding engine un-parceled)
@@ -29,7 +29,7 @@ const (
 //  6. DOD         — Compile/test/lint verification via git.RunPostMergeChecks
 //  7. RECORD      — Persist outcome to store (feeds learner loop)
 //  8. ESCALATE    — If DoD fails after retries, escalate to chief + human
-func CortexAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
+func ChumAgentWorkflow(ctx workflow.Context, req TaskRequest) error {
 	startTime := workflow.Now(ctx)
 	logger := workflow.GetLogger(ctx)
 

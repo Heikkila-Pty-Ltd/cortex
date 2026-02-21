@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/antigravity-dev/cortex/internal/config"
-	"github.com/antigravity-dev/cortex/internal/store"
+	"github.com/antigravity-dev/chum/internal/config"
+	"github.com/antigravity-dev/chum/internal/store"
 )
 
 func setupTestServer(t *testing.T) *Server {
@@ -150,11 +150,11 @@ func TestHandleMetrics(t *testing.T) {
 	}
 
 	body := w.Body.String()
-	if !strings.Contains(body, "cortex_dispatches_total") {
-		t.Fatal("missing cortex_dispatches_total metric")
+	if !strings.Contains(body, "chum_dispatches_total") {
+		t.Fatal("missing chum_dispatches_total metric")
 	}
-	if !strings.Contains(body, "cortex_uptime_seconds") {
-		t.Fatal("missing cortex_uptime_seconds metric")
+	if !strings.Contains(body, "chum_uptime_seconds") {
+		t.Fatal("missing chum_uptime_seconds metric")
 	}
 }
 
@@ -253,17 +253,17 @@ func TestHandleMetricsSafetyBlocks(t *testing.T) {
 	}
 
 	body := w.Body.String()
-	if !strings.Contains(body, "cortex_safety_blocks_active") {
-		t.Fatal("missing cortex_safety_blocks_active metric")
+	if !strings.Contains(body, "chum_safety_blocks_active") {
+		t.Fatal("missing chum_safety_blocks_active metric")
 	}
-	if !strings.Contains(body, `cortex_safety_blocks_active{block_type="churn_block"} 1`) {
+	if !strings.Contains(body, `chum_safety_blocks_active{block_type="churn_block"} 1`) {
 		t.Fatalf("missing churn_block metric in:\n%s", body)
 	}
-	if !strings.Contains(body, `cortex_safety_blocks_active{block_type="quarantine"} 1`) {
+	if !strings.Contains(body, `chum_safety_blocks_active{block_type="quarantine"} 1`) {
 		t.Fatalf("missing quarantine metric in:\n%s", body)
 	}
-	if !strings.Contains(body, "cortex_safety_blocks_total 2") {
-		t.Fatalf("missing cortex_safety_blocks_total metric in:\n%s", body)
+	if !strings.Contains(body, "chum_safety_blocks_total 2") {
+		t.Fatalf("missing chum_safety_blocks_total metric in:\n%s", body)
 	}
 }
 

@@ -12,7 +12,7 @@ import (
 func writeTestConfig(tb testing.TB, content string) string {
 	tb.Helper()
 	dir := tb.TempDir()
-	path := filepath.Join(dir, "cortex.toml")
+	path := filepath.Join(dir, "chum.toml")
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		tb.Fatal(err)
 	}
@@ -737,7 +737,7 @@ func TestLoadChiefConfigValid(t *testing.T) {
 enabled = true
 matrix_room = "!coordination:matrix.org"
 model = "claude-opus-4-6"
-agent_id = "cortex-chief-scrum"
+agent_id = "chum-chief"
 `
 	path := writeTestConfig(t, cfg)
 	config, err := Load(path)
@@ -757,8 +757,8 @@ agent_id = "cortex-chief-scrum"
 		t.Errorf("expected model 'claude-opus-4-6', got %q", config.Chief.Model)
 	}
 
-	if config.Chief.AgentID != "cortex-chief-scrum" {
-		t.Errorf("expected agent_id 'cortex-chief-scrum', got %q", config.Chief.AgentID)
+	if config.Chief.AgentID != "chum-chief" {
+		t.Errorf("expected agent_id 'chum-chief', got %q", config.Chief.AgentID)
 	}
 }
 
@@ -779,8 +779,8 @@ matrix_room = "!coordination:matrix.org"
 		t.Errorf("expected default model 'claude-opus-4-6', got %q", config.Chief.Model)
 	}
 
-	if config.Chief.AgentID != "cortex-chief-scrum" {
-		t.Errorf("expected default agent_id 'cortex-chief-scrum', got %q", config.Chief.AgentID)
+	if config.Chief.AgentID != "chum-chief" {
+		t.Errorf("expected default agent_id 'chum-chief', got %q", config.Chief.AgentID)
 	}
 }
 
@@ -806,7 +806,7 @@ func TestLoadChiefConfigMissingMatrixRoom(t *testing.T) {
 
 [chief]
 enabled = true
-agent_id = "cortex-chief-scrum"
+agent_id = "chum-chief"
 `
 	path := writeTestConfig(t, cfg)
 	_, err := Load(path)
@@ -836,7 +836,7 @@ func TestLoadChiefConfigOptional(t *testing.T) {
 		t.Errorf("expected default model to be applied, got %q", config.Chief.Model)
 	}
 
-	if config.Chief.AgentID != "cortex-chief-scrum" {
+	if config.Chief.AgentID != "chum-chief" {
 		t.Errorf("expected default agent_id to be applied, got %q", config.Chief.AgentID)
 	}
 }

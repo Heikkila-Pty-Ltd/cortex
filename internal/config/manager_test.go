@@ -263,7 +263,7 @@ func BenchmarkRWMutexManagerReadMostly(b *testing.B) {
 
 func BenchmarkRWMutexManagerReadMostlyWithReloads(b *testing.B) {
 	workdir := b.TempDir()
-	path := filepath.Join(workdir, "cortex.toml")
+	path := filepath.Join(workdir, "chum.toml")
 	if err := os.WriteFile(path, []byte(validConfig), 0644); err != nil {
 		b.Fatalf("seed config write failed: %v", err)
 	}

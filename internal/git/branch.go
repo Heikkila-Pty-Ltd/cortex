@@ -10,7 +10,7 @@ import (
 var ErrMergeConflict = errors.New("git merge conflict")
 
 // CreateFeatureBranch creates and checks out a branch for a bead
-// Branch name: feat/{bead-id} (e.g. feat/cortex-abc)
+// Branch name: feat/{bead-id} (e.g. feat/chum-abc)
 func CreateFeatureBranch(workspace, beadID, baseBranch string) error {
 	branchName := fmt.Sprintf("feat/%s", beadID)
 

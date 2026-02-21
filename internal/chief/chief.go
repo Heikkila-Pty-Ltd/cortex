@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/antigravity-dev/cortex/internal/config"
-	"github.com/antigravity-dev/cortex/internal/dispatch"
-	"github.com/antigravity-dev/cortex/internal/graph"
-	"github.com/antigravity-dev/cortex/internal/portfolio"
-	"github.com/antigravity-dev/cortex/internal/store"
+	"github.com/antigravity-dev/chum/internal/config"
+	"github.com/antigravity-dev/chum/internal/dispatch"
+	"github.com/antigravity-dev/chum/internal/graph"
+	"github.com/antigravity-dev/chum/internal/portfolio"
+	"github.com/antigravity-dev/chum/internal/store"
 )
 
 // Chief handles multi-team sprint planning ceremonies
@@ -306,12 +306,12 @@ func (c *Chief) dispatchChiefSM(ctx context.Context, bead graph.Task, promptTemp
 
 	agentID := c.cfg.Chief.AgentID
 	if agentID == "" {
-		agentID = "cortex-chief-scrum"
+		agentID = "chum-chief"
 	}
 
 	workspace := c.cfg.Projects["cortex"].Workspace
 	if workspace == "" {
-		workspace = "~/projects/cortex" // fallback
+		workspace = "~/projects/chum" // fallback
 	}
 
 	prompt := c.buildCeremonyPrompt(ctx, promptTemplate)
@@ -547,8 +547,8 @@ Use this JSON as the source of truth.
 3. Produce explicit follow-up action items in this exact section format:
    - `+"```"+`
 ## Action Items
-- [P1] Improve dependency handoff checklist | project:cortex | owner:chief-sm | why:handoff ambiguity caused delays
-- [P2] Rebalance provider usage for retries | project:cortex | owner:ops | why:failure concentration
+- [P1] Improve dependency handoff checklist | project:chum | owner:chief-sm | why:handoff ambiguity caused delays
+- [P2] Rebalance provider usage for retries | project:chum | owner:ops | why:failure concentration
 `+"```"+`
 4. Keep each action item concrete, scoped, and executable as a bead.
 `, injectedContext)

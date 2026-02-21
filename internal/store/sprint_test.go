@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/antigravity-dev/cortex/internal/graph"
+	"github.com/antigravity-dev/chum/internal/graph"
 )
 
 // TestStoreStepMetrics verifies that step metrics can be stored and retrieved.

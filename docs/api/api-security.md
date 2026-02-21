@@ -30,7 +30,7 @@ Cortex provides a lightweight HTTP API for monitoring and controlling the schedu
 
 ## Configuration
 
-Add security configuration to your `cortex.toml`:
+Add security configuration to your `chum.toml`:
 
 ```toml
 [api]
@@ -427,7 +427,7 @@ Configure logrotate for the audit log:
 Check configuration:
 ```bash
 # Verify config syntax
-cortex -config cortex.toml -dry-run
+cortex -config chum.toml -dry-run
 
 # Check logs for auth errors
 journalctl -u cortex -f | grep auth

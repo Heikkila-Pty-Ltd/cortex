@@ -61,7 +61,7 @@ Acceptance criteria:
 Validation commands:
 
 ```bash
-rg -n "\[api.security\]|enabled|allowed_tokens|require_local_only" cortex.toml
+rg -n "\[api.security\]|enabled|allowed_tokens|require_local_only" chum.toml
 GOCACHE=/tmp/go-build go test ./internal/config ./internal/api -run Auth
 ```
 
@@ -107,8 +107,8 @@ Validation commands:
 ```bash
 make build
 cp build/cortex build/cortex.rollback
-cp cortex.toml cortex.toml.rollback
-ls -la build/cortex.rollback cortex.toml.rollback
+cp chum.toml chum.toml.rollback
+ls -la build/cortex.rollback chum.toml.rollback
 ```
 
 ### 2.3 Dry run
@@ -189,7 +189,7 @@ systemctl stop cortex
 
 # Swap in the known-good binary and config
 cp build/cortex.rollback build/cortex
-cp cortex.toml.rollback cortex.toml
+cp chum.toml.rollback chum.toml
 
 # Restart and verify
 systemctl start cortex
@@ -213,7 +213,7 @@ If any gate fails, stop release and execute rollback/hotfix decision protocol.
 
 - Dry-run output from `scripts/release/dry-run-release.sh`
 - Changelog from `scripts/release/generate-changelog.sh`
-- Rollback binary and config backups (`build/cortex.rollback`, `cortex.toml.rollback`)
+- Rollback binary and config backups (`build/cortex.rollback`, `chum.toml.rollback`)
 - Post-release health check outputs
 
 ## Release Scripts

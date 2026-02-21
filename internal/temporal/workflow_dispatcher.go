@@ -15,11 +15,11 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/antigravity-dev/cortex/internal/config"
-	"github.com/antigravity-dev/cortex/internal/graph"
+	"github.com/antigravity-dev/chum/internal/config"
+	"github.com/antigravity-dev/chum/internal/graph"
 )
 
-// DispatcherWorkflow scans for ready tasks and dispatches CortexAgentWorkflow
+// DispatcherWorkflow scans for ready tasks and dispatches ChumAgentWorkflow
 // children. Designed to run on a Temporal Schedule (every tick_interval).
 //
 // Unlike the old scheduler goroutine, this is durable — survives crashes,
@@ -58,7 +58,7 @@ func DispatcherWorkflow(ctx workflow.Context, _ struct{}) error {
 
 		childOpts := workflow.ChildWorkflowOptions{
 			WorkflowID:               c.TaskID,
-			TaskQueue:                "cortex-task-queue",
+			TaskQueue:                "chum-task-queue",
 			WorkflowExecutionTimeout: timeout,
 			// ALLOW_DUPLICATE_FAILED_ONLY allows retry after failure/termination
 			// but rejects if a workflow with this task ID is currently running.
@@ -90,7 +90,7 @@ func DispatcherWorkflow(ctx workflow.Context, _ struct{}) error {
 
 		// Fire-and-forget — we don't wait for the child to complete.
 		// The dispatcher's job is to START workflows, not babysit them.
-		future := workflow.ExecuteChildWorkflow(childCtx, CortexAgentWorkflow, req)
+		future := workflow.ExecuteChildWorkflow(childCtx, ChumAgentWorkflow, req)
 
 		// Wait for the child to actually start (avoid ABANDON killing it).
 		var childExec workflow.Execution
@@ -311,10 +311,10 @@ func (da *DispatchActivities) ScanCandidatesActivity(ctx context.Context) (*Scan
 	}, nil
 }
 
-// listOpenAgentWorkflows returns all currently running CortexAgentWorkflow
+// listOpenAgentWorkflows returns all currently running ChumAgentWorkflow
 // executions. Extracted from the old scheduler for reuse in the activity.
 func listOpenAgentWorkflows(ctx context.Context, tc client.Client) ([]openWorkflowExecution, error) {
-	query := `WorkflowType = 'CortexAgentWorkflow' AND ExecutionStatus = 'Running'`
+	query := `WorkflowType = 'ChumAgentWorkflow' AND ExecutionStatus = 'Running'`
 
 	var pageToken []byte
 	executions := make([]openWorkflowExecution, 0, 200)

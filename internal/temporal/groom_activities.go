@@ -12,7 +12,7 @@ import (
 
 	"go.temporal.io/sdk/activity"
 
-	"github.com/antigravity-dev/cortex/internal/graph"
+	"github.com/antigravity-dev/chum/internal/graph"
 )
 
 // MutateTasksActivity runs a fast LLM to decide what task mutations to apply

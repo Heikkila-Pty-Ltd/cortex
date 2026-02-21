@@ -25,13 +25,13 @@ Treat Cortex as:
 ### 1) Start Cortex
 
 ```bash
-./cortex --config cortex.toml --dev
+./cortex --config chum.toml --dev
 ```
 
 For a single cycle:
 
 ```bash
-./cortex --config cortex.toml --once --dev
+./cortex --config chum.toml --once --dev
 ```
 
 ### 2) Check Baseline Health
